@@ -43,6 +43,7 @@ const KNOB_ORDER: string[] = [
   "diffLineNumbers",
   "diffThemeSync",
   "permCode",
+  "permNoWrap",
   "effortSyncFix",
   "text", // plan agent response
   "planCodeInline", // plan inline code
@@ -393,6 +394,39 @@ function permCodeSet(c: string, on: boolean): string {
   );
 }
 
+// Permission-code no-wrap (ON): the permission block renders its command with
+// white-space:pre-wrap, so a line longer than the box wraps onto the next visual
+// row with no marker — a wrapped continuation looks identical to a real newline.
+// The command is a single contentEditable text node (children:e.command, no
+// per-line elements), so CSS line numbers / per-line striping have nothing to
+// anchor to; the one clean lever is to stop wrapping. When ON we append a scoped
+// rule switching the block to white-space:pre + overflow-x:auto, so every visual
+// row is exactly one logical line and a long command scrolls horizontally
+// instead of wrapping ambiguously. Same pure-CSS toggle shape as permCode: it
+// shares the .bashCommand_<hash> anchor and rides the toggle machinery with no JS
+// side. The two permission rules are separate marked lines and set disjoint
+// properties (font-size vs white-space/overflow), so they compose freely.
+const PERM_NOWRAP_MARKER = "/*cc-ui-patch:permNoWrap*/";
+
+function permNoWrapPresent(c: string): boolean {
+  return c.includes(PERM_NOWRAP_MARKER) || BASH_CMD_HASH_RE.test(c);
+}
+function permNoWrapCurrentOn(c: string): boolean | undefined {
+  if (c.includes(PERM_NOWRAP_MARKER)) return true;
+  if (BASH_CMD_HASH_RE.test(c)) return false;
+  return undefined; // anchor gone
+}
+function permNoWrapSet(c: string, on: boolean): string {
+  if (!on) return cssRemoveLine(c, PERM_NOWRAP_MARKER);
+  const hash = c.match(BASH_CMD_HASH_RE)?.[1];
+  if (!hash) return c; // anchor gone: leave native
+  return cssApplyLine(
+    c,
+    PERM_NOWRAP_MARKER,
+    `${PERM_NOWRAP_MARKER}.bashCommand_${hash}{white-space:pre !important;overflow-x:auto !important}`,
+  );
+}
+
 // The chat message "Show more" (.expandButton_<hash>) and "Show less"
 // (.collapseButton_<hash>) buttons live in the expandable-content module. "Show
 // more" is position:absolute (bottom:0;right:0) anchored to the fit-content
@@ -487,6 +521,17 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: permCodePresent,
     fnCurrentOn: permCodeCurrentOn,
     fnSet: permCodeSet,
+  },
+  {
+    id: "permNoWrap",
+    section: "Chat Panel or Tab",
+    label: "permission code no-wrap",
+    key: "chatPermissionCodeNoWrap",
+    defaultOn: false,
+    file: "webview/index.css",
+    fnPresent: permNoWrapPresent,
+    fnCurrentOn: permNoWrapCurrentOn,
+    fnSet: permNoWrapSet,
   },
 ];
 

@@ -94,6 +94,11 @@
           "default": false,
           "markdownDescription": "Size the permission command block to match the tool input block (`0.85em` instead of `0.9em`)."
         },
+        "claudeCodeUiPatch.chatPermissionCodeNoWrap": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Stop the permission command block from wrapping: switch it to `white-space: pre` with horizontal scroll, so each visual row is exactly one logical line. A long command then scrolls sideways instead of wrapping ambiguously onto the next row. (Line numbers / syntax highlighting aren't available here: the command is a single editable text node with no per-line structure.)"
+        },
         "claudeCodeUiPatch.chatShowMoreAndLessAlign": {
           "type": "string",
           "enum": [

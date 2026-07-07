@@ -59,6 +59,7 @@ Plan Mode Markdown Preview
 Behavior
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeblock      # chatCodeblockFontSize (On) or chat.fontSize (Off)
+   ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)
    └── effortSyncFix                   # push persisted effort level to a reloaded session if On
 ```
 

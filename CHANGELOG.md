@@ -8,6 +8,10 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 | ----------- | -------- |
 | 2.1.201+    | 1.1.x    |
 
+## 1.1.3
+
+- Add `claudeCodeUiPatch.chatPermissionCodeNoWrap`: stop the permission command block from wrapping. It switches the block to `white-space: pre` with horizontal scroll, so every visual row is exactly one logical line and a long command scrolls sideways instead of wrapping ambiguously onto the next row. Line numbers and syntax highlighting aren't offered for this block, because the command renders as a single editable text node with no per-line structure to anchor them to.
+
 ## 1.1.2
 
 - Retire the `Claude Code UI Patch: Restore Font Sizes` command. Use the panel's **Factory Reset** button instead, which reverts every setting (not just font sizes) to Claude Code's native values.

@@ -177,7 +177,7 @@ const PATCH_POINTS: PatchPoint[] = [
     id: "chatCode",
     section: "Chat Panel or Tab",
     label: "code block",
-    key: "chatCodeblockFontSize",
+    key: "chatCodeBlockFontSize",
     defaultPx: 11,
     maxPx: 24,
     file: "webview/index.css",
@@ -231,7 +231,7 @@ const PATCH_POINTS: PatchPoint[] = [
     id: "code",
     section: "Plan Mode Markdown Preview",
     label: "code block",
-    key: "planPreviewCodeblockFontSize",
+    key: "planPreviewCodeBlockFontSize",
     defaultPx: 13,
     maxPx: 24,
     file: "extension.js",
@@ -515,7 +515,7 @@ const TOGGLE_POINTS: TogglePoint[] = [
     id: "permCode",
     section: "Chat Panel or Tab",
     label: "permission code fontsize sync",
-    key: "chatPermissionCodeMatchChatCodeblock",
+    key: "chatPermissionCodeMatchChatCodeBlock",
     defaultOn: false,
     file: "webview/index.css",
     fnPresent: permCodePresent,
@@ -544,15 +544,22 @@ export function readToggles(): ToggleMap {
   return m;
 }
 
-// One-time migration: the diff-card settings were renamed chatDiff* → chatDiffCard*.
-// Copy any user-set legacy value to the new key (when the new key is unset) and
-// clear the legacy key. Safe to run every activation: a no-op once nothing legacy
-// remains, and it must run before the Patcher reads settings so nothing reverts.
+// One-time migration for renamed settings. Copy any user-set legacy value to the
+// new key (when the new key is unset) and clear the legacy key. Covered renames:
+// the diff-card keys (chatDiff* → chatDiffCard*), the chat code-block size
+// (chatCodeFontSize → chatCodeBlockFontSize), and the "Codeblock" → "CodeBlock"
+// casing normalization of the shipped code-block keys. Safe to run every
+// activation: a no-op once nothing legacy remains, and it must run before the
+// Patcher reads settings so nothing reverts. (codeFontFamily needs no entry: its
+// former name codeblockFontFamily never shipped.)
 const LEGACY_KEY_RENAMES: [string, string][] = [
   ["chatDiffFontSize", "chatDiffCardFontSize"],
   ["chatDiffLineNumbers", "chatDiffCardLineNumbers"],
   ["chatDiffThemeSync", "chatDiffCardThemeSync"],
-  ["chatCodeFontSize", "chatCodeblockFontSize"],
+  ["chatCodeFontSize", "chatCodeBlockFontSize"],
+  ["chatCodeblockFontSize", "chatCodeBlockFontSize"],
+  ["planPreviewCodeblockFontSize", "planPreviewCodeBlockFontSize"],
+  ["chatPermissionCodeMatchChatCodeblock", "chatPermissionCodeMatchChatCodeBlock"],
 ];
 
 export async function migrateLegacyKeys(): Promise<void> {
@@ -747,6 +754,37 @@ function chatContentSelector(c: string): string | undefined {
   return md ? `.root_${md}` : undefined;
 }
 
+// codeFontFamily (chat side): apply the chosen font to chat code ONLY,
+// fenced blocks (.codeBlockWrapper_<hash> pre) and inline code (.root_<hash>
+// code), leaving prose, UI chrome, and diff cards native. Same selector set as
+// the chatCode size patch, so block and inline stay matched. This must win over
+// the chatHistoryFontFamily monospace re-assertion (which also targets
+// .root_<hash> code/pre at equal specificity), so its inject point is ordered
+// AFTER chatHistoryFamily below and later source order wins the tie. The wrapper
+// and markdown module share one CSS-module hash, read via CHAT_CODE_HASH_RE.
+const CHAT_CODE_FAMILY_MARKER = "/*cc-ui-patch:chatCodeFamily*/";
+const CHAT_CODE_FAMILY_VAL_RE =
+  /\/\*cc-ui-patch:chatCodeFamily\*\/[^\n]*?font-family:(.+?) !important\}/;
+
+function applyChatCodeFamilyCss(css: string, v: string): string {
+  const hash = css.match(CHAT_CODE_HASH_RE)?.[1];
+  if (!hash) return css; // wrapper rule gone (version changed): nothing to anchor
+  return cssApplyLine(
+    css,
+    CHAT_CODE_FAMILY_MARKER,
+    `${CHAT_CODE_FAMILY_MARKER}.codeBlockWrapper_${hash} pre,.codeBlockWrapper_${hash} pre code,.root_${hash} code{font-family:${v} !important}`,
+  );
+}
+
+// codeFontFamily (permission side): the permission "Allow this command?"
+// block (.bashCommand_<hash>) is monospace via --app-monospace-font-family;
+// append a scoped rule pinning it to the chosen font. Shares the
+// .bashCommand_<hash> anchor with the permCode / permNoWrap toggles, setting a
+// disjoint property (font-family) so all three compose freely.
+const PERM_CODE_FAMILY_MARKER = "/*cc-ui-patch:permCodeFamily*/";
+const PERM_CODE_FAMILY_VAL_RE =
+  /\/\*cc-ui-patch:permCodeFamily\*\/[^\n]*?font-family:(.+?) !important\}/;
+
 // planPreviewFontFamily: the plan preview is its own webview; swap its <body>
 // font-family (stock is the markdown var). Composes with the planPreviewFontSize
 // point, which anchors on the same rule's font-size independent of the family.
@@ -768,7 +806,7 @@ function clampSizePx(n: number): number {
 // chatCodeInlineFontSize / planPreviewCodeInlineFontSize: add-on overrides that
 // size ONLY inline code (a <code> whose parent is not <pre>), so blocks and
 // inline can be tuned separately. 0 = off, inline then follows the block/code
-// knob (chatCodeblockFontSize / planPreviewCodeblockFontSize), which is left
+// knob (chatCodeBlockFontSize / planPreviewCodeBlockFontSize), which is left
 // unchanged. `:not(pre) > code` wins over the base code rule by specificity and
 // never matches block code (parent <pre>), so block sizing is untouched.
 const CHAT_CODE_INLINE_MARKER = "/*cc-ui-patch:chatCodeInline*/";
@@ -796,6 +834,34 @@ function planInjectCodeInline(c: string, v: InjectValue): string {
   if (!m) return c; // general code rule gone: leave native
   const idx = (m.index ?? 0) + m[0].length;
   const rule = `${PLAN_CODE_INLINE_MARKER}:not(pre) > code{font-size:${v}px !important}`;
+  return cleaned.slice(0, idx) + rule + cleaned.slice(idx);
+}
+
+// codeFontFamily (plan-preview side): the preview `code {}` rule reads
+// font-family: var(--vscode-editor-font-family) and covers both inline and
+// `pre code`. Two other anchors (planPreviewCodeBlockFontSize, planCodeInline)
+// key off that literal declaration, so we must NOT rewrite it. Instead append a
+// scoped `code{font-family:<v> !important}` rule after the stable `pre code`
+// rule: the !important beats the base rule (which has none) for inline and block
+// code alike, while the anchored text stays intact for the other points.
+const PLAN_CODE_FAMILY_MARKER = "/*cc-ui-patch:planCodeFamily*/";
+const PLAN_PRE_CODE_RE = /pre code\s*\{[^}]*\}/;
+const PLAN_CODE_FAMILY_VAL_RE =
+  /\/\*cc-ui-patch:planCodeFamily\*\/code\{font-family:(.+?) !important\}/;
+
+function planRemoveCodeFamily(c: string): string {
+  const i = c.indexOf(PLAN_CODE_FAMILY_MARKER);
+  if (i < 0) return c;
+  const end = c.indexOf("}", i);
+  return end < 0 ? c : c.slice(0, i) + c.slice(end + 1);
+}
+
+function planInjectCodeFamily(c: string, v: InjectValue): string {
+  const cleaned = planRemoveCodeFamily(c);
+  const m = cleaned.match(PLAN_PRE_CODE_RE);
+  if (!m) return c; // pre code rule gone: leave native
+  const idx = (m.index ?? 0) + m[0].length;
+  const rule = `${PLAN_CODE_FAMILY_MARKER}code{font-family:${v} !important}`;
   return cleaned.slice(0, idx) + rule + cleaned.slice(idx);
 }
 
@@ -855,6 +921,50 @@ const INJECT_POINTS: InjectPoint[] = [
       );
     },
     remove: (c) => cssRemoveLine(c, CHAT_FAMILY_MARKER),
+  },
+  {
+    id: "chatCodeFamily",
+    section: "Chat Panel or Tab",
+    label: "code font family",
+    key: "codeFontFamily",
+    kind: "family",
+    file: "webview/index.css",
+    showInPanel: false,
+    max: 0,
+    defaultRaw: "",
+    effective: (raw) =>
+      typeof raw === "string" && raw.trim() ? raw.trim() : undefined,
+    present: (c) =>
+      c.includes(CHAT_CODE_FAMILY_MARKER) || CHAT_CODE_WRAP_RE.test(c),
+    current: (c) => c.match(CHAT_CODE_FAMILY_VAL_RE)?.[1],
+    apply: (c, v) => applyChatCodeFamilyCss(c, String(v)),
+    remove: (c) => cssRemoveLine(c, CHAT_CODE_FAMILY_MARKER),
+  },
+  {
+    id: "permCodeFamily",
+    section: "Chat Panel or Tab",
+    label: "permission code font family",
+    key: "codeFontFamily",
+    kind: "family",
+    file: "webview/index.css",
+    showInPanel: false,
+    max: 0,
+    defaultRaw: "",
+    effective: (raw) =>
+      typeof raw === "string" && raw.trim() ? raw.trim() : undefined,
+    present: (c) =>
+      c.includes(PERM_CODE_FAMILY_MARKER) || BASH_CMD_HASH_RE.test(c),
+    current: (c) => c.match(PERM_CODE_FAMILY_VAL_RE)?.[1],
+    apply: (c, v) => {
+      const hash = c.match(BASH_CMD_HASH_RE)?.[1];
+      if (!hash) return c; // anchor gone: leave native
+      return cssApplyLine(
+        c,
+        PERM_CODE_FAMILY_MARKER,
+        `${PERM_CODE_FAMILY_MARKER}.bashCommand_${hash}{font-family:${v} !important}`,
+      );
+    },
+    remove: (c) => cssRemoveLine(c, PERM_CODE_FAMILY_MARKER),
   },
   {
     id: "planFamily",
@@ -954,6 +1064,23 @@ const INJECT_POINTS: InjectPoint[] = [
     },
     apply: (c, v) => planInjectCodeInline(c, v),
     remove: (c) => planRemoveCodeInline(c),
+  },
+  {
+    id: "planCodeFamily",
+    section: "Plan Mode Markdown Preview",
+    label: "code font family",
+    key: "codeFontFamily",
+    kind: "family",
+    file: "extension.js",
+    showInPanel: false,
+    max: 0,
+    defaultRaw: "",
+    effective: (raw) =>
+      typeof raw === "string" && raw.trim() ? raw.trim() : undefined,
+    present: (c) => PLAN_PRE_CODE_RE.test(c),
+    current: (c) => c.match(PLAN_CODE_FAMILY_VAL_RE)?.[1],
+    apply: (c, v) => planInjectCodeFamily(c, v),
+    remove: (c) => planRemoveCodeFamily(c),
   },
   {
     id: "showMoreAlign",

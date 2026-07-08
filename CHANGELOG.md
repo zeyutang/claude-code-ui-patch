@@ -8,6 +8,13 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 | ----------- | -------- |
 | 2.1.201+    | 1.1.x    |
 
+## 1.1.4
+
+- Add `claudeCodeUiPatch.codeFontFamily`: one font family for code **only**, applied to every code surface at once: fenced blocks and inline code in the chat panel and the Plan Mode preview, plus the permission command block. Prose text, interface chrome, and diff cards stay native. Empty follows the native monospace font. This is scoped to win over the code re-styling that `chatHistoryFontFamily` applies, so a chat reading font and a dedicated code font can be set together.
+- Normalize the code-block setting keys to `CodeBlock` casing
+  (`chatCodeBlockFontSize`, `planPreviewCodeBlockFontSize`,
+  `chatPermissionCodeMatchChatCodeBlock`); existing values migrate automatically.
+
 ## 1.1.3
 
 - Add `claudeCodeUiPatch.chatPermissionCodeNoWrap`: stop the permission command block from wrapping. It switches the block to `white-space: pre` with horizontal scroll, so every visual row is exactly one logical line and a long command scrolls sideways instead of wrapping ambiguously onto the next row. Line numbers and syntax highlighting aren't offered for this block, because the command renders as a single editable text node with no per-line structure to anchor them to.
@@ -26,11 +33,11 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 
 - Add `claudeCodeUiPatch.chatHistoryFontSize`: a font size for the agent responses only, private to Claude Code. The input box, interface, your own messages, and other chat extensions stay on the shared native `chat.fontSize`. `0` follows `chat.fontSize`. Replaces the panel's native `chat.fontSize` knob.
 - Add `claudeCodeUiPatch.chatHistoryFontFamily`: a font family for the agent responses only. The interface and input box stay in the native UI font, which also keeps the input caret aligned.
-- Add `claudeCodeUiPatch.chatCodeInlineFontSize`: size chat inline code separately from fenced blocks. `0` follows `chatCodeblockFontSize`.
-- Add `claudeCodeUiPatch.chatPermissionCodeMatchChatCodeblock`: match the permission command block to the tool input block size (`0.85em` instead of `0.9em`).
+- Add `claudeCodeUiPatch.chatCodeInlineFontSize`: size chat inline code separately from fenced blocks. `0` follows `chatCodeBlockFontSize`.
+- Add `claudeCodeUiPatch.chatPermissionCodeMatchChatCodeBlock`: match the permission command block to the tool input block size (`0.85em` instead of `0.9em`).
 - Add `claudeCodeUiPatch.chatShowMoreAndLessAlign`: pin the chat "Show more" and "Show less" buttons to `left` or `right`. Empty follows the native (drifting) position.
 - Add `claudeCodeUiPatch.planPreviewFontFamily`: a font family for the Plan Mode preview panel.
-- Add `claudeCodeUiPatch.planPreviewCodeInlineFontSize`: size plan-preview inline code separately from fenced blocks. `0` follows `planPreviewCodeblockFontSize`.
+- Add `claudeCodeUiPatch.planPreviewCodeInlineFontSize`: size plan-preview inline code separately from fenced blocks. `0` follows `planPreviewCodeBlockFontSize`.
 - Add `claudeCodeUiPatch.planPreviewCommentInputRows`: the select-and-comment box height in rows. `0` follows the native height (about 3).
 - Unify the setting descriptions into a concise, consistent style.
 - Highlight the panel's Reload Window link while a reload is pending.

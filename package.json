@@ -58,7 +58,7 @@
           "default": "",
           "markdownDescription": "Font family for the chat history only; the interface and input box stay native. Empty = native."
         },
-        "claudeCodeUiPatch.chatCodeblockFontSize": {
+        "claudeCodeUiPatch.chatCodeBlockFontSize": {
           "type": "number",
           "default": 11,
           "minimum": 6,
@@ -70,7 +70,12 @@
           "default": 0,
           "minimum": 0,
           "maximum": 24,
-          "markdownDescription": "Chat inline code size in px. `0` follows `#claudeCodeUiPatch.chatCodeblockFontSize#`."
+          "markdownDescription": "Chat inline code size in px. `0` follows `#claudeCodeUiPatch.chatCodeBlockFontSize#`."
+        },
+        "claudeCodeUiPatch.codeFontFamily": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Font family for code **only**, applied to every code surface at once: fenced blocks and inline code in the chat panel and in the Plan Mode preview, plus the permission command block. Prose text, interface chrome, and diff cards stay native. Empty = native monospace. Quote a family with spaces and add a fallback, e.g. `\"Fira Code, JetBrains Mono\"`."
         },
         "claudeCodeUiPatch.chatDiffCardFontSize": {
           "type": "number",
@@ -89,7 +94,7 @@
           "default": false,
           "markdownDescription": "Sync the diff card theme to the VS Code light/dark theme instead of forcing dark."
         },
-        "claudeCodeUiPatch.chatPermissionCodeMatchChatCodeblock": {
+        "claudeCodeUiPatch.chatPermissionCodeMatchChatCodeBlock": {
           "type": "boolean",
           "default": false,
           "markdownDescription": "Size the permission command block to match the tool input block (`0.85em` instead of `0.9em`)."
@@ -131,7 +136,7 @@
           "default": "",
           "markdownDescription": "Font family for the Plan Mode preview panel. Empty = native."
         },
-        "claudeCodeUiPatch.planPreviewCodeblockFontSize": {
+        "claudeCodeUiPatch.planPreviewCodeBlockFontSize": {
           "type": "number",
           "default": 13,
           "minimum": 6,
@@ -143,7 +148,7 @@
           "default": 0,
           "minimum": 0,
           "maximum": 24,
-          "markdownDescription": "Plan preview inline code size in px. `0` follows `#claudeCodeUiPatch.planPreviewCodeblockFontSize#`."
+          "markdownDescription": "Plan preview inline code size in px. `0` follows `#claudeCodeUiPatch.planPreviewCodeBlockFontSize#`."
         },
         "claudeCodeUiPatch.planPreviewCommentInputFontSize": {
           "type": "number",

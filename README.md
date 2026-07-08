@@ -38,8 +38,8 @@ chat.fontSize & chat.fontFamily        # native VS Code settings, shared by ever
 Chat Panel and Tab                     # agent messages only
    ├── chatHistoryFontSize             # agent message text, 0 -> follows chat.fontSize
    ├── chatHistoryFontFamily           # agent message font, empty -> native UI font
-   ├── chatCodeblockFontSize           # fenced code blocks (stay monospace)
-   │      └── chatCodeInlineFontSize   # inline code, 0 -> follows chatCodeblockFontSize
+   ├── chatCodeBlockFontSize           # fenced code blocks
+   │      └── chatCodeInlineFontSize   # inline code, 0 -> follows chatCodeBlockFontSize
    └── diff cards                      # Edit / MultiEdit tool cards + expand modal
           ├── chatDiffCardFontSize     # diff code size
           ├── chatDiffCardLineNumbers  # +/- gutter line numbers if On
@@ -48,8 +48,8 @@ Chat Panel and Tab                     # agent messages only
 Plan Mode Markdown Preview
    ├── planPreviewFontSize             # preview text (headings scale with it)
    ├── planPreviewFontFamily           # preview font, empty -> native
-   ├── planPreviewCodeblockFontSize    # fenced code blocks (stay monospace)
-   │      └── planPreviewCodeInlineFontSize      # 0 -> follows planPreviewCodeblockFontSize
+   ├── planPreviewCodeBlockFontSize    # fenced code blocks
+   │      └── planPreviewCodeInlineFontSize      # 0 -> follows planPreviewCodeBlockFontSize
    └── select-and-comment UI
           ├── planPreviewCommentInputFontSize    # comment box text
           ├── planPreviewCommentInputRows        # comment box height in rows, 0 -> native
@@ -58,9 +58,14 @@ Plan Mode Markdown Preview
 
 Behavior
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
-   ├── chatPermissionCodeMatchChatCodeblock      # chatCodeblockFontSize (On) or chat.fontSize (Off)
+   ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)
    └── effortSyncFix                   # push persisted effort level to a reloaded session if On
+
+Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
+   ├── chat panel and tab  (fenced code + inline code)
+   ├── plan mode preview   (fenced code + inline code)
+   └── permission prompt   (command block)
 ```
 
 ## Using This UI Patch
@@ -76,16 +81,16 @@ Behavior
     // "chat.fontSize": 15,
 
     // UI Patch font size settings in a unified namespace `claudeCodeUiPatch`
-    "claudeCodeUiPatch.chatCodeblockFontSize": 14,
+    "claudeCodeUiPatch.chatCodeBlockFontSize": 14,
     "claudeCodeUiPatch.chatCodeInlineFontSize": 14,
     "claudeCodeUiPatch.chatDiffCardFontSize": 13.5,
-    "claudeCodeUiPatch.chatHistoryFontSize": 16.5,
-    "claudeCodeUiPatch.planPreviewFontSize": 16.25,
-    "claudeCodeUiPatch.planPreviewCodeblockFontSize": 13.75,
-    "claudeCodeUiPatch.planPreviewCodeInlineFontSize": 13.75,
+    "claudeCodeUiPatch.chatHistoryFontSize": 15.75,
+    "claudeCodeUiPatch.planPreviewFontSize": 15.75,
+    "claudeCodeUiPatch.planPreviewCodeBlockFontSize": 14,
+    "claudeCodeUiPatch.planPreviewCodeInlineFontSize": 14,
+    "claudeCodeUiPatch.planPreviewCommentBadgeFontSize": 12,
     "claudeCodeUiPatch.planPreviewCommentInputFontSize": 15,
     "claudeCodeUiPatch.planPreviewCommentInputRows": 7,
-    "claudeCodeUiPatch.planPreviewCommentBadgeFontSize": 12,
     "claudeCodeUiPatch.planPreviewCommentQuoteFontSize": 12.5
   }
   ```

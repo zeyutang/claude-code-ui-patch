@@ -8,6 +8,10 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 | ----------- | -------- |
 | 2.1.201+    | 1.1.x    |
 
+## 1.1.5
+
+- Add `claudeCodeUiPatch.chatInputMaxLines`: how many lines the chat input box grows to before it scrolls, folding two fixes into one number. Natively the box stops growing at a fixed 200px (so the line count depends on `chat.fontSize`), and once it scrolls, typing at the end reveals only the caret's line, leaving the last line flush on the box edge with its bottom padding hidden. Setting `N` caps the box at exactly `N` lines at any chat font size (clamped to 70% of the window height so a large `N` cannot swallow a short window) and adds `scroll-padding`, so the caret always keeps the box's own padding visible below the last line. `0` keeps both native behaviors.
+
 ## 1.1.4
 
 - Add `claudeCodeUiPatch.codeFontFamily`: one font family for code **only**, applied to every code surface at once: fenced blocks and inline code in the chat panel and the Plan Mode preview, plus the permission command block. Prose text, interface chrome, and diff cards stay native. Empty follows the native monospace font. This is scoped to win over the code re-styling that `chatHistoryFontFamily` applies, so a chat reading font and a dedicated code font can be set together.

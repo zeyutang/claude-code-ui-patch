@@ -77,6 +77,13 @@
           "default": "",
           "markdownDescription": "Font family for code **only**, applied to every code surface at once: fenced blocks and inline code in the chat panel and in the Plan Mode preview, plus the permission command block. Prose text, interface chrome, and diff cards stay native. Empty = native monospace. Quote a family with spaces and add a fallback, e.g. `\"Fira Code, JetBrains Mono\"`."
         },
+        "claudeCodeUiPatch.chatInputMaxLines": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 40,
+          "markdownDescription": "Chat input box growth cap, in lines: the box grows to this many lines before it scrolls (clamped to 70% of the window height), and typing at the end always keeps the box's bottom padding in view, so the last line never sits flush on the edge. `0` = native: a fixed 200px cap, whose line count depends on `#chat.fontSize#`, and the bottom padding can scroll out of view."
+        },
         "claudeCodeUiPatch.chatDiffCardFontSize": {
           "type": "number",
           "default": 12,

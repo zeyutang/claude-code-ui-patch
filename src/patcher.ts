@@ -865,6 +865,28 @@ function planInjectCodeFamily(c: string, v: InjectValue): string {
   return cleaned.slice(0, idx) + rule + cleaned.slice(idx);
 }
 
+// chatInputMaxLines: the chat input box (.messageInput_<hash>, a contenteditable
+// div; .mentionMirror_<hash> is the overlay that paints its text) grows with
+// content up to a hardcoded max-height:200px, then scrolls. Two native quirks
+// at that cap: how many lines fit depends on chat.fontSize (the cap is a fixed
+// px, not a line count), and the caret reveal scrolls just far enough to show
+// the caret's line box, so the 10px bottom padding stays below the fold and the
+// last line sits flush on the box edge. N >= 1 appends a scoped rule replacing
+// the cap with exactly N lines (line-height em units, so it tracks any chat
+// font size), clamped to 70vh so a huge N cannot swallow a short window, plus
+// scroll-padding matching the box's vertical padding so the caret reveal always
+// keeps that spacing visible above and below. 0 = native (both quirks). The
+// line-height and paddings are parsed from the anchored rule so the numbers
+// track the bundle; the anchor requires a unitless line-height and a 4-value px
+// padding and fails gracefully (native) on any other form. The mirror gets the
+// same cap to stay metric-identical; it needs no scroll-padding (overflow is
+// hidden there, the JS copies the input's scrollTop).
+const MSG_INPUT_MARKER = "/*cc-ui-patch:inputLines*/";
+const MSG_INPUT_RULE_RE =
+  /\.messageInput_([-\w]+)\{[^{}]*?max-height:\d+(?:\.\d+)?px;padding:(\d+(?:\.\d+)?)px \d+(?:\.\d+)?px (\d+(?:\.\d+)?)px \d+(?:\.\d+)?px;[^{}]*?line-height:(\d+(?:\.\d+)?)\}/;
+const MSG_INPUT_EM_RE =
+  /\/\*cc-ui-patch:inputLines\*\/[^\n]*?max-height:min\((\d+(?:\.\d+)?)em,70vh\)/;
+
 const INJECT_POINTS: InjectPoint[] = [
   {
     id: "chatHistorySize",
@@ -1124,6 +1146,44 @@ const INJECT_POINTS: InjectPoint[] = [
       );
     },
     remove: (c) => cssRemoveLine(c, SHOW_MORE_MARKER),
+  },
+  {
+    id: "chatInputLines",
+    section: "Chat Panel or Tab",
+    label: "input box max lines",
+    key: "chatInputMaxLines",
+    kind: "rows",
+    file: "webview/index.css",
+    showInPanel: false,
+    max: 0,
+    defaultRaw: 0,
+    effective: (raw) =>
+      typeof raw === "number" && raw >= 1
+        ? Math.min(40, Math.round(raw))
+        : undefined,
+    present: (c) => c.includes(MSG_INPUT_MARKER) || MSG_INPUT_RULE_RE.test(c),
+    // Lines currently written, derived as em-cap / line-height. Deriving (rather
+    // than storing N) means a rule built by an older patch against different
+    // metrics stops reading as current and gets rebuilt in place.
+    current: (c) => {
+      const em = c.match(MSG_INPUT_EM_RE)?.[1];
+      const lh = c.match(MSG_INPUT_RULE_RE)?.[4];
+      if (em === undefined || lh === undefined) return undefined;
+      return Math.round((Number(em) / Number(lh)) * 100) / 100;
+    },
+    apply: (c, v) => {
+      const m = c.match(MSG_INPUT_RULE_RE);
+      if (!m) return c; // input rule gone or reshaped: leave native
+      const [, hash, padTop, padBottom, lineHeight] = m;
+      const em = Math.round(Number(lineHeight) * Number(v) * 100) / 100;
+      return cssApplyLine(
+        c,
+        MSG_INPUT_MARKER,
+        `${MSG_INPUT_MARKER}.messageInput_${hash},.mentionMirror_${hash}{max-height:min(${em}em,70vh) !important}` +
+          `.messageInput_${hash}{scroll-padding:${padTop}px 0 ${padBottom}px !important}`,
+      );
+    },
+    remove: (c) => cssRemoveLine(c, MSG_INPUT_MARKER),
   },
 ];
 

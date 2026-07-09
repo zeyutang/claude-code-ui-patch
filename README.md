@@ -57,6 +57,7 @@ Plan Mode Markdown Preview
           └── planPreviewCommentBadgeFontSize    # comment badge (14px circle, keep <= 12)
 
 Behavior
+   ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)
@@ -71,7 +72,7 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
 ## Using This UI Patch
 
 - **Panel controls:** sizes use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect) or yellow (reload needed).
-- **Direct edits:** Font families, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload. Example:
+- **Direct edits:** Font families, the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload. Example:
 
   ```json
   {
@@ -85,6 +86,7 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
     "claudeCodeUiPatch.chatCodeInlineFontSize": 14,
     "claudeCodeUiPatch.chatDiffCardFontSize": 13.5,
     "claudeCodeUiPatch.chatHistoryFontSize": 15.75,
+    "claudeCodeUiPatch.chatInputMaxLines": 20,
     "claudeCodeUiPatch.planPreviewFontSize": 15.75,
     "claudeCodeUiPatch.planPreviewCodeBlockFontSize": 14,
     "claudeCodeUiPatch.planPreviewCodeInlineFontSize": 14,

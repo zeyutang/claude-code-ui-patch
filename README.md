@@ -32,7 +32,7 @@ chat.fontSize & chat.fontFamily        # native VS Code settings, shared by ever
    │                                   # therefore, this patch does NOT override them
    ├── input box
    ├── interface chrome (buttons, headers, token counts)
-   ├── your messages + attachment chips (e.g. image.png)
+   ├── user messages + attachment chips (e.g. image.png)
    └── other chat extensions (Codex, Copilot, ...)
 
 Chat Panel and Tab                     # agent messages only
@@ -101,5 +101,5 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
 
 ## Caveats
 
-- **The patch reverts when Claude Code updates.** Your settings re-apply on the next window reload (reload once more to see them). VS Code may show a one-time "corrupt installation" warning, which is safe to dismiss.
-- **`chatHistoryFontSize` / `chatHistoryFontFamily` restyle the agent transcript only** (deliberate design, not a bug). Your own messages, the input box, the interface, and other extensions' chats (Codex, Copilot, etc.) stay native, and can be configured with `chat.fontSize` and `chat.fontFamily`.
+- **The patch reverts when Claude Code updates.** The settings re-apply on the next window reload, and a notification then prompts you to **Reload Window** once more to see them. VS Code may show a one-time "corrupt installation" warning, which is safe to dismiss.
+- **`chatHistoryFontSize` / `chatHistoryFontFamily` restyle the agent transcript only** (deliberate design, not a bug). The user messages, the input box, the interface, and other extensions' chats (Codex, Copilot, etc.) stay native, and can be configured with `chat.fontSize` and `chat.fontFamily`.

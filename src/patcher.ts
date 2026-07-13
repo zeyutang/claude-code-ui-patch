@@ -1764,6 +1764,11 @@ export class Patcher {
   private activationPx = new Map<string, string | undefined>(); // on-disk px at activation
 
   constructor(private readonly context: vscode.ExtensionContext) {
+    // Read the last-seen Claude Code version before refresh() overwrites it, so
+    // the activation re-apply below can tell an update (version changed) from a
+    // first-time apply of saved settings.
+    const priorVersion =
+      this.context.globalState.get<string>(STOCK_VERSION_KEY);
     this.refresh();
     // Re-apply the saved sizes when the on-disk bundle has drifted from the
     // settings (e.g. a Claude Code update reverted the patch). This is a no-op
@@ -1777,7 +1782,10 @@ export class Patcher {
         this.toggleStates.some(drifted) ||
         this.injectStates.some(drifted))
     ) {
-      void this.autoApply();
+      void this.autoApply({
+        updated:
+          priorVersion !== undefined && priorVersion !== this.ext.version,
+      });
     }
   }
 
@@ -1938,7 +1946,9 @@ export class Patcher {
 
   // Auto-apply: any patch setting change writes to the bundle immediately.
   // After writing, reconcile pendingReload in a single pass, then refresh once.
-  private async autoApply(): Promise<void> {
+  // `activation` is set only for the activation-time re-apply (constructor); on
+  // that path we prompt a reload once the write leaves the running window stale.
+  private async autoApply(activation?: { updated: boolean }): Promise<void> {
     // Re-resolve the install in case Claude Code updated in place since the last
     // refresh (its versioned directory changes on update, so a cached ext could
     // point at a directory that no longer exists).
@@ -1950,12 +1960,37 @@ export class Patcher {
     try {
       applyPatch(this.ext, readSizes(), readToggles(), this.stockCapture);
       this.reconcilePendingReload();
+      // A drifted bundle at activation means Claude Code reverted the patch
+      // (typically an update). We just re-applied it to disk, but the running
+      // window still shows the reverted UI, so prompt a reload. Only notify when
+      // the write actually left the window stale (pendingReload non-empty).
+      if (activation && this.pendingReload.size > 0) {
+        this.notifyReapplied(activation.updated);
+      }
     } catch (err) {
       void vscode.window.showErrorMessage(
         `Claude Code UI Patch: failed to patch Claude Code: ${(err as Error).message}`,
       );
     }
     this.refresh();
+  }
+
+  // Toast shown after the activation-time re-apply, prompting the reload the
+  // re-applied patch needs to take effect in the still-stale running window.
+  // Mirrors the amber status-bar / panel reload cue with an actionable button.
+  private notifyReapplied(updated: boolean): void {
+    if (!this.ext) return;
+    const version = this.ext.version;
+    const message = updated
+      ? `Claude Code UI Patch: Claude Code updated to v${version}; re-applied your UI patch. Reload the window for it to take effect.`
+      : `Claude Code UI Patch: applied your UI patch to Claude Code v${version}. Reload the window for it to take effect.`;
+    void vscode.window
+      .showInformationMessage(message, "Reload Window")
+      .then((choice) => {
+        if (choice === "Reload Window") {
+          void vscode.commands.executeCommand("workbench.action.reloadWindow");
+        }
+      });
   }
 
   private reconcilePendingReload(): void {

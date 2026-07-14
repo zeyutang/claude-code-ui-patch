@@ -11,6 +11,8 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 ## 1.1.6
 
 - Add reload notification after `claude-code` update
+- Add `claudeCodeUiPatch.planPreviewCommentInputCtrlEnterToSend`: in the Plan Mode preview's comment box, send on `Cmd`/`Ctrl`+`Enter` and let plain `Enter` insert a newline (`Shift`+`Enter` also inserts a newline; the **Add Comment** button and `Escape` are unchanged). Off keeps the native behavior, where `Enter` sends and `Shift`+`Enter` inserts a newline.
+- Fix `claudeCodeUiPatch.planPreviewFontFamily`: the floating **Add Comment** button that appears when you select text in the Plan Mode preview no longer picks up the reading font. It is a native VS Code button but inherited the preview's `<body>` font, so a proportional reading font rendered it in that face; it is now pinned back to the UI font. The rest of the preview (prose, the review banner, and the comment popup's own controls) keeps the reading font as before.
 
 ## 1.1.5
 

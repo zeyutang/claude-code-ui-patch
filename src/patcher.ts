@@ -51,6 +51,7 @@ const KNOB_ORDER: string[] = [
   "preview", // plan comment quote
   "input", // plan comment composer
   "badge", // plan comment badge
+  "commentCtrlEnter", // plan comment send key
 ];
 function knobOrder(id: string): number {
   const i = KNOB_ORDER.indexOf(id);
@@ -444,6 +445,18 @@ const SHOW_MORE_MARKER = "/*cc-ui-patch:showMoreRight*/";
 const SHOW_MORE_HASH_RE =
   /\.buttonContainer_([-\w]+)\{display:flex;opacity:\.9;justify-content:flex-end/;
 
+// Plan-preview comment box send key (ON): natively, plain Enter in the comment
+// textarea submits ("Add Comment") and Shift+Enter inserts a newline. When ON we
+// move the submit chord to Cmd/Ctrl+Enter, so plain Enter (and Shift+Enter) fall
+// through to a normal newline and a comment is sent only on Cmd/Ctrl+Enter (or
+// the button). A plain value-swap on the keydown guard's condition: OFF is
+// `!e.shiftKey`, ON is `(e.metaKey || e.ctrlKey)`; the guard body (preventDefault
+// + submitBtn.click()) and the sibling Escape handler are left untouched. The /g
+// lets the toggle helpers reset the anchor; the condition is unique in the
+// bundle (the plan-preview inline script is not minified, like its CSS anchors).
+const PLAN_COMMENT_SEND_RE =
+  /(if \(e\.key === 'Enter' && )(!e\.shiftKey|\(e\.metaKey \|\| e\.ctrlKey\))(\) \{)/g;
+
 interface TogglePoint {
   id: string;
   section: Section;
@@ -532,6 +545,18 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: permNoWrapPresent,
     fnCurrentOn: permNoWrapCurrentOn,
     fnSet: permNoWrapSet,
+  },
+  {
+    id: "commentCtrlEnter",
+    section: "Plan Mode Markdown Preview",
+    label: "comment Ctrl+Enter to send",
+    key: "planPreviewCommentInputCtrlEnterToSend",
+    defaultOn: false,
+    file: "extension.js",
+    re: PLAN_COMMENT_SEND_RE,
+    onValue: "(e.metaKey || e.ctrlKey)",
+    offValue: "!e.shiftKey",
+    isOn: (v) => v.includes("metaKey"),
   },
 ];
 
@@ -786,12 +811,57 @@ const PERM_CODE_FAMILY_VAL_RE =
   /\/\*cc-ui-patch:permCodeFamily\*\/[^\n]*?font-family:(.+?) !important\}/;
 
 // planPreviewFontFamily: the plan preview is its own webview; swap its <body>
-// font-family (stock is the markdown var). Composes with the planPreviewFontSize
-// point, which anchors on the same rule's font-size independent of the family.
+// font-family so the chosen reading font applies to the rendered plan (stock is
+// the markdown var). Composes with the planPreviewFontSize point, which anchors
+// on the same rule's font-size independent of the family.
+//
+// One deliberate exception: the floating "Add Comment" button (#comment-btn)
+// that appears on text selection is a native VS Code button, but it inherits the
+// <body> font, so a reading font drags a serif face onto it. When a family is
+// set we pin ONLY that button back to the UI font; the rest of the preview (the
+// prose, the review banner, and the comment popup's own controls) keeps the
+// reading font, as before. The override rides with the family: added when a
+// family is set, removed when it is cleared.
+const PLAN_BTN_MARKER = "/*cc-ui-patch:planCommentBtn*/";
 const PLAN_FAMILY_STOCK =
   "var(--vscode-markdown-font-family, var(--vscode-font-family))";
+// The whole plan-preview <body> rule (unique in the bundle): the splice anchor
+// for the button override.
+const PLAN_BODY_RULE_RE = /body \{[^}]*\}/;
 const PLAN_FAMILY_RE =
   /(body \{\s*font-family:\s*)(var\(--vscode-markdown-font-family, var\(--vscode-font-family\)\)|[^;]+?)(;\s*font-size:)/;
+// The button override rule, present only while a family is applied.
+const PLAN_BTN_RE =
+  /\/\*cc-ui-patch:planCommentBtn\*\/#comment-btn\{font-family:.+? !important\}/;
+
+// Reset any <body> swap back to stock and drop the button override, returning
+// the preview to native. Idempotent (a no-op when neither is present), so it
+// doubles as the reconcile/restore path and cleans a legacy swap-only bundle.
+function planRemoveFamily(c: string): string {
+  const body = c.replace(
+    PLAN_FAMILY_RE,
+    (_w, p, _v, s) => `${p}${PLAN_FAMILY_STOCK}${s}`,
+  );
+  const i = body.indexOf(PLAN_BTN_MARKER);
+  if (i < 0) return body;
+  const end = body.indexOf("}", i);
+  return end < 0 ? body : body.slice(0, i) + body.slice(end + 1);
+}
+
+// Swap the <body> font-family to the chosen family (so the rendered plan uses
+// it) and splice a rule pinning the floating "Add Comment" button back to the UI
+// font, right after the <body> rule.
+function planInjectFamily(c: string, v: InjectValue): string {
+  const swapped = planRemoveFamily(c).replace(
+    PLAN_FAMILY_RE,
+    (_w, p, _v, s) => `${p}${v}${s}`,
+  );
+  const m = swapped.match(PLAN_BODY_RULE_RE);
+  if (!m) return swapped; // body rule gone: family swapped, no anchor for override
+  const idx = (m.index ?? 0) + m[0].length;
+  const rule = `${PLAN_BTN_MARKER}#comment-btn{font-family:var(--vscode-font-family) !important}`;
+  return swapped.slice(0, idx) + rule + swapped.slice(idx);
+}
 
 // planPreviewCommentInputRows: the select-and-comment textarea has no rows
 // attribute (defaults to ~3 lines via min-height); inject one so it opens taller.
@@ -1001,18 +1071,17 @@ const INJECT_POINTS: InjectPoint[] = [
     effective: (raw) =>
       typeof raw === "string" && raw.trim() ? raw.trim() : undefined,
     present: (c) => PLAN_FAMILY_RE.test(c),
+    // Report the applied family only when the button override is also in place:
+    // a legacy swap-only bundle (older builds set just the body font) then reads
+    // as native, so a saved family drifts on this build's first activation and
+    // applyPatch re-applies, adding the override.
     current: (c) => {
+      if (!PLAN_BTN_RE.test(c)) return undefined;
       const m = c.match(PLAN_FAMILY_RE);
-      if (!m) return undefined;
-      return m[2] === PLAN_FAMILY_STOCK ? undefined : m[2];
+      return m && m[2] !== PLAN_FAMILY_STOCK ? m[2] : undefined;
     },
-    apply: (c, v) =>
-      c.replace(PLAN_FAMILY_RE, (_w, p, _v, s) => `${p}${v}${s}`),
-    remove: (c) =>
-      c.replace(
-        PLAN_FAMILY_RE,
-        (_w, p, _v, s) => `${p}${PLAN_FAMILY_STOCK}${s}`,
-      ),
+    apply: (c, v) => planInjectFamily(c, v),
+    remove: (c) => planRemoveFamily(c),
   },
   {
     id: "planCommentRows",

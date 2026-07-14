@@ -171,6 +171,11 @@
           "maximum": 40,
           "markdownDescription": "Plan preview comment box height in rows. `0` = native (about 3)."
         },
+        "claudeCodeUiPatch.planPreviewCommentInputCtrlEnterToSend": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "In the plan preview comment box, send on `Cmd`/`Ctrl`+`Enter` and let plain `Enter` insert a newline. Off = native (`Enter` sends, `Shift`+`Enter` newlines)."
+        },
         "claudeCodeUiPatch.planPreviewCommentQuoteFontSize": {
           "type": "number",
           "default": 12,

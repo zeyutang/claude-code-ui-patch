@@ -72,7 +72,7 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
 
 ## Using This UI Patch
 
-- **Panel controls:** sizes use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect) or yellow (reload needed).
+- **Panel controls:** sizes use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect), yellow (reload needed), or red (unavailable on this Claude Code version, with the header banner turning Claude clay).
 - **Direct edits:** Font families, the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload. Example:
 
   ```json

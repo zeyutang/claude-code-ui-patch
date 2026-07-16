@@ -96,9 +96,8 @@ export class PatchPanel {
   // --- HTML generation ---
 
   private knobHtml(k: Knob): string {
-    const dotOk = k.native ? true : !k.pendingReload;
-    const dotTitle = dotTitleFor(k.native, dotOk);
-    const dot = `<span class="dot-slot"><span class="dot ${dotOk ? "dot-ok" : "dot-warn"}" title="${dotTitle}">●</span></span>`;
+    const { cls: dotClass, title: dotTitle } = dotInfo(k);
+    const dot = `<span class="dot-slot"><span class="dot ${dotClass}" title="${dotTitle}">●</span></span>`;
     if (k.kind === "toggle") {
       return `      <div class="knob" data-id="${k.id}" data-kind="toggle">
         ${dot}
@@ -216,7 +215,7 @@ ${sections}
         const knob = document.querySelector('.knob[data-id="' + k.id + '"]');
         if (!knob) return;
         const dot = knob.querySelector('.dot');
-        if (dot) { dot.className = 'dot ' + (k.dotOk ? 'dot-ok' : 'dot-warn'); dot.title = k.dotTitle; }
+        if (dot) { dot.className = 'dot ' + k.dotClass; dot.title = k.dotTitle; }
         const pxEl = knob.querySelector('.px');
         if (pxEl) {
           if (pending[k.id] === undefined) { pxEl.textContent = k.px + 'px'; }
@@ -249,14 +248,23 @@ function shapeOf(snap: Snapshot | undefined): string {
   return [snap.supported, snap.version, snap.knobs.map((k) => k.id).join(",")].join("|");
 }
 
-function dotTitleFor(native: boolean, ok: boolean): string {
-  if (native) return "live";
-  return ok ? "in effect" : "reload window to take effect";
+// The per-knob "traffic light": green when the patch is in effect, yellow when a
+// window reload is due, red when the setting is wanted but its anchor is gone on
+// this Claude Code version (so it can't apply until a build restores it).
+function dotInfo(k: Knob): { cls: string; title: string } {
+  if (k.lost)
+    return { cls: "dot-lost", title: "unavailable on this Claude Code version" };
+  if (k.native) return { cls: "dot-ok", title: "live" };
+  return k.pendingReload
+    ? { cls: "dot-warn", title: "reload window to take effect" }
+    : { cls: "dot-ok", title: "in effect" };
 }
 
 function statusInner(snap: Snapshot): string {
   if (!snap.supported)
     return `<span class="status-banner warn">Patch not supported on Claude Code v${snap.version}</span>`;
+  if (snap.partialLoss)
+    return `<span class="status-banner lost">Some settings can't be applied on this version</span>`;
   if (snap.needsReload)
     return `<span class="status-banner warn">Reload window to apply changes</span>`;
   return `<span class="status-banner ok">All settings applied</span>`;
@@ -264,13 +272,13 @@ function statusInner(snap: Snapshot): string {
 
 // Lightweight per-knob state + header status for in-place DOM updates.
 function syncPayload(snap: Snapshot): {
-  knobs: Array<{ id: string; px: string; on: boolean; dotOk: boolean; dotTitle: string }>;
+  knobs: Array<{ id: string; px: string; on: boolean; dotClass: string; dotTitle: string }>;
   status: string;
   reloadPending: boolean;
 } {
   const knobs = snap.knobs.map((k) => {
-    const dotOk = k.native ? true : !k.pendingReload;
-    return { id: k.id, px: k.px, on: k.on, dotOk, dotTitle: dotTitleFor(k.native, dotOk) };
+    const { cls: dotClass, title: dotTitle } = dotInfo(k);
+    return { id: k.id, px: k.px, on: k.on, dotClass, dotTitle };
   });
   return { knobs, status: statusInner(snap), reloadPending: snap.needsReload };
 }
@@ -320,13 +328,16 @@ const baseCss = `
   .divider { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 9px 0; }
   /* Every header status is a full-width banner so the strip never changes height
      between states: green when everything is applied, yellow when a reload is due
-     or the version is unsupported. */
+     or the version is unsupported, and Claude clay when some wanted settings can't
+     be applied on this Claude Code version. */
   .status-banner { display: block; color: #fff; padding: 4px 12px; border-radius: 3px; font-weight: 700; }
   .status-banner.ok { background: #3fa34d; }
   .status-banner.warn { background: var(--vscode-statusBarItem-warningBackground, #b7791f); }
+  .status-banner.lost { background: #d97757; }
   .dot { font-size: .8em; }
   .dot-ok { color: var(--vscode-gitDecoration-addedResourceForeground); }
   .dot-warn { color: var(--vscode-editorWarning-foreground); }
+  .dot-lost { color: var(--vscode-editorError-foreground, #c74e39); }
   a.link { color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: none; font-size: 1.1em; margin-top: 12px; display: block; }
   /* The reload link is always a badge with the same box in both states, so it
      never jitters when the pending state flips: green while everything is

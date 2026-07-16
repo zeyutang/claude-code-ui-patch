@@ -1807,6 +1807,7 @@ export interface Knob {
   native: boolean;
   state: "current" | "stock" | "custom" | "missing";
   pendingReload: boolean; // this row's bundle was written but window not reloaded
+  lost: boolean; // wanted (non-native) but its anchor is absent on this version
   nativeKey?: string;
 }
 
@@ -1814,10 +1815,11 @@ export interface Snapshot {
   available: boolean;
   supported: boolean; // at least one patch anchor present
   version: string;
-  knobs: Knob[]; // native chat + present patch knobs, in section order
+  knobs: Knob[]; // native chat + present/lost patch knobs, in section order
   applied: boolean;
   actionable: boolean;
   needsReload: boolean; // bundle written this session but window not reloaded
+  partialLoss: boolean; // a wanted setting can't be applied: its anchor is gone here
 }
 
 export class Patcher {
@@ -1890,11 +1892,50 @@ export class Patcher {
     const injectStatusById = new Map(
       this.injectStates.map((s) => [s.id, s.status]),
     );
+
+    const presentSizes = this.states.filter((s) => s.status !== "missing");
+    const presentToggles = this.toggleStates.filter(
+      (s) => s.status !== "missing",
+    );
+    const presentInjects = this.injectStates.filter(
+      (s) => s.status !== "missing",
+    );
+    const anyPresent =
+      presentSizes.length + presentToggles.length + presentInjects.length > 0;
+
+    // A "lost" point: its anchor is absent from this bundle, yet the user's
+    // setting asks for a non-native value, so the customization silently can't
+    // apply (typically a Claude Code update changed the code we patch). A missing
+    // point left at its native value loses nothing, so it stays hidden. We treat
+    // this as a partial loss only while something else is still present; when
+    // nothing is present at all the "not supported" banner already covers it.
+    const sizeWanted = (p: PatchPoint) =>
+      formatPx(sizes[p.id]) !== formatPx(p.originalPx);
+    const toggleWanted = (t: TogglePoint) => toggles[t.id] !== t.defaultOn;
+    const injectWanted = (ip: InjectPoint) => readInject(ip) !== undefined;
+    const sizeLost = (p: PatchPoint) =>
+      statusById.get(p.id) === "missing" && sizeWanted(p);
+    const toggleLost = (t: TogglePoint) =>
+      toggleStatusById.get(t.id) === "missing" && toggleWanted(t);
+    const injectLost = (ip: InjectPoint) =>
+      injectStatusById.get(ip.id) === "missing" && injectWanted(ip);
+    const partialLoss =
+      anyPresent &&
+      (PATCH_POINTS.some(sizeLost) ||
+        TOGGLE_POINTS.some(toggleLost) ||
+        INJECT_POINTS.some(injectLost));
+
+    // Panel knobs: every present point, plus any lost point (rendered with a red
+    // dot). A lost knob shows its wanted value and keeps live controls, so the
+    // preference is retained and re-applies if a later build restores the anchor.
     // The chat text size knob (formerly the native chat.fontSize knob) is now the
     // chatHistoryFontSize injection: it shows the effective size (its own value, or
     // the inherited chat.fontSize when unset) and adjusting it takes control.
     const chat: Knob[] = INJECT_POINTS.filter(
-      (ip) => ip.showInPanel && injectStatusById.get(ip.id) !== "missing",
+      (ip) =>
+        ip.showInPanel &&
+        (injectStatusById.get(ip.id) !== "missing" ||
+          (anyPresent && injectWanted(ip))),
     ).map((ip) => {
       const eff = readInject(ip);
       return {
@@ -1912,14 +1953,14 @@ export class Patcher {
         on: false,
         max: ip.max,
         native: false,
-        state:
-          (injectStatusById.get(ip.id) as "current" | "stock" | "custom") ??
-          "stock",
+        state: injectStatusById.get(ip.id) ?? "stock",
         pendingReload: this.pendingReload.has(ip.id),
+        lost: injectStatusById.get(ip.id) === "missing",
       };
     });
     const patch: Knob[] = PATCH_POINTS.filter(
-      (p) => statusById.get(p.id) !== "missing",
+      (p) =>
+        statusById.get(p.id) !== "missing" || (anyPresent && sizeWanted(p)),
     ).map((p) => ({
       id: p.id,
       section: p.section,
@@ -1929,12 +1970,14 @@ export class Patcher {
       on: false,
       max: p.maxPx,
       native: false,
-      state:
-        (statusById.get(p.id) as "current" | "stock" | "custom") ?? "stock",
+      state: statusById.get(p.id) ?? "stock",
       pendingReload: this.pendingReload.has(p.id),
+      lost: statusById.get(p.id) === "missing",
     }));
     const toggleKnobs: Knob[] = TOGGLE_POINTS.filter(
-      (t) => toggleStatusById.get(t.id) !== "missing",
+      (t) =>
+        toggleStatusById.get(t.id) !== "missing" ||
+        (anyPresent && toggleWanted(t)),
     ).map((t) => ({
       id: t.id,
       section: t.section,
@@ -1944,20 +1987,10 @@ export class Patcher {
       on: toggles[t.id],
       max: 0,
       native: false,
-      state:
-        (toggleStatusById.get(t.id) as "current" | "stock" | "custom") ??
-        "stock",
+      state: toggleStatusById.get(t.id) ?? "stock",
       pendingReload: this.pendingReload.has(t.id),
+      lost: toggleStatusById.get(t.id) === "missing",
     }));
-    const presentSizes = this.states.filter((s) => s.status !== "missing");
-    const presentToggles = this.toggleStates.filter(
-      (s) => s.status !== "missing",
-    );
-    const presentInjects = this.injectStates.filter(
-      (s) => s.status !== "missing",
-    );
-    const anyPresent =
-      presentSizes.length + presentToggles.length + presentInjects.length > 0;
     const allCurrent =
       presentSizes.every((s) => s.status === "current") &&
       presentToggles.every((s) => s.status === "current") &&
@@ -1972,6 +2005,7 @@ export class Patcher {
       applied: anyPresent && allCurrent,
       actionable: !allCurrent,
       needsReload: this.pendingReload.size > 0,
+      partialLoss,
     };
   }
 
@@ -2051,8 +2085,8 @@ export class Patcher {
     if (!this.ext) return;
     const version = this.ext.version;
     const message = updated
-      ? `Claude Code UI Patch: Claude Code updated to v${version}; re-applied your UI patch. Reload the window for it to take effect.`
-      : `Claude Code UI Patch: applied your UI patch to Claude Code v${version}. Reload the window for it to take effect.`;
+      ? `Claude Code UI Patch: Claude Code updated to v${version}. Reload the window for UI patches to take effect.`
+      : `Claude Code UI Patch: Applied UI patch to Claude Code v${version}. Reload the window for it to take effect.`;
     void vscode.window
       .showInformationMessage(message, "Reload Window")
       .then((choice) => {

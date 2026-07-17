@@ -8,9 +8,14 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 | ----------- | -------- |
 | 2.1.201+    | 1.1.x    |
 
+## 1.1.10
+
+- Scroll-to-bottom uses a fixed 100ms scrolling instead of smooth scrolling, regardless of how long the history (instant under reduced motion)
+- Align the scroll-to-bottom button with the send button, with more pronounced highlight
+
 ## 1.1.9
 
-- Add `claudeCodeUiPatch.chatScrollToBottomDot`: a small button just above the chat input box's top-right corner (outside its contour) that shows whenever the conversation is scrolled away from the very bottom; hovering names it ("Go to the bottom of the conversation") and clicking smooth-scrolls back to the latest message.
+- Add `claudeCodeUiPatch.chatScrollToBottomDot`: a small button just above the chat input box's top-right corner (outside its contour) that shows whenever the conversation is scrolled away from the very bottom; hovering names it ("Go to the bottom of the conversation") and clicking glides back to the latest message in a fixed 100ms, however long the history (instant under reduced motion).
   The button mirrors the send button's rounded-square shape with a downward arrow, in the input's own neutral surface and text color, and hides again once the view reaches the bottom.
 
 ## 1.1.7

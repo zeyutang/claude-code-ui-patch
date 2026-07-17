@@ -435,14 +435,25 @@ function permNoWrapSet(c: string, on: boolean): string {
 // manual scrolling. When ON we append a marked, self-contained IIFE at the end
 // of webview/index.js that mounts a small button just OUTSIDE the input box's
 // contour, above its top-right corner (anchored to the bordered box
-// .inputContainer_<hash> at top:-34px/right:0, so it clears the box border and
-// never shares a row with the send button, the source of the earlier dot's
-// shifting). It mirrors the send button's shape (a 26px rounded square) but
-// stays neutral, using the input's own surface, border, and text color so it
-// reads as a secondary control, and carries a downward arrow plus a native
-// tooltip. Clicking smooth-scrolls the messages container to its end, the same
-// call the app's own autoscroll uses; the app's stick-to-bottom flag re-arms by
-// itself, being recomputed from the live scroll position on every render. The
+// .inputContainer_<hash> at top:-34px/right:5px, so it clears the box border,
+// shares the send button's 5px right inset (the footer padding) and therefore
+// its vertical column, and never shares a row with the send button, the source
+// of the earlier dot's shifting). It mirrors the send button's footprint (a
+// 26px rounded square, box-sizing so the 1px border does not inflate it) and
+// its 20px icon size, but stays neutral, using the input's own surface,
+// border, and text color so it reads as a secondary control; hover stacks the
+// native ghost-button hover token twice over that surface and lifts the border
+// (theme-adaptive, unlike a brightness filter, which clips to nothing on light
+// surfaces), and it carries a downward arrow plus a native
+// tooltip. Clicking runs a fixed-duration scroll to the container's end: a
+// 100ms ease-out rAF animation, so the jump takes the same time however long
+// the history is (native behavior:"smooth" animates by distance and can crawl
+// on a long conversation). The bottom target is re-read every frame so a
+// streaming reply cannot outrun it, a final snap lands exactly on
+// scrollHeight, a per-click generation token cancels a superseded animation,
+// and prefers-reduced-motion collapses the glide to an instant jump. The app's
+// stick-to-bottom flag re-arms by itself, being recomputed from the live
+// scroll position on every render. The
 // button shows only while the view sits more than 8px above the bottom,
 // re-checked through one rAF-coalesced updater fed by capture-phase scroll
 // events, window resizes, and a body-wide MutationObserver (which also re-mounts
@@ -473,12 +484,14 @@ function scrollDotBuild(c: string): string | undefined {
   // box-sizing:border-box keeps the 26px footprint matching the send button's
   // despite the 1px border; it stays hidden (opacity 0, no pointer events, nudged
   // down) until data-show is set. currentColor drives the arrow's stroke.
+  const ghost2 =
+    "linear-gradient(var(--app-ghost-button-hover-background),var(--app-ghost-button-hover-background)),linear-gradient(var(--app-ghost-button-hover-background),var(--app-ghost-button-hover-background))";
   const css =
-    ".ccup-scroll-btn{box-sizing:border-box;position:absolute;top:-34px;right:0;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}" +
+    ".ccup-scroll-btn{box-sizing:border-box;position:absolute;top:-34px;right:5px;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}" +
     ".ccup-scroll-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
-    ".ccup-scroll-btn:hover{filter:brightness(1.1)}" +
-    ".ccup-scroll-btn:active{filter:brightness(.92)}" +
-    ".ccup-scroll-btn svg{display:block;width:15px;height:15px}";
+    `.ccup-scroll-btn:hover{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
+    ".ccup-scroll-btn:active{filter:brightness(.85)}" +
+    ".ccup-scroll-btn svg{display:block;width:20px;height:20px}";
   // Down arrow, drawn with currentColor strokes; single-quoted attributes so the
   // whole markup embeds in a double-quoted JS string below without escaping.
   const arrow =
@@ -487,13 +500,22 @@ function scrollDotBuild(c: string): string | undefined {
     `(function(){try{` +
     `if(window.__ccupScrollDot)return;window.__ccupScrollDot=1;` +
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
-    `var ARROW="${arrow}",raf=0;` +
+    `var ARROW="${arrow}",raf=0,gen=0;` +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
+    // Fixed 100ms ease-out glide to the bottom; target re-read per frame.
+    `function go(){var t=sc();if(!t)return;` +
+    `if(matchMedia("(prefers-reduced-motion:reduce)").matches){t.scrollTop=t.scrollHeight;return}` +
+    `var g=++gen,f=t.scrollTop,t0;` +
+    `function stp(now){if(g!==gen)return;if(t0===void 0)t0=now;` +
+    `var k=Math.min(1,(now-t0)/100),e=1-(1-k)*(1-k);` +
+    `if(k<1){t.scrollTop=f+(t.scrollHeight-t.clientHeight-f)*e;requestAnimationFrame(stp)}` +
+    `else t.scrollTop=t.scrollHeight}` +
+    `requestAnimationFrame(stp)}` +
     `function upd(){raf=0;var s=sc(),show=!!s&&s.scrollHeight-s.scrollTop-s.clientHeight>8,boxes=document.querySelectorAll(".inputContainer_${input}");` +
     `for(var i=0;i<boxes.length;i++){var box=boxes[i],d=box.querySelector(".ccup-scroll-btn");` +
     `if(!d){d=document.createElement("button");d.type="button";d.className="ccup-scroll-btn";` +
     `d.title="Go to the bottom of the conversation";d.setAttribute("aria-label","Go to the bottom of the conversation");d.innerHTML=ARROW;` +
-    `d.addEventListener("click",function(){var t=sc();if(t)t.scrollTo({top:t.scrollHeight,behavior:"smooth"})});box.appendChild(d)}` +
+    `d.addEventListener("click",go);box.appendChild(d)}` +
     `var on=d.hasAttribute("data-show");if(show&&!on)d.setAttribute("data-show","");else if(!show&&on)d.removeAttribute("data-show")}}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
     `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +

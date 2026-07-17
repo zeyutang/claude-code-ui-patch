@@ -114,7 +114,7 @@
         "claudeCodeUiPatch.chatScrollToBottomDot": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show a small dot at the top-right of the chat input box whenever the conversation is scrolled away from the bottom; hovering names it and clicking scrolls back to the latest message. The dot keeps the send button's margin to the box contour, paints in the input's own text color, and steps aside if the mic button occupies the corner."
+          "markdownDescription": "Show a small button just above the chat input box's top-right corner (outside its contour) whenever the conversation is scrolled away from the bottom; hovering names it and clicking scrolls back to the latest message. The button mirrors the send button's rounded-square shape with a downward arrow, in the input's own neutral surface and text color."
         },
         "claudeCodeUiPatch.chatShowMoreAndLessAlign": {
           "type": "string",

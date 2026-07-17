@@ -8,10 +8,10 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 | ----------- | -------- |
 | 2.1.201+    | 1.1.x    |
 
-## 1.1.8
+## 1.1.9
 
-- Add `claudeCodeUiPatch.chatScrollToBottomDot`: a small dot at the top-right of the chat input box that shows whenever the conversation is scrolled away from the very bottom; hovering names it ("Go to the bottom of the conversation") and clicking smooth-scrolls back to the latest message.
-  The dot mirrors the send button's margin to the input box contour, paints in the input's own text color (dimmed until hovered), steps aside when the mic button occupies that corner, and hides again once the view reaches the bottom.
+- Add `claudeCodeUiPatch.chatScrollToBottomDot`: a small button just above the chat input box's top-right corner (outside its contour) that shows whenever the conversation is scrolled away from the very bottom; hovering names it ("Go to the bottom of the conversation") and clicking smooth-scrolls back to the latest message.
+  The button mirrors the send button's rounded-square shape with a downward arrow, in the input's own neutral surface and text color, and hides again once the view reaches the bottom.
 
 ## 1.1.7
 

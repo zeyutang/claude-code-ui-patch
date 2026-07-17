@@ -429,31 +429,34 @@ function permNoWrapSet(c: string, on: boolean): string {
   );
 }
 
-// Scroll-to-bottom dot (ON): the chat auto-sticks to the newest message only
-// while the view is within 50px of the bottom; once the user scrolls up to
-// read, nothing indicates the conversation has run ahead, and the only way
-// back down is manual scrolling. When ON we append a marked, self-contained
-// IIFE at the end of webview/index.js that mounts a small round button inside
-// the input box's message row, anchored top:5px/right:5px so it mirrors the
-// send button's margin to the box contour (the input footer's 5px padding).
-// The dot paints in the input's own text color (background:currentColor at
-// reduced opacity, full on hover), carries a native tooltip, and on click
-// smooth-scrolls the messages container to its end, the same call the app's
-// own autoscroll uses; the app's stick-to-bottom flag re-arms by itself, being
-// recomputed from the live scroll position on every render. The dot shows only
-// while the view sits more than 2px above the bottom, re-checked through one
-// rAF-coalesced updater fed by capture-phase scroll events, window resizes,
-// and a body-wide MutationObserver (which also re-mounts the dot if a
-// re-render drops it, and re-runs the mic check when that button's state
-// changes). When the mic button occupies the row's top-right corner, the dot
-// steps left of it. The two DOM surfaces are addressed via CSS-module hashes
+// Scroll-to-bottom button (ON): the chat auto-sticks to the newest message only
+// while the view is within 50px of the bottom; once the user scrolls up to read,
+// nothing signals that the conversation has run ahead, and the only way back is
+// manual scrolling. When ON we append a marked, self-contained IIFE at the end
+// of webview/index.js that mounts a small button just OUTSIDE the input box's
+// contour, above its top-right corner (anchored to the bordered box
+// .inputContainer_<hash> at top:-34px/right:0, so it clears the box border and
+// never shares a row with the send button, the source of the earlier dot's
+// shifting). It mirrors the send button's shape (a 26px rounded square) but
+// stays neutral, using the input's own surface, border, and text color so it
+// reads as a secondary control, and carries a downward arrow plus a native
+// tooltip. Clicking smooth-scrolls the messages container to its end, the same
+// call the app's own autoscroll uses; the app's stick-to-bottom flag re-arms by
+// itself, being recomputed from the live scroll position on every render. The
+// button shows only while the view sits more than 8px above the bottom,
+// re-checked through one rAF-coalesced updater fed by capture-phase scroll
+// events, window resizes, and a body-wide MutationObserver (which also re-mounts
+// the button if a re-render drops it). data-show is toggled only on an actual
+// change and sits outside the observer's attribute filter, so the updater never
+// re-triggers itself. The two DOM surfaces are addressed via CSS-module hashes
 // read from the bundle's class maps at patch time (the input module via its
-// messageInput entry, the chat module via messagesContainer); if either map is
-// gone the point reports missing and the bundle stays native. The whole body
-// is wrapped in try/catch so a failure can never break the chat, and the
-// /*ccup:scrollDot*/ marker makes the ON state detectable; a marked line that
-// no longer matches the current build (an older patch version) reads as OFF,
-// so the next apply rebuilds it in place or strips it.
+// messageInput entry, whose module also owns .inputContainer_<hash>; the chat
+// module via messagesContainer); if either map is gone the point reports missing
+// and the bundle stays native. The whole body is wrapped in try/catch so a
+// failure can never break the chat, and the /*ccup:scrollDot*/ marker makes the
+// ON state detectable; a marked line that no longer matches the current build
+// (an older patch version) reads as OFF, so the next apply rebuilds it in place
+// or strips it.
 const SCROLL_DOT_MARKER = "/*ccup:scrollDot*/";
 const SCROLL_DOT_LINE_RE = /\n?\/\*ccup:scrollDot\*\/[^\n]*/g;
 const SCROLL_DOT_INPUT_HASH_RE = /messageInput:"messageInput_([-\w]+)"/;
@@ -466,37 +469,37 @@ function scrollDotBuild(c: string): string | undefined {
   const input = c.match(SCROLL_DOT_INPUT_HASH_RE)?.[1];
   const chat = c.match(SCROLL_DOT_CHAT_HASH_RE)?.[1];
   if (!input || !chat) return undefined;
+  // The button floats just above the box's top-right corner, outside its border.
+  // box-sizing:border-box keeps the 26px footprint matching the send button's
+  // despite the 1px border; it stays hidden (opacity 0, no pointer events, nudged
+  // down) until data-show is set. currentColor drives the arrow's stroke.
   const css =
-    ".ccup-scroll-dot{position:absolute;top:5px;right:5px;width:8px;height:8px;border:none;border-radius:50%;margin:0;padding:0;background:currentColor;color:inherit;opacity:0;pointer-events:none;cursor:pointer;z-index:5;transition:opacity .15s ease}" +
-    '.ccup-scroll-dot:after{content:"";position:absolute;inset:-6px;border-radius:50%}' +
-    ".ccup-scroll-dot[data-show]{opacity:.55;pointer-events:auto}" +
-    ".ccup-scroll-dot[data-show]:hover{opacity:1}" +
-    ".ccup-scroll-dot[data-show]:active{opacity:.8}";
+    ".ccup-scroll-btn{box-sizing:border-box;position:absolute;top:-34px;right:0;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}" +
+    ".ccup-scroll-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
+    ".ccup-scroll-btn:hover{filter:brightness(1.1)}" +
+    ".ccup-scroll-btn:active{filter:brightness(.92)}" +
+    ".ccup-scroll-btn svg{display:block;width:15px;height:15px}";
+  // Down arrow, drawn with currentColor strokes; single-quoted attributes so the
+  // whole markup embeds in a double-quoted JS string below without escaping.
+  const arrow =
+    "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 5v14'/><path d='M19 12l-7 7-7-7'/></svg>";
   const js =
-    "(function(){try{" +
-    "if(window.__ccupScrollDot)return;window.__ccupScrollDot=1;" +
-    'var st=document.createElement("style");' +
-    `st.textContent='${css}';` +
-    "document.head.appendChild(st);" +
-    "var raf=0;" +
+    `(function(){try{` +
+    `if(window.__ccupScrollDot)return;window.__ccupScrollDot=1;` +
+    `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
+    `var ARROW="${arrow}",raf=0;` +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
-    "function upd(){raf=0;" +
-    `var rows=document.querySelectorAll(".messageInputContainer_${input}");` +
-    "for(var i=0;i<rows.length;i++){var r=rows[i],d=r.querySelector(\".ccup-scroll-dot\");" +
-    'if(!d){d=document.createElement("button");d.type="button";d.className="ccup-scroll-dot";' +
-    'd.title="Go to the bottom of the conversation";d.setAttribute("aria-label","Go to the bottom of the conversation");' +
-    'd.addEventListener("click",function(){var s=sc();if(s)s.scrollTo({top:s.scrollHeight,behavior:"smooth"})});' +
-    "r.appendChild(d)}" +
-    "var s=sc(),show=s&&s.scrollHeight-s.scrollTop-s.clientHeight>2;" +
-    'if(show)d.setAttribute("data-show","");else d.removeAttribute("data-show");' +
-    `var m=r.querySelector(".micButtonWrapper_${input}");` +
-    'd.style.right=m&&m.offsetWidth?m.offsetWidth+5+"px":""}}' +
-    "function que(){if(!raf)raf=requestAnimationFrame(upd)}" +
-    'document.addEventListener("scroll",que,!0);' +
-    'window.addEventListener("resize",que);' +
-    'new MutationObserver(que).observe(document.body,{childList:!0,subtree:!0,characterData:!0,attributes:!0,attributeFilter:["class","style"]});' +
-    "que()" +
-    "}catch(e){}})();";
+    `function upd(){raf=0;var s=sc(),show=!!s&&s.scrollHeight-s.scrollTop-s.clientHeight>8,boxes=document.querySelectorAll(".inputContainer_${input}");` +
+    `for(var i=0;i<boxes.length;i++){var box=boxes[i],d=box.querySelector(".ccup-scroll-btn");` +
+    `if(!d){d=document.createElement("button");d.type="button";d.className="ccup-scroll-btn";` +
+    `d.title="Go to the bottom of the conversation";d.setAttribute("aria-label","Go to the bottom of the conversation");d.innerHTML=ARROW;` +
+    `d.addEventListener("click",function(){var t=sc();if(t)t.scrollTo({top:t.scrollHeight,behavior:"smooth"})});box.appendChild(d)}` +
+    `var on=d.hasAttribute("data-show");if(show&&!on)d.setAttribute("data-show","");else if(!show&&on)d.removeAttribute("data-show")}}` +
+    `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
+    `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
+    `new MutationObserver(que).observe(document.body,{childList:!0,subtree:!0,characterData:!0,attributes:!0,attributeFilter:["class","style"]});` +
+    `que()` +
+    `}catch(e){}})();`;
   return `${SCROLL_DOT_MARKER}${js}`;
 }
 
@@ -641,7 +644,7 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "scrollDot",
     section: "Chat Panel or Tab",
-    label: "scroll-to-bottom dot",
+    label: "scroll-to-bottom button",
     key: "chatScrollToBottomDot",
     defaultOn: false,
     file: "webview/index.js",
@@ -652,7 +655,7 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "commentCtrlEnter",
     section: "Plan Mode Markdown Preview",
-    label: "comment Ctrl+Enter to send",
+    label: "comment Cmd/Ctrl + Enter to send",
     key: "planPreviewCommentInputCtrlEnterToSend",
     defaultOn: false,
     file: "extension.js",

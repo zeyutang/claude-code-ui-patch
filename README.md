@@ -10,10 +10,15 @@ Patch Claude Code VS Code extension UI to provide finegrained settings for vario
 
 ## Every Knob, One Panel
 
-|                Configuration Panel                |                     Status Bar Item                     |
-| :-----------------------------------------------: | :-----------------------------------------------------: |
-| ![Configuration panel](docs/img/config-panel.png) |    ![Status bar item](docs/img/status-bar-item.png)     |
-|     Adjust the knobs, then **Reload Window**      | Hover the `aA` to show summary, and click to open panel |
+|             Configuration Panel              |                       Status Bar Summary                        |
+| :------------------------------------------: | :-------------------------------------------------------------: |
+| ![Configuration panel](docs/img/webview.png) |           ![Status bar summary](docs/img/tooltip.png)           |
+|   Adjust the knobs, then **Reload Window**   | Hover the `aA` to show the summary, and click to open the panel |
+
+|                                               Scroll-to-Bottom Button                                               |
+| :-----------------------------------------------------------------------------------------------------------------: |
+|                                  ![Scroll-to-bottom button](docs/img/chatbox.png)                                   |
+| Appears above the input box's top-right corner when the chat is scrolled up; click it to jump to the latest message |
 
 1. Open the configuration panel  
    Press `Cmd+Shift+P` / `Ctrl+Shift+P` (or `F1`) to open the Command Palette, then run **Claude Code UI Patch: Open Panel**. Or alternatively, click the `aA` item at the far right of the status bar.
@@ -58,7 +63,7 @@ Plan Mode Markdown Preview
 
 Behavior
    ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
-   ├── chatScrollToBottomDot           # input box dot: click scrolls chat to newest, if On
+   ├── chatScrollToBottomDot           # button above input box: click scrolls chat to newest, if On
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)

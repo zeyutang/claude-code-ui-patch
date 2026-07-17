@@ -58,6 +58,7 @@ Plan Mode Markdown Preview
 
 Behavior
    ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
+   ├── chatScrollToBottomDot           # input box dot: click scrolls chat to newest, if On
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)

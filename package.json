@@ -111,6 +111,11 @@
           "default": false,
           "markdownDescription": "Stop the permission command block from wrapping: switch it to `white-space: pre` with horizontal scroll, so each visual row is exactly one logical line. A long command then scrolls sideways instead of wrapping ambiguously onto the next row. (Line numbers / syntax highlighting aren't available here: the command is a single editable text node with no per-line structure.)"
         },
+        "claudeCodeUiPatch.chatScrollToBottomDot": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show a small dot at the top-right of the chat input box whenever the conversation is scrolled away from the bottom; hovering names it and clicking scrolls back to the latest message. The dot keeps the send button's margin to the box contour, paints in the input's own text color, and steps aside if the mic button occupies the corner."
+        },
         "claudeCodeUiPatch.chatShowMoreAndLessAlign": {
           "type": "string",
           "enum": [

@@ -8,6 +8,17 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 | ----------- | -------- |
 | 2.1.201+    | 1.1.x    |
 
+## 1.1.8
+
+- Add `claudeCodeUiPatch.chatScrollToBottomDot`: a small dot at the top-right of the chat input box that shows whenever the conversation is scrolled away from the very bottom; hovering names it ("Go to the bottom of the conversation") and clicking smooth-scrolls back to the latest message.
+  The dot mirrors the send button's margin to the input box contour, paints in the input's own text color (dimmed until hovered), steps aside when the mic button occupies that corner, and hides again once the view reaches the bottom.
+
+## 1.1.7
+
+- Surface partial patch loss in the panel: a setting changed from its native value whose patch target is gone on the installed Claude Code version now renders as a lost knob with a red dot, under a Claude clay status banner, instead of the panel reading "All settings applied".
+  Lost knobs keep live controls, so the preference is retained and re-applies if a later Claude Code build restores the anchor; a missing point still at its native value stays hidden.
+- Reword the post-update reload notification.
+
 ## 1.1.6
 
 - Add reload notification after `claude-code` update

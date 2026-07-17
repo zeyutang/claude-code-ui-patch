@@ -45,6 +45,7 @@ const KNOB_ORDER: string[] = [
   "permCode",
   "permNoWrap",
   "effortSyncFix",
+  "scrollDot", // scroll-to-bottom dot
   "text", // plan agent response
   "planCodeInline", // plan inline code
   "code", // plan code block
@@ -428,6 +429,97 @@ function permNoWrapSet(c: string, on: boolean): string {
   );
 }
 
+// Scroll-to-bottom dot (ON): the chat auto-sticks to the newest message only
+// while the view is within 50px of the bottom; once the user scrolls up to
+// read, nothing indicates the conversation has run ahead, and the only way
+// back down is manual scrolling. When ON we append a marked, self-contained
+// IIFE at the end of webview/index.js that mounts a small round button inside
+// the input box's message row, anchored top:5px/right:5px so it mirrors the
+// send button's margin to the box contour (the input footer's 5px padding).
+// The dot paints in the input's own text color (background:currentColor at
+// reduced opacity, full on hover), carries a native tooltip, and on click
+// smooth-scrolls the messages container to its end, the same call the app's
+// own autoscroll uses; the app's stick-to-bottom flag re-arms by itself, being
+// recomputed from the live scroll position on every render. The dot shows only
+// while the view sits more than 2px above the bottom, re-checked through one
+// rAF-coalesced updater fed by capture-phase scroll events, window resizes,
+// and a body-wide MutationObserver (which also re-mounts the dot if a
+// re-render drops it, and re-runs the mic check when that button's state
+// changes). When the mic button occupies the row's top-right corner, the dot
+// steps left of it. The two DOM surfaces are addressed via CSS-module hashes
+// read from the bundle's class maps at patch time (the input module via its
+// messageInput entry, the chat module via messagesContainer); if either map is
+// gone the point reports missing and the bundle stays native. The whole body
+// is wrapped in try/catch so a failure can never break the chat, and the
+// /*ccup:scrollDot*/ marker makes the ON state detectable; a marked line that
+// no longer matches the current build (an older patch version) reads as OFF,
+// so the next apply rebuilds it in place or strips it.
+const SCROLL_DOT_MARKER = "/*ccup:scrollDot*/";
+const SCROLL_DOT_LINE_RE = /\n?\/\*ccup:scrollDot\*\/[^\n]*/g;
+const SCROLL_DOT_INPUT_HASH_RE = /messageInput:"messageInput_([-\w]+)"/;
+const SCROLL_DOT_CHAT_HASH_RE = /messagesContainer:"messagesContainer_([-\w]+)"/;
+
+// The full marked line for this bundle, or undefined when a class-map anchor is
+// gone. Deterministic given the bundle content, so equality against the on-disk
+// line doubles as the staleness check.
+function scrollDotBuild(c: string): string | undefined {
+  const input = c.match(SCROLL_DOT_INPUT_HASH_RE)?.[1];
+  const chat = c.match(SCROLL_DOT_CHAT_HASH_RE)?.[1];
+  if (!input || !chat) return undefined;
+  const css =
+    ".ccup-scroll-dot{position:absolute;top:5px;right:5px;width:8px;height:8px;border:none;border-radius:50%;margin:0;padding:0;background:currentColor;color:inherit;opacity:0;pointer-events:none;cursor:pointer;z-index:5;transition:opacity .15s ease}" +
+    '.ccup-scroll-dot:after{content:"";position:absolute;inset:-6px;border-radius:50%}' +
+    ".ccup-scroll-dot[data-show]{opacity:.55;pointer-events:auto}" +
+    ".ccup-scroll-dot[data-show]:hover{opacity:1}" +
+    ".ccup-scroll-dot[data-show]:active{opacity:.8}";
+  const js =
+    "(function(){try{" +
+    "if(window.__ccupScrollDot)return;window.__ccupScrollDot=1;" +
+    'var st=document.createElement("style");' +
+    `st.textContent='${css}';` +
+    "document.head.appendChild(st);" +
+    "var raf=0;" +
+    `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
+    "function upd(){raf=0;" +
+    `var rows=document.querySelectorAll(".messageInputContainer_${input}");` +
+    "for(var i=0;i<rows.length;i++){var r=rows[i],d=r.querySelector(\".ccup-scroll-dot\");" +
+    'if(!d){d=document.createElement("button");d.type="button";d.className="ccup-scroll-dot";' +
+    'd.title="Go to the bottom of the conversation";d.setAttribute("aria-label","Go to the bottom of the conversation");' +
+    'd.addEventListener("click",function(){var s=sc();if(s)s.scrollTo({top:s.scrollHeight,behavior:"smooth"})});' +
+    "r.appendChild(d)}" +
+    "var s=sc(),show=s&&s.scrollHeight-s.scrollTop-s.clientHeight>2;" +
+    'if(show)d.setAttribute("data-show","");else d.removeAttribute("data-show");' +
+    `var m=r.querySelector(".micButtonWrapper_${input}");` +
+    'd.style.right=m&&m.offsetWidth?m.offsetWidth+5+"px":""}}' +
+    "function que(){if(!raf)raf=requestAnimationFrame(upd)}" +
+    'document.addEventListener("scroll",que,!0);' +
+    'window.addEventListener("resize",que);' +
+    'new MutationObserver(que).observe(document.body,{childList:!0,subtree:!0,characterData:!0,attributes:!0,attributeFilter:["class","style"]});' +
+    "que()" +
+    "}catch(e){}})();";
+  return `${SCROLL_DOT_MARKER}${js}`;
+}
+
+function scrollDotPresent(c: string): boolean {
+  return c.includes(SCROLL_DOT_MARKER) || scrollDotBuild(c) !== undefined;
+}
+// true = ON (marked line present and matching this build; also when present but
+// unrebuildable, so an orphaned line still reads as ON and stays removable),
+// false = OFF or stale, undefined = anchors gone and nothing to remove.
+function scrollDotCurrentOn(c: string): boolean | undefined {
+  const cur = cssMarkedLine(c, SCROLL_DOT_MARKER);
+  const want = scrollDotBuild(c);
+  if (cur !== undefined) return want === undefined || cur === want;
+  return want === undefined ? undefined : false;
+}
+function scrollDotSet(c: string, on: boolean): string {
+  const stripped = c.replace(SCROLL_DOT_LINE_RE, "");
+  if (!on) return stripped;
+  const line = scrollDotBuild(stripped);
+  if (line === undefined) return c; // anchors gone: leave the file as it is
+  return `${stripped}\n${line}`;
+}
+
 // The chat message "Show more" (.expandButton_<hash>) and "Show less"
 // (.collapseButton_<hash>) buttons live in the expandable-content module. "Show
 // more" is position:absolute (bottom:0;right:0) anchored to the fit-content
@@ -545,6 +637,17 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: permNoWrapPresent,
     fnCurrentOn: permNoWrapCurrentOn,
     fnSet: permNoWrapSet,
+  },
+  {
+    id: "scrollDot",
+    section: "Chat Panel or Tab",
+    label: "scroll-to-bottom dot",
+    key: "chatScrollToBottomDot",
+    defaultOn: false,
+    file: "webview/index.js",
+    fnPresent: scrollDotPresent,
+    fnCurrentOn: scrollDotCurrentOn,
+    fnSet: scrollDotSet,
   },
   {
     id: "commentCtrlEnter",

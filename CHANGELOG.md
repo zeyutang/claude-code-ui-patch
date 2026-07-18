@@ -8,7 +8,7 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 | ----------- | -------- |
 | 2.1.201+    | 1.1.x    |
 
-## 1.1.11
+## 1.1.12
 
 - Add `claudeCodeUiPatch.chatJumpToMessageButtons`: two always-visible buttons above the chat input box's top-right corner, a chevron-up "previous" and a chevron-down "next" that step through the conversation a turn at a time, lining up left of the scroll-to-bottom button when both are enabled.
   A direction with nowhere to go dims.

@@ -114,12 +114,12 @@
         "claudeCodeUiPatch.chatScrollToBottomDot": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show a small button just above the chat input box's top-right corner (outside its contour) whenever the conversation is scrolled away from the bottom; hovering names it and clicking scrolls back to the latest message. The button mirrors the send button's rounded-square shape with a downward arrow, in the input's own neutral surface and text color."
+          "markdownDescription": "Show a small always-visible button just above the chat input box's top-right corner (outside its contour); clicking scrolls back to the latest message, and it dims when the view is already at the bottom. The button mirrors the send button's rounded-square shape with a downward arrow, in the input's own neutral surface and text color. With `#claudeCodeUiPatch.chatJumpToMessageButtons#` also on, the jump buttons line up on its left."
         },
         "claudeCodeUiPatch.chatJumpToMessageButtons": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show two always-visible buttons above the chat input box's top-left corner (a chevron-up \"previous\" and chevron-down \"next\", aligned over the `+` and `/` buttons below). Each user message pins to the top as a sticky header while its responses scroll under it; **previous** jumps up so the earlier turn's header sits exactly where pinning holds it (from the bottom, that is the newest user message), and **next** jumps down to the following turn, with the same 100ms glide as the scroll-to-bottom button (instant under reduced motion). A direction with nowhere to go dims. Same rounded-square shape and hover as the scroll-to-bottom button, sharing its row on the opposite side; independent of `#claudeCodeUiPatch.chatScrollToBottomDot#`."
+          "markdownDescription": "Show two always-visible buttons above the chat input box's top-right corner (a chevron-up \"previous\" and a chevron-down \"next\"). Each user message pins to the top as a sticky header while its responses scroll under it; **previous** jumps up so the turn's header sits exactly where pinning holds it (from the bottom, that is the newest user message), and **next** jumps down to the following turn, with the same 100ms glide as the scroll-to-bottom button (instant under reduced motion). A direction with nowhere to go dims. Same rounded-square shape and hover as the scroll-to-bottom button; with `#claudeCodeUiPatch.chatScrollToBottomDot#` also on, the pair lines up on its left, and otherwise slides into its slot."
         },
         "claudeCodeUiPatch.chatShowMoreAndLessAlign": {
           "type": "string",

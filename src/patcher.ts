@@ -454,13 +454,14 @@ function permNoWrapSet(c: string, on: boolean): string {
 // scrollHeight, a per-click generation token cancels a superseded animation,
 // and prefers-reduced-motion collapses the glide to an instant jump. The app's
 // stick-to-bottom flag re-arms by itself, being recomputed from the live
-// scroll position on every render. The
-// button shows only while the view sits more than 8px above the bottom,
-// re-checked through one rAF-coalesced updater fed by capture-phase scroll
+// scroll position on every render. The button is always visible; while the view
+// sits within 8px of the bottom (nothing to scroll to) it dims inert (data-off:
+// faded, pointer-events off) instead of hiding, re-checked through one
+// rAF-coalesced updater fed by capture-phase scroll
 // events, window resizes, and a body-wide MutationObserver (which also re-mounts
-// the button if a re-render drops it). data-show is toggled only on an actual
-// change and sits outside the observer's attribute filter, so the updater never
-// re-triggers itself. The two DOM surfaces are addressed via CSS-module hashes
+// the button if a re-render drops it). data-show/data-off are toggled only on an
+// actual change and sit outside the observer's attribute filter, so the updater
+// never re-triggers itself. The two DOM surfaces are addressed via CSS-module hashes
 // read from the bundle's class maps at patch time (the input module via its
 // messageInput entry, whose module also owns .inputContainer_<hash>; the chat
 // module via messagesContainer); if either map is gone the point reports missing
@@ -490,6 +491,7 @@ function scrollDotBuild(c: string): string | undefined {
   const css =
     ".ccup-scroll-btn{box-sizing:border-box;position:absolute;top:-34px;right:5px;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}" +
     ".ccup-scroll-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
+    ".ccup-scroll-btn[data-show][data-off]{opacity:.35;pointer-events:none}" +
     `.ccup-scroll-btn:hover{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
     ".ccup-scroll-btn:active{filter:brightness(.85)}" +
     ".ccup-scroll-btn svg{display:block;width:20px;height:20px}";
@@ -512,12 +514,14 @@ function scrollDotBuild(c: string): string | undefined {
     `if(k<1){t.scrollTop=f+(t.scrollHeight-t.clientHeight-f)*e;requestAnimationFrame(stp)}` +
     `else t.scrollTop=t.scrollHeight}` +
     `requestAnimationFrame(stp)}` +
-    `function upd(){raf=0;var s=sc(),show=!!s&&s.scrollHeight-s.scrollTop-s.clientHeight>8,boxes=document.querySelectorAll(".inputContainer_${input}");` +
+    // can = something below to scroll to; shown always, dimmed inert otherwise.
+    `function upd(){raf=0;var s=sc(),can=!!s&&s.scrollHeight-s.scrollTop-s.clientHeight>8,boxes=document.querySelectorAll(".inputContainer_${input}");` +
     `for(var i=0;i<boxes.length;i++){var box=boxes[i],d=box.querySelector(".ccup-scroll-btn");` +
     `if(!d){d=document.createElement("button");d.type="button";d.className="ccup-scroll-btn";` +
     `d.title="Go to the bottom of the conversation";d.setAttribute("aria-label","Go to the bottom of the conversation");d.innerHTML=ARROW;` +
     `d.addEventListener("click",go);box.appendChild(d)}` +
-    `var on=d.hasAttribute("data-show");if(show&&!on)d.setAttribute("data-show","");else if(!show&&on)d.removeAttribute("data-show")}}` +
+    `if(!d.hasAttribute("data-show"))d.setAttribute("data-show","");` +
+    `var off=d.hasAttribute("data-off");if(can&&off)d.removeAttribute("data-off");else if(!can&&!off)d.setAttribute("data-off","")}}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
     `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
     `new MutationObserver(que).observe(document.body,{childList:!0,subtree:!0,characterData:!0,attributes:!0,attributeFilter:["class","style"]});` +
@@ -553,15 +557,17 @@ function scrollDotSet(c: string, on: boolean): string {
 // responses scroll underneath, so the natural navigation stops are those
 // headers. When ON we append a marked, self-contained IIFE at the end of
 // webview/index.js that mounts two neutral 26px squares above the input box's
-// top-LEFT corner (anchored to .inputContainer_<hash>), in the same row
-// (top:-34px) as the scroll-to-bottom button on the right: a chevron-up
-// "previous" at left:5px and a chevron-down "next" at left:35px, aligned over the
-// footer's + and / buttons below (the footer's 5px left padding and ~30px button
-// pitch, mirroring the scroll button's right:5px inset). The two features stay
-// independent toggles; the scroll-to-bottom button keeps the right:5px slot, so
-// the row reads as left-nav / right-scroll. Each square matches the send button's
-// rounded-square look via the input's own surface, border, and text color, with
-// the same doubled ghost-button hover, and carries a native tooltip.
+// top-right corner (anchored to .inputContainer_<hash>), in the same row
+// (top:-34px) as the scroll-to-bottom button and to its left: with that button
+// ON the trio reads up/down/bottom at right:65/35/5px (a 30px pitch off the
+// send button's 5px inset); with it OFF the pair slides into right:35/5px. The
+// slot choice is baked at patch time by checking the bundle for the scrollDot
+// marker, which is sound because toggles apply in TOGGLE_POINTS order
+// (scrollDot precedes jumpMsg), so this build always sees the other's final
+// state, and a later scrollDot flip re-applies this line through the staleness
+// check. Each square matches the send button's rounded-square look via the
+// input's own surface, border, and text color, with the same doubled
+// ghost-button hover, and carries a native tooltip.
 //
 // The stops are the headers' natural (unstuck) positions in the scroll range,
 // and offsetTop alone cannot supply them: the sticky shift is part of layout, so
@@ -588,16 +594,25 @@ function scrollDotSet(c: string, on: boolean): string {
 // The pair is always visible (unlike the scroll-to-bottom button), so from the
 // bottom it doubles as "jump back to the newest user message"; only an exhausted
 // direction dims and goes inert (data-off) rather than being removed, keeping
-// the shape stable. The dimming census needs no natural positions: raw
+// the shape stable. The dimming census mostly needs no natural positions: raw
 // offsetTops classify headers as below the scrollport top (> scrollTop+4px;
 // never pinned, so trustworthy) or in the pile at/above it. "Next" lights on any
-// header below; "previous" on a pile of two or more (the pile's own newest turn
-// plus at least one earlier). Mounting, re-mount on re-render, and the
+// header below. "Previous" lights on a pile of two or more (the pile's newest
+// turn plus at least one earlier, whose start sits at least a header height
+// higher, clearing the epsilon), and on a lone pile header exactly when the view
+// sits more than 4px below its start, so jumping to the top of the current turn
+// stays available inside the first turn's body, single-turn conversations
+// included. That start is the one natural position the raw census cannot give,
+// but a lone pile member is necessarily the FIRST header, and nothing precedes
+// turn one, so its natural position is fixed for the element's lifetime: it is
+// measured once (same neutralize-and-restore) and cached by element identity,
+// costing no per-frame reflow. Mounting, re-mount on re-render, and the
 // rAF-coalesced updater (capture-phase scroll, resize, body MutationObserver)
 // mirror the scroll-to-bottom button; data-show/data-off sit outside the
-// observer's class/style attribute filter, so the updater never re-triggers
-// itself (the click-time static/restore writes do re-trigger it once,
-// harmlessly). The three class-map hashes (messageInput's inputContainer,
+// observer's class/style attribute filter, and the observer callback drops the
+// records our own measurements produce (style writes on sticky headers, from
+// the click-time pass and the census probe alike), so the updater never
+// re-triggers itself. The three class-map hashes (messageInput's inputContainer,
 // messagesContainer, and stickyHeader) are read at patch time; if any is gone
 // the point reports missing and the bundle stays native. try/catch wraps the
 // whole body, and the /*ccup:jumpMsg*/ marker makes the ON state detectable; a
@@ -618,14 +633,16 @@ function jumpMsgBuild(c: string): string | undefined {
   const sticky = c.match(JUMP_MSG_STICKY_HASH_RE)?.[1];
   if (!input || !chat || !sticky) return undefined;
   // Two 26px squares matching the scroll-to-bottom button, above the input's
-  // top-left corner (left:5/35px) so they sit over the footer's + and / buttons;
+  // top-right corner: left of the scroll button's right:5px slot when its marker
+  // is in the bundle, slid into its place otherwise (30px pitch either way);
   // box-sizing keeps the 1px border from inflating them. data-show fades a button
   // in; data-show+data-off dims an exhausted direction.
+  const withDot = c.includes(SCROLL_DOT_MARKER);
   const ghost2 =
     "linear-gradient(var(--app-ghost-button-hover-background),var(--app-ghost-button-hover-background)),linear-gradient(var(--app-ghost-button-hover-background),var(--app-ghost-button-hover-background))";
   const css =
     ".ccup-nav-btn{box-sizing:border-box;position:absolute;top:-34px;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}" +
-    ".ccup-nav-prev{left:5px}.ccup-nav-next{left:35px}" +
+    `.ccup-nav-prev{right:${withDot ? 65 : 35}px}.ccup-nav-next{right:${withDot ? 35 : 5}px}` +
     ".ccup-nav-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
     ".ccup-nav-btn[data-show][data-off]{opacity:.35;pointer-events:none}" +
     `.ccup-nav-btn:hover{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
@@ -641,7 +658,7 @@ function jumpMsgBuild(c: string): string | undefined {
     `(function(){try{` +
     `if(window.__ccupJumpMsg)return;window.__ccupJumpMsg=1;` +
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
-    `var UP="${up}",DN="${dn}",raf=0,gen=0;` +
+    `var UP="${up}",DN="${dn}",raf=0,gen=0,n0el=null,n0=0;` +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
     `function hh(t){return t.querySelectorAll(".stickyHeader_${sticky}")}` +
     // Natural (unstuck) header positions: neutralize sticky, read all, restore.
@@ -669,16 +686,23 @@ function jumpMsgBuild(c: string): string | undefined {
     // Toggle data-show/data-off only on an actual change (outside the observer filter).
     `function ss(el,show,off){var s=el.hasAttribute("data-show");if(show&&!s)el.setAttribute("data-show","");else if(!show&&s)el.removeAttribute("data-show");var o=el.hasAttribute("data-off");if(off&&!o)el.setAttribute("data-off","");else if(!off&&o)el.removeAttribute("data-off")}` +
     // Census on raw offsetTops: pile = pinned at/above the top, below = trustworthy.
-    `function upd(){raf=0;var t=sc(),below=0,pile=0;` +
-    `if(t){var h=hh(t),cur=t.scrollTop;for(var i=0;i<h.length;i++){if(h[i].offsetTop>cur+4)below++;else pile++}}` +
-    `var canP=pile>1,canN=below>0,boxes=document.querySelectorAll(".inputContainer_${input}");` +
+    `function upd(){raf=0;var t=sc(),below=0,pile=0,m=null;` +
+    `if(t){var h=hh(t),cur=t.scrollTop;for(var i=0;i<h.length;i++){if(h[i].offsetTop>cur+4)below++;else{pile++;m=h[i]}}}` +
+    `var canP=pile>1,canN=below>0;` +
+    // A lone pile header is turn 1's; prev is valid while the view sits below its
+    // start. That natural position is fixed per element, so measure once and cache.
+    `if(!canP&&pile===1){if(n0el!==m){n0el=m;m.style.position="static";n0=m.offsetTop;m.style.position=""}canP=n0<cur-4}` +
+    `var boxes=document.querySelectorAll(".inputContainer_${input}");` +
     `for(var j=0;j<boxes.length;j++){var box=boxes[j],p=box.querySelector(".ccup-nav-prev"),n=box.querySelector(".ccup-nav-next");` +
     `if(!p){p=mk("ccup-nav-prev",UP,"Jump to the previous message",-1);box.appendChild(p)}` +
     `if(!n){n=mk("ccup-nav-next",DN,"Jump to the next message",1);box.appendChild(n)}` +
     `ss(p,!0,!canP);ss(n,!0,!canN)}}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
     `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
-    `new MutationObserver(que).observe(document.body,{childList:!0,subtree:!0,characterData:!0,attributes:!0,attributeFilter:["class","style"]});` +
+    // Drop records from our own sticky measurements; anything else refreshes.
+    `new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var r=rs[i],tg=r.target;` +
+    `if(r.type!=="attributes"||r.attributeName!=="style"||!tg.classList||!tg.classList.contains("stickyHeader_${sticky}")){que();return}}})` +
+    `.observe(document.body,{childList:!0,subtree:!0,characterData:!0,attributes:!0,attributeFilter:["class","style"]});` +
     `que()` +
     `}catch(e){}})();`;
   return `${JUMP_MSG_MARKER}${js}`;

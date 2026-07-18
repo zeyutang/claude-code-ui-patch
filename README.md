@@ -18,7 +18,7 @@ Patch Claude Code VS Code extension UI to provide finegrained settings for vario
 |                 Previous and Next Turn, Scroll to Bottom                  |
 | :-----------------------------------------------------------------------: |
 |              ![Chat navigation button](docs/img/chatbox.png)              |
-| Jump to the previou / next messages, or to the bottom of the chat history |
+| Jump to the previous / next message, or to the bottom of the chat history |
 
 1. Open the configuration panel  
    Press `Cmd+Shift+P` / `Ctrl+Shift+P` (or `F1`) to open the Command Palette, then run **Claude Code UI Patch: Open Panel**. Or alternatively, click the `aA` item at the far right of the status bar.

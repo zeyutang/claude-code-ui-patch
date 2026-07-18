@@ -8,6 +8,14 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 | ----------- | -------- |
 | 2.1.201+    | 1.1.x    |
 
+## 1.1.13
+
+- `claudeCodeUiPatch.chatDiffCardLineNumbers` now numbers diff-card lines by their true position in the edited file whenever the edit's location is known, instead of always restarting at 1.
+  The starting line is derived from the live Edit result's metadata (the unique match of the replaced text in the pre-edit file); both panes share it, since the text above an edit is untouched, and then each side counts through its own before/after state.
+  The expand modal inherits the same numbering, and each card stays anchored to the file as it stood at that edit, so accumulated edits that shift later lines never renumber earlier cards.
+  Cards replayed from history (Claude Code re-emits it without the metadata, e.g. after the reload that applies this setting), failed edits, and `replace_all` edits keep the 1-based fallback.
+- The line-number gutter is now as narrow as the shown digits require, one digit for a short snippet and widening only as needed (absolute numbers included), replacing the fixed two-digit minimum.
+
 ## 1.1.12
 
 - Add `claudeCodeUiPatch.chatJumpToMessageButtons`: two always-visible buttons above the chat input box's top-right corner, a chevron-up "previous" and a chevron-down "next" that step through the conversation a turn at a time, lining up left of the scroll-to-bottom button when both are enabled.

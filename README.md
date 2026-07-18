@@ -17,7 +17,7 @@ Patch Claude Code VS Code extension UI to provide finegrained settings for vario
 
 |                 Previous and Next Turn, Scroll to Bottom                  |
 | :-----------------------------------------------------------------------: |
-|              ![Chat navigation button](docs/img/chatbox.png)              |
+|             ![Chat navigation button](docs/img/composer.png)              |
 | Jump to the previous / next message, or to the bottom of the chat history |
 
 1. Open the configuration panel  
@@ -47,7 +47,7 @@ Chat Panel and Tab                     # agent messages only
    │      └── chatCodeInlineFontSize   # inline code, 0 -> follows chatCodeBlockFontSize
    └── diff cards                      # Edit / MultiEdit tool cards + expand modal
           ├── chatDiffCardFontSize     # diff code size
-          ├── chatDiffCardLineNumbers  # +/- gutter line numbers if On
+          ├── chatDiffCardLineNumbers  # true file line numbers (when known) if On
           └── chatDiffCardThemeSync    # follow VS Code light/dark theme if On
 
 Plan Mode Markdown Preview
@@ -110,4 +110,7 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
 ## Caveats
 
 - **The patch reverts when Claude Code updates.** The settings re-apply on the next window reload, and a notification then prompts you to **Reload Window** once more to see them. VS Code may show a one-time "corrupt installation" warning, which is safe to dismiss.
+- **`chatDiffCardLineNumbers` shows true file positions only for edits made in the live session.**
+  Each diff card is numbered against the file as it stood before and after that particular edit (both panes share the edit's true starting line), so numbers stay honest even when several edits to one file shift lines between calls.
+  The position metadata rides only on live Edit results: Claude Code re-emits conversation history without it, so cards replayed after a window reload or session resume fall back to numbering from 1, as do failed edits and `replace_all` edits (several sites, no single true start).
 - **`chatHistoryFontSize` / `chatHistoryFontFamily` restyle the agent transcript only** (deliberate design, not a bug). The user messages, the input box, the interface, and other extensions' chats (Codex, Copilot, etc.) stay native, and can be configured with `chat.fontSize` and `chat.fontFamily`.

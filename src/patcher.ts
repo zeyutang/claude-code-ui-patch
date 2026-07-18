@@ -318,6 +318,233 @@ const THEME_SYNC_ON =
 const DIFF_LINES_CSS_MARKER = "/*ccup:diffLines*/";
 const DIFF_CONTAINER_HASH_RE = /\.diffEditorContainer_([-\w]+)\{/g;
 
+// ---------------------------------------------------------------------------
+// Diff-card line numbers (ON). Two layers, applied together by diffLinesSet:
+//
+// 1) Base swap, both createDiffEditor option blocks (card + expand modal):
+//    lineNumbers:"off" -> lineNumbers:"on",lineNumbersMinChars:1. Monaco sizes
+//    the gutter as max(digitCount(model line count), minChars) glyphs, so
+//    minChars:1 makes the width purely digit-count-based (1 char for a <10-line
+//    snippet, 2 for <100, ...) instead of the fixed 2 an earlier build pinned.
+//    OFF restores lineNumbers:"off", whose gutter still shows the native +/-
+//    change signs (renderIndicators is a separate Monaco option, always on).
+//
+// 2) Absolute numbering enhancement: number lines by their real position in the
+//    edited file rather than 1..N of the snippet. The Edit card only receives
+//    the tool INPUT (old_string/new_string/file_path), which carries no
+//    position, but the CLI attaches a top-level `tool_use_result` to every live
+//    Edit result message ({originalFile, oldString, structuredPatch, replaceAll,
+//    ...}), the extension forwards messages to the webview verbatim, and the
+//    webview's store then drops the field while pairing result blocks to their
+//    tool_use (setToolResult stores only the content block). Six marked inline
+//    insertions carry it through:
+//      tur   store loop: stash the message's tool_use_result on the stored
+//            block (block.ccupTur) so the card's result param can see it
+//      prop  Edit-card body: derive the 1-based start line as the line of
+//            oldString within originalFile (index of the unique match; the text
+//            above an edit is untouched, so the SAME number is correct for both
+//            panes) and pass it to the diff component as ccupStart
+//      arg   diff component: accept ccupStart in the props destructure
+//      card  models effect: after setModel, push the offset into Monaco via
+//            updateOptions (diff-level options persist in the option bag and
+//            re-derive onto both panes across renderSideBySide flips), also
+//            widening lineNumbersMinChars to the digits of the largest rendered
+//            number (Monaco's own width formula only counts the model's line
+//            count, which would clip e.g. "1403" on a 3-line snippet); ccupStart
+//            joins the effect deps so the late-arriving result re-applies it
+//      mprop expand modal: forward ccupStart through the openModal call
+//      modal modal models effect: same updateOptions from the modal state
+//    plus one marked helper line appended at EOF (window.__ccupAbsLn) shared by
+//    the two updateOptions call sites, each guarded with && so a missing helper
+//    can never throw.
+//
+// When no offset is derivable the helper resets the base 1-based options, so
+// numbering falls back cleanly. That covers: results replayed from history
+// (window reload / resume / teleport re-emit user messages WITHOUT
+// tool_use_result, verified against the CLI's replay constructors), failed
+// edits (tool_use_result is an error string, not an object), replace_all edits
+// (several sites, no single true start), and a card rendered before its result
+// arrives. Cards from live edits get absolute numbers the moment the result
+// lands.
+//
+// Every insertion is wrapped in /*ccup:absLn:<tag>*/.../*ccup:absLnEnd*/ and
+// contains the whole inserted text (commas/semicolons included), so stripping
+// the markers restores the stock bytes exactly; diffLinesSet always strips
+// first and rebuilds, making it deterministic and idempotent, and letting
+// fnCurrentOn detect "fully current" as content === diffLinesSet(content, true)
+// (an older patch layout reads as off and upgrades in place on the next apply).
+// The anchors capture the build's minified identifiers and cross-check them
+// against each other (same component, same destructured names in the deps and
+// the modal call); if ANY anchor or cross-check fails, the enhancement is
+// skipped as a block and ON degrades to the base swap alone, so a partial
+// application can never reference an identifier another edit failed to
+// introduce. Injected names are ccup-prefixed to dodge minified locals, and
+// every injected code path is try/catch-wrapped so it can never break the card.
+// ---------------------------------------------------------------------------
+const DIFF_LN_BASE_RE =
+  /(fontSize:\d+(?:\.\d+)?,)(lineNumbers:"(?:off|on)"(?:,lineNumbersMinChars:\d+)?)(,)/g;
+const DIFF_LN_ON = 'lineNumbers:"on",lineNumbersMinChars:1';
+const DIFF_LN_OFF = 'lineNumbers:"off"';
+
+const ABS_LN_END = "/*ccup:absLnEnd*/";
+const absLnFrag = (tag: string, code: string): string =>
+  `/*ccup:absLn:${tag}*/${code}${ABS_LN_END}`;
+// Any inline fragment, whatever its tag or body (older layouts strip too).
+const ABS_LN_FRAG_RE = /\/\*ccup:absLn:[-\w]+\*\/[\s\S]*?\/\*ccup:absLnEnd\*\//g;
+
+const ABS_LN_HELPER_MARKER = "/*ccup:absLnHelper*/";
+const ABS_LN_HELPER_LINE_RE = /\n?\/\*ccup:absLnHelper\*\/[^\n]*/g;
+// off = the 1-based file line of the snippet's first line (>0), else fall back
+// to the base options. a/b = the two model strings, whose longer line count
+// bounds the largest rendered number for the minChars width.
+const ABS_LN_HELPER =
+  ABS_LN_HELPER_MARKER +
+  "(function(){try{window.__ccupAbsLn=function(ed,off,a,b){try{var o;" +
+  'if(typeof off==="number"&&isFinite(off)&&off>0){' +
+  'var L=Math.max(String(a==null?"":a).split("\\n").length,String(b==null?"":b).split("\\n").length),' +
+  "W=String(off+L-1).length;" +
+  "o={lineNumbers:function(n){return String(n+off-1)},lineNumbersMinChars:W>1?W:1}}" +
+  'else o={lineNumbers:"on",lineNumbersMinChars:1};' +
+  "ed.updateOptions(o)}catch(e){}}}catch(e){}})();";
+
+// tur: the webview store's result-pairing loop, `for(let o of t.message.content)
+// if(o.type==="tool_result"){let r=BG(e,o.tool_use_id);if(r)r.setToolResult(o)}`
+// (captures: 2=block, 3=message, 4=wrapper, 5=finder, 6=list).
+const ABS_LN_TUR_RE =
+  /(for\(let (\w+) of (\w+)\.message\.content\)if\(\2\.type==="tool_result"\)\{let (\w+)=(\w+)\((\w+),\2\.tool_use_id\);)(if\(\4\)\4\.setToolResult\(\2\)\})/g;
+
+// prop: the Edit card's body, from its `is_error?"Edit failed"` head through the
+// diff-component JSX call (captures: 2/3/4=body params ctx/input/result,
+// 5=jsx factory, 6=component; the bounded lazy gap spans the summary line).
+const ABS_LN_PROP_RE =
+  /(body\((\w+),(\w+),(\w+)\)\{let \w+=\4&&\4\.is_error\?"Edit failed"[\s\S]{1,800}?\b(\w+)\((\w+),\{original:\3\.old_string\|\|"",modified:\3\.new_string\|\|"",filePath:\3\.file_path\|\|"")(\}\))/g;
+
+// arg: the diff component's props destructure (captures: 2=component,
+// 3=original, 4=modified, 5=language, 6=filePath).
+const ABS_LN_ARG_RE =
+  /(function (\w+)\(\{original:(\w+),modified:(\w+),language:(\w+)="plaintext",filePath:(\w+))(\}\))/g;
+
+// card: the card's models effect, setModel followed by a FOUR-dep array (the
+// modal's twin has one dep, so the arity disambiguates; captures: 2=editor ref,
+// 3=models ref, 5..8=deps original/modified/language/filePath).
+const ABS_LN_CARD_FX_RE =
+  /((\w+)\.current\.setModel\(\{original:(\w+)\.current\.original,modified:\3\.current\.modified\}\))(\},\[(\w+),(\w+),(\w+),(\w+)\]\))/g;
+
+// mprop: the card's expand click, openModal({original,modified,language,
+// filePath}) (captures: 2=openModal, 3=original, 4=modified).
+const ABS_LN_MODAL_PROP_RE =
+  /(\{(\w+)\(\{original:(\w+),modified:(\w+),language:(\w+),filePath:(\w+))(\}\)\})/g;
+
+// modal: the modal's models effect, setModel followed by the ONE-dep array
+// (captures: 2=editor ref, 3=models ref, 5=modal state).
+const ABS_LN_MODAL_FX_RE =
+  /((\w+)\.current\.setModel\(\{original:(\w+)\.current\.original,modified:\3\.current\.modified\}\))(\},\[(\w+)\]\))/g;
+
+function absLnExec(re: RegExp, c: string): RegExpExecArray | null {
+  re.lastIndex = 0;
+  return re.exec(c);
+}
+
+// Remove every trace of the enhancement (inline fragments + helper line),
+// restoring those spots to stock bytes.
+function absLnStrip(c: string): string {
+  return c
+    .replace(ABS_LN_FRAG_RE, "")
+    .replace(ABS_LN_HELPER_LINE_RE, "");
+}
+
+// Apply the enhancement to a STRIPPED bundle, or return it unchanged when any
+// anchor/cross-check fails (all-or-nothing, see the block comment above).
+function absLnApply(c: string): string {
+  const mTur = absLnExec(ABS_LN_TUR_RE, c);
+  const mProp = absLnExec(ABS_LN_PROP_RE, c);
+  const mArg = absLnExec(ABS_LN_ARG_RE, c);
+  const mCardFx = absLnExec(ABS_LN_CARD_FX_RE, c);
+  const mModalProp = absLnExec(ABS_LN_MODAL_PROP_RE, c);
+  const mModalFx = absLnExec(ABS_LN_MODAL_FX_RE, c);
+  if (!mTur || !mProp || !mArg || !mCardFx || !mModalProp || !mModalFx) {
+    return c;
+  }
+  if (
+    mArg[2] !== mProp[6] || // the card renders this same component
+    mCardFx[5] !== mArg[3] || // effect deps are the destructured strings
+    mCardFx[6] !== mArg[4] ||
+    mModalProp[3] !== mArg[3] || // the modal receives those same strings
+    mModalProp[4] !== mArg[4]
+  ) {
+    return c;
+  }
+  let out = c;
+  out = out.replace(ABS_LN_TUR_RE, (_w, head, blk, msg, _wrap, _find, _list, tail) => {
+    const stash =
+      `try{if(${msg}.tool_use_result&&typeof ${msg}.tool_use_result==="object")` +
+      `${blk}.ccupTur=${msg}.tool_use_result}catch(ccupE){}`;
+    return `${head}${absLnFrag("tur", stash)}${tail}`;
+  });
+  out = out.replace(ABS_LN_PROP_RE, (_w, head, _ctx, input, result, _jsx, _comp, tail) => {
+    const start =
+      ",ccupStart:(function(R,q){try{" +
+      'if(R&&!R.replaceAll&&typeof R.originalFile==="string"&&q){' +
+      "var ix=R.originalFile.indexOf(q);" +
+      'if(ix>=0)return R.originalFile.slice(0,ix).split("\\n").length}' +
+      "}catch(ccupE){}})" +
+      `(${result}&&${result}.ccupTur,` +
+      `(${result}&&${result}.ccupTur&&typeof ${result}.ccupTur.oldString==="string"` +
+      `?${result}.ccupTur.oldString:${input}.old_string)||"")`;
+    return `${head}${absLnFrag("prop", start)}${tail}`;
+  });
+  out = out.replace(
+    ABS_LN_ARG_RE,
+    (_w, head, _comp, _o, _m, _l, _f, tail) =>
+      `${head}${absLnFrag("arg", ",ccupStart:ccupS")}${tail}`,
+  );
+  out = out.replace(
+    ABS_LN_CARD_FX_RE,
+    (_w, set, ref, _models, _tail, d1, d2, d3, d4) =>
+      `${set}${absLnFrag(
+        "card",
+        `;window.__ccupAbsLn&&window.__ccupAbsLn(${ref}.current,ccupS,${d1},${d2})`,
+      )}},[${d1},${d2},${d3},${d4}${absLnFrag("dep", ",ccupS")}])`,
+  );
+  out = out.replace(
+    ABS_LN_MODAL_PROP_RE,
+    (_w, head, _open, _o, _m, _l, _f, tail) =>
+      `${head}${absLnFrag("mprop", ",ccupStart:ccupS")}${tail}`,
+  );
+  out = out.replace(
+    ABS_LN_MODAL_FX_RE,
+    (_w, set, ref, _models, tail, state) =>
+      `${set}${absLnFrag(
+        "modal",
+        `;window.__ccupAbsLn&&window.__ccupAbsLn(${ref}.current,${state}.ccupStart,${state}.original,${state}.modified)`,
+      )}${tail}`,
+  );
+  return `${out}\n${ABS_LN_HELPER}`;
+}
+
+function diffLinesPresent(c: string): boolean {
+  DIFF_LN_BASE_RE.lastIndex = 0;
+  return DIFF_LN_BASE_RE.test(c);
+}
+// ON means base swap on AND the enhancement in exactly this build's form: an
+// older layout (e.g. the fixed minChars:2 build, or stale fragments) compares
+// unequal, reads as off, and the next apply rebuilds it in place.
+function diffLinesCurrentOn(c: string): boolean | undefined {
+  const m = absLnExec(DIFF_LN_BASE_RE, c);
+  if (!m) return undefined;
+  if (!m[2].includes('"on"')) return false;
+  return c === diffLinesSet(c, true);
+}
+function diffLinesSet(c: string, on: boolean): string {
+  let out = absLnStrip(c);
+  DIFF_LN_BASE_RE.lastIndex = 0;
+  out = out.replace(
+    DIFF_LN_BASE_RE,
+    (_w, p, _v, s) => `${p}${on ? DIFF_LN_ON : DIFF_LN_OFF}${s}`,
+  );
+  return on ? absLnApply(out) : out;
+}
+
 // Effort reload-sync (ON): close the settings.json -> actual-call gap. Claude
 // Code persists `effortLevel` to ~/.claude/settings.json and the chat UI seeds
 // its effort button from that raw value, but a freshly spawned CLI session does
@@ -789,14 +1016,13 @@ const TOGGLE_POINTS: TogglePoint[] = [
     key: "chatDiffCardLineNumbers",
     defaultOn: false,
     file: "webview/index.js",
-    // Swap the whole lineNumbers value; ON also sets lineNumbersMinChars:2 to keep
-    // the gutter narrow (Monaco's default minimum is 5 chars, which widens the
-    // margin noticeably). The optional min-chars group in the match also accepts a
-    // prior build's bare lineNumbers:"on", so re-applying upgrades it in place.
-    re: /(fontSize:\d+(?:\.\d+)?,)(lineNumbers:"(?:off|on)"(?:,lineNumbersMinChars:\d+)?)(,)/g,
-    onValue: 'lineNumbers:"on",lineNumbersMinChars:2',
-    offValue: 'lineNumbers:"off"',
-    isOn: (v) => v.includes('"on"'),
+    // Custom transform (see the absLn block above the effort-sync section): the
+    // base lineNumbers swap at both createDiffEditor sites, a digit-count-based
+    // gutter width (minChars:1), and the absolute-numbering enhancement that
+    // threads each live Edit result's tool_use_result through to Monaco.
+    fnPresent: diffLinesPresent,
+    fnCurrentOn: diffLinesCurrentOn,
+    fnSet: diffLinesSet,
     cssFile: "webview/index.css",
     cssMarker: DIFF_LINES_CSS_MARKER,
     cssBuild: diffLinesCssBuild,

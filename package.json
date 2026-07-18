@@ -94,7 +94,7 @@
         "claudeCodeUiPatch.chatDiffCardLineNumbers": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show line numbers in the diff card, with real `+`/`-` gutter signs."
+          "markdownDescription": "Show line numbers in the diff card, with real `+`/`-` gutter signs. Lines are numbered by their true position in the edited file when the edit's location is known (live edits); cards replayed from history, failed edits, and `replace_all` edits number from 1. The gutter is as narrow as the shown digits require."
         },
         "claudeCodeUiPatch.chatDiffCardThemeSync": {
           "type": "boolean",

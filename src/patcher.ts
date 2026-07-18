@@ -46,6 +46,7 @@ const KNOB_ORDER: string[] = [
   "permNoWrap",
   "effortSyncFix",
   "scrollDot", // scroll-to-bottom dot
+  "jumpMsg", // jump to previous/next message
   "text", // plan agent response
   "planCodeInline", // plan inline code
   "code", // plan code block
@@ -545,6 +546,164 @@ function scrollDotSet(c: string, on: boolean): string {
   return `${stripped}\n${line}`;
 }
 
+// Jump-to-previous/next-message buttons (ON): a companion to the
+// scroll-to-bottom button for moving through the conversation a turn at a time.
+// Each user message is a sticky header (.stickyHeader_<hash>,
+// position:sticky;top:0) that pins to the top of the messages area while its
+// responses scroll underneath, so the natural navigation stops are those
+// headers. When ON we append a marked, self-contained IIFE at the end of
+// webview/index.js that mounts two neutral 26px squares above the input box's
+// top-LEFT corner (anchored to .inputContainer_<hash>), in the same row
+// (top:-34px) as the scroll-to-bottom button on the right: a chevron-up
+// "previous" at left:5px and a chevron-down "next" at left:35px, aligned over the
+// footer's + and / buttons below (the footer's 5px left padding and ~30px button
+// pitch, mirroring the scroll button's right:5px inset). The two features stay
+// independent toggles; the scroll-to-bottom button keeps the right:5px slot, so
+// the row reads as left-nav / right-scroll. Each square matches the send button's
+// rounded-square look via the input's own surface, border, and text color, with
+// the same doubled ghost-button hover, and carries a native tooltip.
+//
+// The stops are the headers' natural (unstuck) positions in the scroll range,
+// and offsetTop alone cannot supply them: the sticky shift is part of layout, so
+// a pinned header reports the shifted position (~scrollTop), not its flow slot.
+// With top:0 against the whole container every header scrolled past pins at the
+// scrollport top in one pile (painted in document order, so the latest pinned
+// header is the visible one) and all of them read ~scrollTop. A click therefore
+// measures natural positions by neutralizing the pile for one synchronous pass:
+// set inline position:static on every header, read offsetTop (headers offset
+// from .messagesContainer_<hash>, the position:relative offsetParent), restore.
+// No paint happens between the writes and the restore (a forced layout at most),
+// so nothing flickers, and static occupies the same flow slot, so scrollHeight
+// and the scroll position are unchanged. "Previous" glides to the greatest
+// natural position more than 4px above scrollTop (the epsilon absorbs sub-pixel
+// drift): from the bottom that pins the newest turn's header, and further clicks
+// step a turn up. "Next" glides to the least natural position more than 4px
+// below. The glide is the scroll-to-bottom button's fixed 100ms ease-out rAF
+// animation (instant under prefers-reduced-motion), clamped to the scrollable
+// range, with a per-click generation token cancelling a superseded animation.
+// Both buttons swallow mousedown (preventDefault + stopPropagation) and click
+// (stopPropagation): they sit inside the composer container, whose own handlers
+// otherwise steal focus and scroll the chat to the bottom, overriding the glide.
+//
+// The pair is always visible (unlike the scroll-to-bottom button), so from the
+// bottom it doubles as "jump back to the newest user message"; only an exhausted
+// direction dims and goes inert (data-off) rather than being removed, keeping
+// the shape stable. The dimming census needs no natural positions: raw
+// offsetTops classify headers as below the scrollport top (> scrollTop+4px;
+// never pinned, so trustworthy) or in the pile at/above it. "Next" lights on any
+// header below; "previous" on a pile of two or more (the pile's own newest turn
+// plus at least one earlier). Mounting, re-mount on re-render, and the
+// rAF-coalesced updater (capture-phase scroll, resize, body MutationObserver)
+// mirror the scroll-to-bottom button; data-show/data-off sit outside the
+// observer's class/style attribute filter, so the updater never re-triggers
+// itself (the click-time static/restore writes do re-trigger it once,
+// harmlessly). The three class-map hashes (messageInput's inputContainer,
+// messagesContainer, and stickyHeader) are read at patch time; if any is gone
+// the point reports missing and the bundle stays native. try/catch wraps the
+// whole body, and the /*ccup:jumpMsg*/ marker makes the ON state detectable; a
+// marked line that no longer matches the current build reads as OFF, so the next
+// apply rebuilds it in place or strips it.
+const JUMP_MSG_MARKER = "/*ccup:jumpMsg*/";
+const JUMP_MSG_LINE_RE = /\n?\/\*ccup:jumpMsg\*\/[^\n]*/g;
+const JUMP_MSG_INPUT_HASH_RE = /messageInput:"messageInput_([-\w]+)"/;
+const JUMP_MSG_CHAT_HASH_RE = /messagesContainer:"messagesContainer_([-\w]+)"/;
+const JUMP_MSG_STICKY_HASH_RE = /stickyHeader:"stickyHeader_([-\w]+)"/;
+
+// The full marked line for this bundle, or undefined when a class-map anchor is
+// gone. Deterministic given the bundle content, so equality against the on-disk
+// line doubles as the staleness check.
+function jumpMsgBuild(c: string): string | undefined {
+  const input = c.match(JUMP_MSG_INPUT_HASH_RE)?.[1];
+  const chat = c.match(JUMP_MSG_CHAT_HASH_RE)?.[1];
+  const sticky = c.match(JUMP_MSG_STICKY_HASH_RE)?.[1];
+  if (!input || !chat || !sticky) return undefined;
+  // Two 26px squares matching the scroll-to-bottom button, above the input's
+  // top-left corner (left:5/35px) so they sit over the footer's + and / buttons;
+  // box-sizing keeps the 1px border from inflating them. data-show fades a button
+  // in; data-show+data-off dims an exhausted direction.
+  const ghost2 =
+    "linear-gradient(var(--app-ghost-button-hover-background),var(--app-ghost-button-hover-background)),linear-gradient(var(--app-ghost-button-hover-background),var(--app-ghost-button-hover-background))";
+  const css =
+    ".ccup-nav-btn{box-sizing:border-box;position:absolute;top:-34px;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}" +
+    ".ccup-nav-prev{left:5px}.ccup-nav-next{left:35px}" +
+    ".ccup-nav-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
+    ".ccup-nav-btn[data-show][data-off]{opacity:.35;pointer-events:none}" +
+    `.ccup-nav-btn:hover{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
+    ".ccup-nav-btn:active{filter:brightness(.85)}" +
+    ".ccup-nav-btn svg{display:block;width:20px;height:20px}";
+  // Chevron up / down (no stem), distinct from the scroll button's stemmed arrow;
+  // single-quoted attributes embed in the double-quoted JS strings below unescaped.
+  const up =
+    "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M18 15l-6-6-6 6'/></svg>";
+  const dn =
+    "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>";
+  const js =
+    `(function(){try{` +
+    `if(window.__ccupJumpMsg)return;window.__ccupJumpMsg=1;` +
+    `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
+    `var UP="${up}",DN="${dn}",raf=0,gen=0;` +
+    `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
+    `function hh(t){return t.querySelectorAll(".stickyHeader_${sticky}")}` +
+    // Natural (unstuck) header positions: neutralize sticky, read all, restore.
+    `function nat(t){var h=hh(t),a=[],i;` +
+    `for(i=0;i<h.length;i++)h[i].style.position="static";` +
+    `for(i=0;i<h.length;i++)a.push(h[i].offsetTop);` +
+    `for(i=0;i<h.length;i++)h[i].style.position="";` +
+    `return a}` +
+    // Fixed 100ms ease-out glide to a clamped scrollTop; instant under reduced motion.
+    `function go(to){var t=sc();if(!t)return;var top=Math.max(0,Math.min(to,t.scrollHeight-t.clientHeight));` +
+    `if(matchMedia("(prefers-reduced-motion:reduce)").matches){t.scrollTop=top;return}` +
+    `var g=++gen,f=t.scrollTop,t0;function stp(now){if(g!==gen)return;if(t0===void 0)t0=now;` +
+    `var k=Math.min(1,(now-t0)/100),e=1-(1-k)*(1-k);t.scrollTop=f+(top-f)*e;if(k<1)requestAnimationFrame(stp)}` +
+    `requestAnimationFrame(stp)}` +
+    // Nearest natural position >4px above (dir<0) or below (dir>0) the current top.
+    `function jump(dir){var t=sc();if(!t)return;var a=nat(t),cur=t.scrollTop,best=null,i,o;` +
+    `for(i=0;i<a.length;i++){o=a[i];if(dir<0){if(o<cur-4&&(best===null||o>best))best=o}` +
+    `else if(o>cur+4&&(best===null||o<best))best=o}` +
+    `if(best!==null)go(best)}` +
+    // Buttons swallow mousedown/click so the composer never steals focus or scrolls.
+    `function mk(cls,svg,title,dir){var b=document.createElement("button");b.type="button";b.className="ccup-nav-btn "+cls;` +
+    `b.title=title;b.setAttribute("aria-label",title);b.innerHTML=svg;` +
+    `b.addEventListener("mousedown",function(e){e.preventDefault();e.stopPropagation()});` +
+    `b.addEventListener("click",function(e){e.stopPropagation();jump(dir)});return b}` +
+    // Toggle data-show/data-off only on an actual change (outside the observer filter).
+    `function ss(el,show,off){var s=el.hasAttribute("data-show");if(show&&!s)el.setAttribute("data-show","");else if(!show&&s)el.removeAttribute("data-show");var o=el.hasAttribute("data-off");if(off&&!o)el.setAttribute("data-off","");else if(!off&&o)el.removeAttribute("data-off")}` +
+    // Census on raw offsetTops: pile = pinned at/above the top, below = trustworthy.
+    `function upd(){raf=0;var t=sc(),below=0,pile=0;` +
+    `if(t){var h=hh(t),cur=t.scrollTop;for(var i=0;i<h.length;i++){if(h[i].offsetTop>cur+4)below++;else pile++}}` +
+    `var canP=pile>1,canN=below>0,boxes=document.querySelectorAll(".inputContainer_${input}");` +
+    `for(var j=0;j<boxes.length;j++){var box=boxes[j],p=box.querySelector(".ccup-nav-prev"),n=box.querySelector(".ccup-nav-next");` +
+    `if(!p){p=mk("ccup-nav-prev",UP,"Jump to the previous message",-1);box.appendChild(p)}` +
+    `if(!n){n=mk("ccup-nav-next",DN,"Jump to the next message",1);box.appendChild(n)}` +
+    `ss(p,!0,!canP);ss(n,!0,!canN)}}` +
+    `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
+    `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
+    `new MutationObserver(que).observe(document.body,{childList:!0,subtree:!0,characterData:!0,attributes:!0,attributeFilter:["class","style"]});` +
+    `que()` +
+    `}catch(e){}})();`;
+  return `${JUMP_MSG_MARKER}${js}`;
+}
+
+function jumpMsgPresent(c: string): boolean {
+  return c.includes(JUMP_MSG_MARKER) || jumpMsgBuild(c) !== undefined;
+}
+// true = ON (marked line present and matching this build, or present but
+// unrebuildable so an orphaned line stays removable), false = OFF or stale,
+// undefined = anchors gone and nothing to remove.
+function jumpMsgCurrentOn(c: string): boolean | undefined {
+  const cur = cssMarkedLine(c, JUMP_MSG_MARKER);
+  const want = jumpMsgBuild(c);
+  if (cur !== undefined) return want === undefined || cur === want;
+  return want === undefined ? undefined : false;
+}
+function jumpMsgSet(c: string, on: boolean): string {
+  const stripped = c.replace(JUMP_MSG_LINE_RE, "");
+  if (!on) return stripped;
+  const line = jumpMsgBuild(stripped);
+  if (line === undefined) return c; // anchors gone: leave the file as it is
+  return `${stripped}\n${line}`;
+}
+
 // The chat message "Show more" (.expandButton_<hash>) and "Show less"
 // (.collapseButton_<hash>) buttons live in the expandable-content module. "Show
 // more" is position:absolute (bottom:0;right:0) anchored to the fit-content
@@ -673,6 +832,17 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: scrollDotPresent,
     fnCurrentOn: scrollDotCurrentOn,
     fnSet: scrollDotSet,
+  },
+  {
+    id: "jumpMsg",
+    section: "Chat Panel or Tab",
+    label: "previous/next message buttons",
+    key: "chatJumpToMessageButtons",
+    defaultOn: false,
+    file: "webview/index.js",
+    fnPresent: jumpMsgPresent,
+    fnCurrentOn: jumpMsgCurrentOn,
+    fnSet: jumpMsgSet,
   },
   {
     id: "commentCtrlEnter",

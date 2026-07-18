@@ -8,6 +8,10 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 | ----------- | -------- |
 | 2.1.201+    | 1.1.x    |
 
+## 1.1.11
+
+- Add `claudeCodeUiPatch.chatJumpToMessageButtons`: two always-visible buttons above the chat input box's top-left corner, a chevron-up "previous" and a chevron-down "next" aligned over the `+` and `/` buttons, that step through the conversation a turn at a time.
+
 ## 1.1.10
 
 - Scroll-to-bottom uses a fixed 100ms scrolling instead of smooth scrolling, regardless of how long the history (instant under reduced motion)

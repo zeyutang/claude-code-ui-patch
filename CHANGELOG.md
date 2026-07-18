@@ -15,6 +15,8 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
   The expand modal inherits the same numbering, and each card stays anchored to the file as it stood at that edit, so accumulated edits that shift later lines never renumber earlier cards.
   Cards replayed from history (Claude Code re-emits it without the metadata, e.g. after the reload that applies this setting), failed edits, and `replace_all` edits keep the 1-based fallback.
 - The line-number gutter is now as narrow as the shown digits require, one digit for a short snippet and widening only as needed (absolute numbers included), replacing the fixed two-digit minimum.
+- Reclaim the diff card's dead left strip in the side-by-side view: Monaco force-reserves the original pane's glyph margin (about a line-height of width) for revert arrows a read-only card never shows, and the patch now disables it.
+- Add ~5px of breathing room at the inline (narrow) view's number junction, where the original pane's digits used to butt directly against the modified pane's digits.
 
 ## 1.1.12
 

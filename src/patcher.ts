@@ -367,6 +367,24 @@ const DIFF_CONTAINER_HASH_RE = /\.diffEditorContainer_([-\w]+)\{/g;
 // arrives. Cards from live edits get absolute numbers the moment the result
 // lands.
 //
+// Two further marked insertions polish the gutter's use of space (each applies
+// on its own anchor, separate from the six-fragment block, since they fix
+// spacing that exists with or without the absolute enhancement):
+//      gm    Monaco's diff editor force-enables the ORIGINAL editor's glyph
+//            margin whenever the view is side-by-side (glyphMargin =
+//            renderSideBySide in its left-hand-side option derive), reserving
+//            about a line-height of width for revert-arrow decorations that a
+//            read-only card never renders; appending &&!1 to that assignment
+//            reclaims the dead strip at the card's left edge
+//      gap   in the inline (narrow) view the original editor is sliced off at
+//            exactly the end of its number column (width = max(5,
+//            decorationsLeft)), so its digits butt against the modified
+//            editor's digits with zero gap; widening the slice by +5px opens
+//            breathing room at the junction (the revealed pixels are the start
+//            of the original's decorations column: blank on unchanged and
+//            inserted rows, at most a faint sliver of the "-" sign on deleted
+//            rows)
+//
 // Every insertion is wrapped in /*ccup:absLn:<tag>*/.../*ccup:absLnEnd*/ and
 // contains the whole inserted text (commas/semicolons included), so stripping
 // the markers restores the stock bytes exactly; diffLinesSet always strips
@@ -425,10 +443,14 @@ const ABS_LN_ARG_RE =
   /(function (\w+)\(\{original:(\w+),modified:(\w+),language:(\w+)="plaintext",filePath:(\w+))(\}\))/g;
 
 // card: the card's models effect, setModel followed by a FOUR-dep array (the
-// modal's twin has one dep, so the arity disambiguates; captures: 2=editor ref,
-// 3=models ref, 5..8=deps original/modified/language/filePath).
+// modal's twin has one dep, so the arity disambiguates; captures: 1=editor ref,
+// 2=setModel chunk, 3=models ref, 4..7=deps original/modified/language/
+// filePath). The editor ref is read through a lookbehind so the pattern proper
+// starts at a literal: a leading (\w+) has no fixed head for the regex engine
+// to skip-scan with and costs ~80ms per pass over the ~5MB bundle (~3ms this
+// way), which the toggle round-trip pays several times.
 const ABS_LN_CARD_FX_RE =
-  /((\w+)\.current\.setModel\(\{original:(\w+)\.current\.original,modified:\3\.current\.modified\}\))(\},\[(\w+),(\w+),(\w+),(\w+)\]\))/g;
+  /(?<=(\w+))(\.current\.setModel\(\{original:(\w+)\.current\.original,modified:\3\.current\.modified\}\))\},\[(\w+),(\w+),(\w+),(\w+)\]\)/g;
 
 // mprop: the card's expand click, openModal({original,modified,language,
 // filePath}) (captures: 2=openModal, 3=original, 4=modified).
@@ -436,9 +458,19 @@ const ABS_LN_MODAL_PROP_RE =
   /(\{(\w+)\(\{original:(\w+),modified:(\w+),language:(\w+),filePath:(\w+))(\}\)\})/g;
 
 // modal: the modal's models effect, setModel followed by the ONE-dep array
-// (captures: 2=editor ref, 3=models ref, 5=modal state).
+// (captures: 1=editor ref via the same lookbehind, 2=setModel chunk, 3=models
+// ref, 4=deps tail, 5=modal state).
 const ABS_LN_MODAL_FX_RE =
-  /((\w+)\.current\.setModel\(\{original:(\w+)\.current\.original,modified:\3\.current\.modified\}\))(\},\[(\w+)\]\))/g;
+  /(?<=(\w+))(\.current\.setModel\(\{original:(\w+)\.current\.original,modified:\3\.current\.modified\}\))(\},\[(\w+)\]\))/g;
+
+// gm: the diff editor's left-hand-side option derive, which forces the original
+// editor's glyph margin on in side-by-side view.
+const ABS_LN_GM_RE = /(\.glyphMargin=this\._options\.renderSideBySide\.get\(\))/g;
+
+// gap: the inline-view layout's original-editor slice width (cut at the end of
+// its line-number column).
+const ABS_LN_GAP_RE =
+  /(Math\.max\(5,this\._editors\.originalObs\.layoutInfoDecorationsLeft\.read\(\w+\)\))/g;
 
 function absLnExec(re: RegExp, c: string): RegExpExecArray | null {
   re.lastIndex = 0;
@@ -453,9 +485,19 @@ function absLnStrip(c: string): string {
     .replace(ABS_LN_HELPER_LINE_RE, "");
 }
 
-// Apply the enhancement to a STRIPPED bundle, or return it unchanged when any
-// anchor/cross-check fails (all-or-nothing, see the block comment above).
+// Apply the full ON enhancement to a STRIPPED bundle: the six-fragment
+// absolute-numbering thread (all-or-nothing), then the two spacing fragments,
+// each independent and skipped silently when its anchor is gone.
 function absLnApply(c: string): string {
+  let out = absLnThread(c);
+  out = out.replace(ABS_LN_GM_RE, (_w, head) => `${head}${absLnFrag("gm", "&&!1")}`);
+  out = out.replace(ABS_LN_GAP_RE, (_w, head) => `${head}${absLnFrag("gap", "+5")}`);
+  return out;
+}
+
+// The tool_use_result thread, or the input unchanged when any anchor or
+// cross-check fails (all-or-nothing, see the block comment above).
+function absLnThread(c: string): string {
   const mTur = absLnExec(ABS_LN_TUR_RE, c);
   const mProp = absLnExec(ABS_LN_PROP_RE, c);
   const mArg = absLnExec(ABS_LN_ARG_RE, c);
@@ -467,8 +509,8 @@ function absLnApply(c: string): string {
   }
   if (
     mArg[2] !== mProp[6] || // the card renders this same component
-    mCardFx[5] !== mArg[3] || // effect deps are the destructured strings
-    mCardFx[6] !== mArg[4] ||
+    mCardFx[4] !== mArg[3] || // effect deps are the destructured strings
+    mCardFx[5] !== mArg[4] ||
     mModalProp[3] !== mArg[3] || // the modal receives those same strings
     mModalProp[4] !== mArg[4]
   ) {
@@ -500,7 +542,7 @@ function absLnApply(c: string): string {
   );
   out = out.replace(
     ABS_LN_CARD_FX_RE,
-    (_w, set, ref, _models, _tail, d1, d2, d3, d4) =>
+    (_w, ref, set, _models, d1, d2, d3, d4) =>
       `${set}${absLnFrag(
         "card",
         `;window.__ccupAbsLn&&window.__ccupAbsLn(${ref}.current,ccupS,${d1},${d2})`,
@@ -513,7 +555,7 @@ function absLnApply(c: string): string {
   );
   out = out.replace(
     ABS_LN_MODAL_FX_RE,
-    (_w, set, ref, _models, tail, state) =>
+    (_w, ref, set, _models, tail, state) =>
       `${set}${absLnFrag(
         "modal",
         `;window.__ccupAbsLn&&window.__ccupAbsLn(${ref}.current,${state}.ccupStart,${state}.original,${state}.modified)`,
@@ -535,14 +577,32 @@ function diffLinesCurrentOn(c: string): boolean | undefined {
   if (!m[2].includes('"on"')) return false;
   return c === diffLinesSet(c, true);
 }
+// One toggle click re-evaluates diffLinesSet(c, true) several times over the
+// ~5MB bundle (applyPatch reads current then sets, the pending-reload
+// reconcile and the analyze refresh each read again), and diffLinesCurrentOn
+// funnels through it too, so the panel's round-trip stalls without a cache.
+// The transform is deterministic, so memoize the last ON input->output pair;
+// a hit costs one string compare (~2ms). It is also idempotent (strip first,
+// then rebuild), so an input equal to the memoized OUTPUT returns itself.
+// The OFF polarity is just the strip + base swap (~6ms), not worth retaining
+// another ~10MB pair for.
+let diffLnMemoOn: { input: string; output: string } | undefined;
+
 function diffLinesSet(c: string, on: boolean): string {
+  if (on && diffLnMemoOn) {
+    if (diffLnMemoOn.input === c) return diffLnMemoOn.output;
+    if (diffLnMemoOn.output === c) return c;
+  }
   let out = absLnStrip(c);
   DIFF_LN_BASE_RE.lastIndex = 0;
   out = out.replace(
     DIFF_LN_BASE_RE,
     (_w, p, _v, s) => `${p}${on ? DIFF_LN_ON : DIFF_LN_OFF}${s}`,
   );
-  return on ? absLnApply(out) : out;
+  if (!on) return out;
+  out = absLnApply(out);
+  diffLnMemoOn = { input: c, output: out };
+  return out;
 }
 
 // Effort reload-sync (ON): close the settings.json -> actual-call gap. Claude

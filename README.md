@@ -2,25 +2,13 @@
 
 Patch Claude Code VS Code extension UI to provide finegrained settings for various UI details (font sizes, code blocks, diff cards, and more).
 
-## Every Knob, One Panel
+|              Configuration Panel               |              Status Bar Summary               |
+| :--------------------------------------------: | :-------------------------------------------: |
+| ![Configuration panel](assets/img/webview.png) | ![Status bar summary](assets/img/tooltip.png) |
 
-|              Configuration Panel               |                       Status Bar Summary                        |
-| :--------------------------------------------: | :-------------------------------------------------------------: |
-| ![Configuration panel](assets/img/webview.png) |          ![Status bar summary](assets/img/tooltip.png)          |
-|    Adjust the knobs, then **Reload Window**    | Hover the `aA` to show the summary, and click to open the panel |
-
-|                 Previous and Next Turn, Scroll to Bottom                  |
-| :-----------------------------------------------------------------------: |
-|            ![Chat navigation button](assets/img/composer.png)             |
-| Jump to the previous / next message, or to the bottom of the chat history |
-
-1. Open the configuration panel  
-   Press `Cmd+Shift+P` / `Ctrl+Shift+P` (or `F1`) to open the Command Palette, then run **Claude Code UI Patch: Open Panel**. Or alternatively, click the `aA` item at the far right of the status bar.
-2. Modify the settings.  
-   The yellow light in front of the item and the yellow highlight of the status bar icon will indicate that a **Reload Window** is needed in order for the configurations to fully apply.
-3. **Reload Window**  
-   Click it at the bottom of the panel for the changes to take effect. Or alternatively, open the Command Palette, then run **Developer: Reload Window**.
-4. Repeat until satisfied.
+|      Previous and Next Turn, Scroll to Bottom      |
+| :------------------------------------------------: |
+| ![Chat navigation button](assets/img/composer.png) |
 
 ## What This Extension Patches
 
@@ -77,34 +65,9 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
 
 ## Using This UI Patch
 
-- **Panel controls:** sizes use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect), yellow (reload needed), or red (unavailable on this Claude Code version, with the header banner turning Claude clay).
-- **Direct edits:** Font families, the math size (`chatMathFontSizeEm`), the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload. Example:
-
-  ```json
-  {
-    // These settings affect ALL native chats, including Claude Code, Codex, Copilot, etc.
-    // Therefore, UI Patch does not touch them
-    // "chat.fontFamily": "default",
-    // "chat.fontSize": 15,
-
-    // UI Patch font size settings in a unified namespace `claudeCodeUiPatch`
-    "claudeCodeUiPatch.chatCodeBlockFontSize": 14,
-    "claudeCodeUiPatch.chatCodeInlineFontSize": 14,
-    "claudeCodeUiPatch.chatDiffCardFontSize": 13.5,
-    "claudeCodeUiPatch.chatHistoryFontSize": 15.75,
-    "claudeCodeUiPatch.chatInputHistoryFontSize": 14.75,
-    "claudeCodeUiPatch.chatInputMaxLines": 20,
-    "claudeCodeUiPatch.planPreviewFontSize": 15.75,
-    "claudeCodeUiPatch.planPreviewCodeBlockFontSize": 14,
-    "claudeCodeUiPatch.planPreviewCodeInlineFontSize": 14,
-    "claudeCodeUiPatch.planPreviewCommentBadgeFontSize": 12,
-    "claudeCodeUiPatch.planPreviewCommentInputFontSize": 15,
-    "claudeCodeUiPatch.planPreviewCommentInputRows": 7,
-    "claudeCodeUiPatch.planPreviewCommentQuoteFontSize": 12.5
-  }
-  ```
-
-- **Commands:** `Claude Code UI Patch: Open Panel`.
+- **Panel controls:** Press `Cmd+Shift+P` / `Ctrl+Shift+P` (or `F1`) to open the Command Palette, then run **Claude Code UI Patch: Open Panel**. Or alternatively, click the `aA` item at the far right of the status bar.
+  Use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect), yellow (reload needed), or red (unavailable on this Claude Code version).
+- **Direct edits:** Font families, the math size (`chatMathFontSizeEm`), the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload.
 
 ## Caveats
 

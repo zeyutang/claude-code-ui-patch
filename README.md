@@ -65,22 +65,28 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
 
 ## Using This UI Patch
 
+### VS Code
+
+Install from the **VS Code Marketplace**: [Claude Code UI Patch](https://marketplace.visualstudio.com/items?itemName=zeyutang.claude-code-ui-patch)
+
+### VSCodium, Cursor, Windsurf, and other forks
+
+Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.org/extension/zeyutang/claude-code-ui-patch)
+
+### Get Claude Code patched
+
 - **Panel controls:** Press `Cmd+Shift+P` / `Ctrl+Shift+P` (or `F1`) to open the Command Palette, then run **Claude Code UI Patch: Open Panel**. Or alternatively, click the `aA` item at the far right of the status bar.
   Use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect), yellow (reload needed), or red (unavailable on this Claude Code version).
 - **Direct edits:** Font families, the math size (`chatMathFontSizeEm`), the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload.
 
 ## Caveats
 
-- **The patch reverts when Claude Code updates.** The settings re-apply on the next window reload, and a notification then prompts you to **Reload Window** once more to see them. VS Code may show a one-time "corrupt installation" warning, which is safe to dismiss.
-- **`chatDiffCardLineNumbers` shows true file positions only for edits made in the live session.**
-  Each diff card is numbered against the file as it stood before and after that particular edit (both panes share the edit's true starting line), so numbers stay honest even when several edits to one file shift lines between calls.
-  The position metadata rides only on live Edit results: Claude Code re-emits conversation history without it, so cards replayed after a window reload or session resume fall back to numbering from 1, as do failed edits and `replace_all` edits (several sites, no single true start).
-- **`chatHistoryFontSize` / `chatHistoryFontFamily` restyle the agent transcript only** (deliberate design, not a bug).
-  The input box, the interface, and other extensions' chats (Codex, Copilot, etc.) stay native, and can be configured with `chat.fontSize` and `chat.fontFamily`.
-  To restyle the text of your own sent messages in the history, set `chatInputHistoryFontSize` (the panel's "user message history" row) and `chatInputHistoryFontFamily`: both scope to the user-message text wrapper alone, so attachment chips, slash-command echoes (deliberately monospace), and the live input box stay native.
-  Inside the bubble, the "Show more" / "Show less" buttons keep the native font family, and their em-based size scales with the message text, exactly as it does under `chat.fontSize`.
-- **`chatMathRendering` bundles KaTeX into the chat webview** (code under MIT, fonts under the SIL Open Font License 1.1; the exact version and both license texts ship in `assets/katex/`): the script and stylesheet are appended to the chat bundle and the `woff2` math fonts are copied next to it, all removed again when the toggle turns off or on Factory Reset.
-  Math is detected in the raw markdown before the parser runs, so `_`, `*`, and `|` inside math never turn into emphasis or break tables; delimiters are `$…$`, `$$…$$`, `\(…\)`, and `\[…\]`, with Pandoc's `$` heuristics keeping currency like `$5 and $10` literal.
-  Fenced code blocks and inline code are protected (4-space-indented code blocks are not, though Claude virtually always fences); a span containing a blank line never matches; invalid TeX renders KaTeX's red error span showing the raw source.
-  Agent messages and thinking blocks render math, user messages stay native, and selecting rendered math copies KaTeX's internal reading of it rather than the original TeX source.
-  The Plan Mode preview is a separate webview whose stricter content-security policy allows no font loading, so math rendering covers the chat only.
+- **The patch reverts when Claude Code updates.**
+  The next window reload re-applies it and prompts for one more **Reload Window**.
+- **`chatDiffCardLineNumbers` shows true file positions for live-session edits only.**
+  Cards replayed from history (reload, resume), failed edits, and `replace_all` edits number from 1 (Claude Code re-emits conversation history without the absolute line numbers).
+- **`chatHistoryFontSize` / `chatHistoryFontFamily` restyle the agent transcript only** (by design).
+  The input box, interface, and other chat extensions follow the native `chat.fontSize` / `chat.fontFamily`.
+  Your own sent messages are styled by `chatInputHistoryFontSize` / `chatInputHistoryFontFamily`.
+- **`chatMathRendering` bundles KaTeX into the chat webview** (MIT code, SIL OFL 1.1 fonts; licenses ship in `assets/katex/`) and removes it fully when the toggle turns off.
+  Rendering covers the chat only: the Plan Mode preview's content-security policy allows no font loading.

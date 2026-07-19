@@ -31,12 +31,13 @@ chat.fontSize & chat.fontFamily        # native VS Code settings, shared by ever
    │                                   # therefore, this patch does NOT override them
    ├── input box
    ├── interface chrome (buttons, headers, token counts)
-   ├── user messages + attachment chips (e.g. image.png)
+   ├── user messages + attachment chips (text font: see chatInputHistoryFontFamily)
    └── other chat extensions (Codex, Copilot, ...)
 
-Chat Panel and Tab                     # agent messages only
+Chat Panel and Tab                     # chat history only, private to Claude Code
    ├── chatHistoryFontSize             # agent message text, 0 -> follows chat.fontSize
    ├── chatHistoryFontFamily           # agent message font, empty -> native UI font
+   ├── chatInputHistoryFontFamily      # sent user message text, empty -> native chat font
    ├── chatCodeBlockFontSize           # fenced code blocks
    │      └── chatCodeInlineFontSize   # inline code, 0 -> follows chatCodeBlockFontSize
    ├── chatMathRendering               # TeX math via bundled KaTeX if On
@@ -109,7 +110,9 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
 - **`chatDiffCardLineNumbers` shows true file positions only for edits made in the live session.**
   Each diff card is numbered against the file as it stood before and after that particular edit (both panes share the edit's true starting line), so numbers stay honest even when several edits to one file shift lines between calls.
   The position metadata rides only on live Edit results: Claude Code re-emits conversation history without it, so cards replayed after a window reload or session resume fall back to numbering from 1, as do failed edits and `replace_all` edits (several sites, no single true start).
-- **`chatHistoryFontSize` / `chatHistoryFontFamily` restyle the agent transcript only** (deliberate design, not a bug). The user messages, the input box, the interface, and other extensions' chats (Codex, Copilot, etc.) stay native, and can be configured with `chat.fontSize` and `chat.fontFamily`.
+- **`chatHistoryFontSize` / `chatHistoryFontFamily` restyle the agent transcript only** (deliberate design, not a bug).
+  The input box, the interface, and other extensions' chats (Codex, Copilot, etc.) stay native, and can be configured with `chat.fontSize` and `chat.fontFamily`.
+  To restyle the text of your own sent messages in the history, set `chatInputHistoryFontFamily`: it scopes to the user-message text wrapper alone, so attachment chips, the "Show more"/"Show less" buttons, slash-command echoes (deliberately monospace), and the live input box keep the native font.
 - **`chatMathRendering` bundles KaTeX into the chat webview** (code under MIT, fonts under the SIL Open Font License 1.1; the exact version and both license texts ship in `assets/katex/`): the script and stylesheet are appended to the chat bundle and the `woff2` math fonts are copied next to it, all removed again when the toggle turns off or on Factory Reset.
   Math is detected in the raw markdown before the parser runs, so `_`, `*`, and `|` inside math never turn into emphasis or break tables; delimiters are `$…$`, `$$…$$`, `\(…\)`, and `\[…\]`, with Pandoc's `$` heuristics keeping currency like `$5 and $10` literal.
   Fenced code blocks and inline code are protected (4-space-indented code blocks are not, though Claude virtually always fences); a span containing a blank line never matches; invalid TeX renders KaTeX's red error span showing the raw source.

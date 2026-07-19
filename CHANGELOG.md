@@ -11,6 +11,9 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
   Invalid TeX renders KaTeX's red error span showing the raw source instead of breaking the message.
   The KaTeX script, stylesheet, and `woff2` fonts ride the ordinary patch machinery: applied to the chat webview when the toggle is on, fully removed when it turns off, on Factory Reset, and re-applied after a Claude Code update.
 - Add `claudeCodeUiPatch.chatMathFontSizeEm`: math size in `em`, relative to the surrounding chat text, defaulting to `1.0` (match the text); KaTeX's own document-oriented default is `1.21`.
+- Add `claudeCodeUiPatch.chatInputHistoryFontFamily`: font family for the text of your sent messages in the chat history, empty (native) by default.
+  The rule scopes to the user-message text wrapper alone, so the bubble's chrome keeps the native font: attachment chips, the "Show more"/"Show less" buttons, and slash-command echoes (deliberately monospace) are untouched, as are the live input box, the agent transcript, and other chat extensions.
+  Composes with `chatHistoryFontFamily` in either order, each targeting its own surface directly.
 - Fix a state-detection quirk where `chatDiffCardLineNumbers` reported drift whenever the scroll-to-bottom button or the jump buttons were also on (the check compared whole-file bytes, which those toggles' end-of-file lines reorder on every apply), causing a needless re-apply pass at each activation.
 
 ## 1.1.13

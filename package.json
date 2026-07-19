@@ -58,6 +58,11 @@
           "default": "",
           "markdownDescription": "Font family for the chat history only; the interface and input box stay native. Empty = native."
         },
+        "claudeCodeUiPatch.chatInputHistoryFontFamily": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Font family for your sent messages in the chat history only (the user-input text); attachment chips, slash-command echoes, the agent transcript, and the input box stay native. Empty = native."
+        },
         "claudeCodeUiPatch.chatCodeBlockFontSize": {
           "type": "number",
           "default": 11,

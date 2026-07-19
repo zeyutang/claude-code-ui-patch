@@ -2020,7 +2020,9 @@ const CHAT_SIZE_PX_RE =
 // apply the chosen family to the agent markdown, re-asserting a monospace family
 // so code blocks and inline code stay monospace. User messages are left native
 // on purpose: the file-name attachment chip renders INSIDE .userMessage_, so
-// scoping there would drag the reading font onto that chrome.
+// scoping there would drag the reading font onto that chrome (the
+// chatInputHistoryFontFamily point below restyles just their text by scoping
+// one level deeper).
 const CHAT_FAMILY_MARKER = "/*cc-ui-patch:chatFamily*/";
 const CHAT_FAMILY_VAL_RE =
   /\/\*cc-ui-patch:chatFamily\*\/[^\n]*?\.root_[-\w]+[^{\n]*\{font-family:(.+?) !important\}/;
@@ -2034,6 +2036,25 @@ function chatContentSelector(c: string): string | undefined {
   const md = c.match(CHAT_MD_HASH_RE)?.[1];
   return md ? `.root_${md}` : undefined;
 }
+
+// chatInputHistoryFontFamily: apply a font to the TEXT of sent user messages
+// in the chat history (.expandableContainer_<hash>, the user-message text
+// renderer's own CSS module, used nowhere else in the bundle). Scoping one
+// level BELOW the .userMessage_ bubble keeps its chrome native: the attachment
+// chips are a SIBLING of this wrapper (.userMessageAttachments_), the "Show
+// more"/"Show less" buttons inside it are matched directly by the stylesheet's
+// global button rule (a direct match beats an inherited family), and
+// slash-command echoes render without the wrapper and keep their monospace
+// rule. Nothing under the wrapper sets a family of its own, so one inherited
+// rule restyles exactly the typed text (@-mention chips included). Composes
+// with chatHistoryFontFamily in either order: its :root var reset only changes
+// what the bubble INHERITS, while this rule targets the wrapper directly.
+const CHAT_INPUT_FAMILY_MARKER = "/*cc-ui-patch:chatInputHistoryFamily*/";
+const CHAT_INPUT_FAMILY_VAL_RE =
+  /\/\*cc-ui-patch:chatInputHistoryFamily\*\/[^\n]*?font-family:(.+?) !important\}/;
+// The wrapper's class name is unique across the stylesheet (13 modules share a
+// `content_` class; only the user-message text module has this one).
+const CHAT_INPUT_FAMILY_HASH_RE = /\.expandableContainer_([-\w]+)\{/;
 
 // codeFontFamily (chat side): apply the chosen font to chat code ONLY,
 // fenced blocks (.codeBlockWrapper_<hash> pre) and inline code (.root_<hash>
@@ -2269,6 +2290,32 @@ const INJECT_POINTS: InjectPoint[] = [
       );
     },
     remove: (c) => cssRemoveLine(c, CHAT_FAMILY_MARKER),
+  },
+  {
+    id: "chatInputHistoryFamily",
+    section: "Chat Panel or Tab",
+    label: "user input font family",
+    key: "chatInputHistoryFontFamily",
+    kind: "family",
+    file: "webview/index.css",
+    showInPanel: false,
+    max: 0,
+    defaultRaw: "",
+    effective: (raw) =>
+      typeof raw === "string" && raw.trim() ? raw.trim() : undefined,
+    present: (c) =>
+      c.includes(CHAT_INPUT_FAMILY_MARKER) || CHAT_INPUT_FAMILY_HASH_RE.test(c),
+    current: (c) => c.match(CHAT_INPUT_FAMILY_VAL_RE)?.[1],
+    apply: (c, v) => {
+      const hash = c.match(CHAT_INPUT_FAMILY_HASH_RE)?.[1];
+      if (!hash) return c; // anchor gone: leave native
+      return cssApplyLine(
+        c,
+        CHAT_INPUT_FAMILY_MARKER,
+        `${CHAT_INPUT_FAMILY_MARKER}.expandableContainer_${hash}{font-family:${v} !important}`,
+      );
+    },
+    remove: (c) => cssRemoveLine(c, CHAT_INPUT_FAMILY_MARKER),
   },
   {
     id: "chatCodeFamily",

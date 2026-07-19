@@ -2,7 +2,7 @@
   "name": "claude-code-ui-patch",
   "displayName": "Claude Code UI Patch",
   "description": "Patch Claude Code with finegrained UI settings for font sizes, code blocks, diff cards, and more.",
-  "version": "1.1.13",
+  "version": "1.2.0",
   "publisher": "zeyutang",
   "icon": "icon.png",
   "license": "MIT",
@@ -120,7 +120,7 @@
         },
         "claudeCodeUiPatch.chatMathFontSizeEm": {
           "type": "number",
-          "default": 1.0,
+          "default": 1,
           "minimum": 0.5,
           "maximum": 3,
           "markdownDescription": "Math size in `em`, relative to the surrounding chat text (applies while `#claudeCodeUiPatch.chatMathRendering#` is on). KaTeX's own default is `1.21`, sized for documents; `1.0` matches the surrounding text."

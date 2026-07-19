@@ -37,6 +37,7 @@ export const SECTION_ORDER: Section[] = [
 // not listed keep their natural order after the listed ones.
 const KNOB_ORDER: string[] = [
   "chatHistorySize", // agent response
+  "chatInputHistorySize", // user message history
   "chatCodeInline", // inline code
   "chatCode", // code block
   "chatMath", // math rendering (KaTeX)
@@ -2037,24 +2038,32 @@ function chatContentSelector(c: string): string | undefined {
   return md ? `.root_${md}` : undefined;
 }
 
-// chatInputHistoryFontFamily: apply a font to the TEXT of sent user messages
-// in the chat history (.expandableContainer_<hash>, the user-message text
-// renderer's own CSS module, used nowhere else in the bundle). Scoping one
-// level BELOW the .userMessage_ bubble keeps its chrome native: the attachment
-// chips are a SIBLING of this wrapper (.userMessageAttachments_), the "Show
-// more"/"Show less" buttons inside it are matched directly by the stylesheet's
-// global button rule (a direct match beats an inherited family), and
-// slash-command echoes render without the wrapper and keep their monospace
-// rule. Nothing under the wrapper sets a family of its own, so one inherited
-// rule restyles exactly the typed text (@-mention chips included). Composes
-// with chatHistoryFontFamily in either order: its :root var reset only changes
-// what the bubble INHERITS, while this rule targets the wrapper directly.
+// chatInputHistoryFontSize / chatInputHistoryFontFamily: size and font for the
+// TEXT of sent user messages in the chat history (.expandableContainer_<hash>,
+// the user-message text renderer's own CSS module, used nowhere else in the
+// bundle). The text natively inherits the body's var(--vscode-chat-font-size,
+// 13px) and var(--vscode-chat-font-family), i.e. the shared chat.fontSize and
+// chat.fontFamily; nothing under the wrapper sets its own size or family, so
+// one inherited rule per knob restyles exactly the typed text (@-mention chips
+// included). Scoping one level BELOW the .userMessage_ bubble keeps its chrome
+// native: the attachment chips are a SIBLING of this wrapper
+// (.userMessageAttachments_), slash-command echoes render without the wrapper
+// (keeping their monospace 0.9em rule), and the "Show more"/"Show less"
+// buttons inside it keep the native FAMILY (the stylesheet's global button
+// rule matches them directly, beating inheritance) while their em-based size
+// scales with the size knob, exactly as it scales under chat.fontSize.
+// Composes with the chatHistorySize/Family points in either order: those scope
+// to the agent markdown module, and the chatFamily :root var reset only
+// changes what this wrapper INHERITS, while these rules target it directly.
+const CHAT_INPUT_SIZE_MARKER = "/*cc-ui-patch:chatInputHistorySize*/";
+const CHAT_INPUT_SIZE_PX_RE =
+  /\/\*cc-ui-patch:chatInputHistorySize\*\/\.expandableContainer_[-\w]+\{font-size:(\d+(?:\.\d+)?)px/;
 const CHAT_INPUT_FAMILY_MARKER = "/*cc-ui-patch:chatInputHistoryFamily*/";
 const CHAT_INPUT_FAMILY_VAL_RE =
   /\/\*cc-ui-patch:chatInputHistoryFamily\*\/[^\n]*?font-family:(.+?) !important\}/;
 // The wrapper's class name is unique across the stylesheet (13 modules share a
 // `content_` class; only the user-message text module has this one).
-const CHAT_INPUT_FAMILY_HASH_RE = /\.expandableContainer_([-\w]+)\{/;
+const CHAT_INPUT_HASH_RE = /\.expandableContainer_([-\w]+)\{/;
 
 // codeFontFamily (chat side): apply the chosen font to chat code ONLY,
 // fenced blocks (.codeBlockWrapper_<hash> pre) and inline code (.root_<hash>
@@ -2292,9 +2301,38 @@ const INJECT_POINTS: InjectPoint[] = [
     remove: (c) => cssRemoveLine(c, CHAT_FAMILY_MARKER),
   },
   {
+    id: "chatInputHistorySize",
+    section: "Chat Panel or Tab",
+    label: "user message history",
+    key: "chatInputHistoryFontSize",
+    kind: "size",
+    file: "webview/index.css",
+    showInPanel: true,
+    max: 48,
+    defaultRaw: 0,
+    effective: (raw) =>
+      typeof raw === "number" && raw > 0 ? clampSizePx(raw) : undefined,
+    present: (c) =>
+      c.includes(CHAT_INPUT_SIZE_MARKER) || CHAT_INPUT_HASH_RE.test(c),
+    current: (c) => {
+      const m = c.match(CHAT_INPUT_SIZE_PX_RE);
+      return m ? Number(m[1]) : undefined;
+    },
+    apply: (c, v) => {
+      const hash = c.match(CHAT_INPUT_HASH_RE)?.[1];
+      if (!hash) return c; // anchor gone: leave native
+      return cssApplyLine(
+        c,
+        CHAT_INPUT_SIZE_MARKER,
+        `${CHAT_INPUT_SIZE_MARKER}.expandableContainer_${hash}{font-size:${v}px !important}`,
+      );
+    },
+    remove: (c) => cssRemoveLine(c, CHAT_INPUT_SIZE_MARKER),
+  },
+  {
     id: "chatInputHistoryFamily",
     section: "Chat Panel or Tab",
-    label: "user input font family",
+    label: "user message font family",
     key: "chatInputHistoryFontFamily",
     kind: "family",
     file: "webview/index.css",
@@ -2304,10 +2342,10 @@ const INJECT_POINTS: InjectPoint[] = [
     effective: (raw) =>
       typeof raw === "string" && raw.trim() ? raw.trim() : undefined,
     present: (c) =>
-      c.includes(CHAT_INPUT_FAMILY_MARKER) || CHAT_INPUT_FAMILY_HASH_RE.test(c),
+      c.includes(CHAT_INPUT_FAMILY_MARKER) || CHAT_INPUT_HASH_RE.test(c),
     current: (c) => c.match(CHAT_INPUT_FAMILY_VAL_RE)?.[1],
     apply: (c, v) => {
-      const hash = c.match(CHAT_INPUT_FAMILY_HASH_RE)?.[1];
+      const hash = c.match(CHAT_INPUT_HASH_RE)?.[1];
       if (!hash) return c; // anchor gone: leave native
       return cssApplyLine(
         c,

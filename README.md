@@ -2,22 +2,16 @@
 
 Patch Claude Code VS Code extension UI to provide finegrained settings for various UI details (font sizes, code blocks, diff cards, and more).
 
-## Supported Versions
-
-| Claude Code | UI Patch |
-| ----------- | -------- |
-| 2.1.201+    | 1.1.x    |
-
 ## Every Knob, One Panel
 
-|             Configuration Panel              |                       Status Bar Summary                        |
-| :------------------------------------------: | :-------------------------------------------------------------: |
-| ![Configuration panel](docs/img/webview.png) |           ![Status bar summary](docs/img/tooltip.png)           |
-|   Adjust the knobs, then **Reload Window**   | Hover the `aA` to show the summary, and click to open the panel |
+|              Configuration Panel               |                       Status Bar Summary                        |
+| :--------------------------------------------: | :-------------------------------------------------------------: |
+| ![Configuration panel](assets/img/webview.png) |          ![Status bar summary](assets/img/tooltip.png)          |
+|    Adjust the knobs, then **Reload Window**    | Hover the `aA` to show the summary, and click to open the panel |
 
 |                 Previous and Next Turn, Scroll to Bottom                  |
 | :-----------------------------------------------------------------------: |
-|             ![Chat navigation button](docs/img/composer.png)              |
+|            ![Chat navigation button](assets/img/composer.png)             |
 | Jump to the previous / next message, or to the bottom of the chat history |
 
 1. Open the configuration panel  
@@ -45,6 +39,8 @@ Chat Panel and Tab                     # agent messages only
    ├── chatHistoryFontFamily           # agent message font, empty -> native UI font
    ├── chatCodeBlockFontSize           # fenced code blocks
    │      └── chatCodeInlineFontSize   # inline code, 0 -> follows chatCodeBlockFontSize
+   ├── chatMathRendering               # TeX math via bundled KaTeX if On
+   │      └── chatMathFontSizeEm       # math size in em of chat text, 1.0 = match (KaTeX stock 1.21)
    └── diff cards                      # Edit / MultiEdit tool cards + expand modal
           ├── chatDiffCardFontSize     # diff code size
           ├── chatDiffCardLineNumbers  # true file line numbers (when known) if On
@@ -80,7 +76,7 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
 ## Using This UI Patch
 
 - **Panel controls:** sizes use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect), yellow (reload needed), or red (unavailable on this Claude Code version, with the header banner turning Claude clay).
-- **Direct edits:** Font families, the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload. Example:
+- **Direct edits:** Font families, the math size (`chatMathFontSizeEm`), the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload. Example:
 
   ```json
   {
@@ -114,3 +110,8 @@ Unified codeFontFamily                 # code font only; IN/OUT block, chrome, d
   Each diff card is numbered against the file as it stood before and after that particular edit (both panes share the edit's true starting line), so numbers stay honest even when several edits to one file shift lines between calls.
   The position metadata rides only on live Edit results: Claude Code re-emits conversation history without it, so cards replayed after a window reload or session resume fall back to numbering from 1, as do failed edits and `replace_all` edits (several sites, no single true start).
 - **`chatHistoryFontSize` / `chatHistoryFontFamily` restyle the agent transcript only** (deliberate design, not a bug). The user messages, the input box, the interface, and other extensions' chats (Codex, Copilot, etc.) stay native, and can be configured with `chat.fontSize` and `chat.fontFamily`.
+- **`chatMathRendering` bundles KaTeX into the chat webview** (MIT-licensed; the exact version and license ship in `assets/katex/`): the script and stylesheet are appended to the chat bundle and the `woff2` math fonts are copied next to it, all removed again when the toggle turns off or on Factory Reset.
+  Math is detected in the raw markdown before the parser runs, so `_`, `*`, and `|` inside math never turn into emphasis or break tables; delimiters are `$…$`, `$$…$$`, `\(…\)`, and `\[…\]`, with Pandoc's `$` heuristics keeping currency like `$5 and $10` literal.
+  Fenced code blocks and inline code are protected (4-space-indented code blocks are not, though Claude virtually always fences); a span containing a blank line never matches; invalid TeX renders KaTeX's red error span showing the raw source.
+  Agent messages and thinking blocks render math, user messages stay native, and selecting rendered math copies KaTeX's internal reading of it rather than the original TeX source.
+  The Plan Mode preview is a separate webview whose stricter content-security policy allows no font loading, so math rendering covers the chat only.

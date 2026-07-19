@@ -2,11 +2,16 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
-## Supported versions
+## 1.2.0
 
-| Claude Code | UI Patch |
-| ----------- | -------- |
-| 2.1.201+    | 1.1.x    |
+- Add `claudeCodeUiPatch.chatMathRendering`: render TeX math in agent chat messages with a bundled KaTeX (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`), off by default.
+  Math is detected in the raw markdown before the parser runs and carried through it as an opaque inline-code payload, so `_`, `*`, and `|` inside math never turn into emphasis or break tables, and the rendered element is created inside React's own tree, so streaming re-renders reconcile cleanly.
+  Fenced code blocks and inline code are left untouched, and the `$` heuristics follow Pandoc (an opener followed by whitespace, or a closer preceded by whitespace or followed by a digit, stays literal), so `$5 and $10` is not math.
+  `$$…$$` renders as display math when it sits alone on its line(s), inline otherwise (blockquote `>` prefixes are understood either way); `\[…\]` is always display.
+  Invalid TeX renders KaTeX's red error span showing the raw source instead of breaking the message.
+  The KaTeX script, stylesheet, and `woff2` fonts ride the ordinary patch machinery: applied to the chat webview when the toggle is on, fully removed when it turns off, on Factory Reset, and re-applied after a Claude Code update.
+- Add `claudeCodeUiPatch.chatMathFontSizeEm`: math size in `em`, relative to the surrounding chat text, defaulting to `1.0` (match the text); KaTeX's own document-oriented default is `1.21`.
+- Fix a state-detection quirk where `chatDiffCardLineNumbers` reported drift whenever the scroll-to-bottom button or the jump buttons were also on (the check compared whole-file bytes, which those toggles' end-of-file lines reorder on every apply), causing a needless re-apply pass at each activation.
 
 ## 1.1.13
 

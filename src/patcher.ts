@@ -39,6 +39,7 @@ const KNOB_ORDER: string[] = [
   "chatHistorySize", // agent response
   "chatCodeInline", // inline code
   "chatCode", // code block
+  "chatMath", // math rendering (KaTeX)
   "diffCard",
   "diffLineNumbers",
   "diffThemeSync",
@@ -570,12 +571,23 @@ function diffLinesPresent(c: string): boolean {
 }
 // ON means base swap on AND the enhancement in exactly this build's form: an
 // older layout (e.g. the fixed minChars:2 build, or stale fragments) compares
-// unequal, reads as off, and the next apply rebuilds it in place.
+// unequal, reads as off, and the next apply rebuilds it in place. The compare
+// factors the EOF helper line out and checks it separately, because other
+// toggles (scroll dot, jump buttons, math) also append EOF lines and re-anchor
+// them on each apply: whole-file equality would read as drifted forever once
+// any of them lands after the helper, while the inline fragments and the
+// helper's own bytes are what actually matter.
 function diffLinesCurrentOn(c: string): boolean | undefined {
   const m = absLnExec(DIFF_LN_BASE_RE, c);
   if (!m) return undefined;
   if (!m[2].includes('"on"')) return false;
-  return c === diffLinesSet(c, true);
+  const want = diffLinesSet(c, true);
+  const stripHelper = (s: string) => s.replace(ABS_LN_HELPER_LINE_RE, "");
+  return (
+    stripHelper(c) === stripHelper(want) &&
+    cssMarkedLine(c, ABS_LN_HELPER_MARKER) ===
+      cssMarkedLine(want, ABS_LN_HELPER_MARKER)
+  );
 }
 // One toggle click re-evaluates diffLinesSet(c, true) several times over the
 // ~5MB bundle (applyPatch reads current then sets, the pending-reload
@@ -715,6 +727,628 @@ function permNoWrapSet(c: string, on: boolean): string {
     PERM_NOWRAP_MARKER,
     `${PERM_NOWRAP_MARKER}.bashCommand_${hash}{white-space:pre !important;overflow-x:auto !important}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Chat math rendering (ON): the chat webview renders agent markdown through
+// react-markdown with no math support, so TeX like $\mathcal{G}$ shows as raw
+// source. When ON we render it with a bundled KaTeX (vendored under this
+// extension's assets/katex, refreshed via `npm run update-katex`). Detection
+// happens BEFORE the markdown parser runs, which is what makes it robust: a
+// marked wrapper around the markdown component's content initializer rewrites
+// each math span in the RAW markdown string into an inline code span carrying
+// a base64 payload (so `_`/`*`/`|` inside math can never turn into emphasis or
+// break tables), and a marked hook at the head of the component map's `code`
+// renderer turns that payload back into a React element whose innerHTML is
+// KaTeX's output. React owns the produced DOM, so streaming re-renders
+// reconcile cleanly (no post-hoc DOM mutation, which React can crash on).
+//
+// Delimiters: $$…$$ (display when it sits alone on its line(s), inline
+// otherwise), $…$ (single line; the opener must not be followed by whitespace
+// or another $, the closer must not be preceded by whitespace nor followed by
+// a digit, so "$5 and $10" stays currency), \(…\) inline, and \[…\] display.
+// A span containing a blank line never matches. Fenced code blocks and inline
+// code spans are skipped; after a stray unclosed backtick run the rest of that
+// paragraph is left untouched, since an added marker backtick there could
+// re-pair with the stray one and leak the payload as literal text.
+//
+// Pieces written into the bundle (each marked, all stripped on OFF/restore):
+//   wrapA/wrapB  two inline fragments around the content initializer in the
+//                markdown component (`let n=i?trim(e):e` keeps its stock bytes
+//                between them), routing the string through the preprocessor
+//   code         one inline fragment at the head of the `code` component
+//                override, rendering marker payloads via the hook (the code
+//                component is reached by both inline code and fenced blocks,
+//                and the marker regex is anchored so real code never matches)
+//   katex block  katex.min.js appended at EOF between block markers, wrapped
+//                in (function(define,module,exports){…})() so the UMD header
+//                sees none of them and lands on its self.katex branch (the
+//                bundle is an ES module: no CommonJS globals, but shadowing
+//                also guards against a future AMD loader in the bundle)
+//   helper block the webview-side preprocessor + renderer (the compiled
+//                ccupMathHelperWebview below, injected via toString), between
+//                block markers since it is multi-line
+//   css line     katex.min.css plus the font-size override, appended to
+//                webview/index.css via the toggle's cssBuild side-effect; the
+//                stylesheet is loaded with <link>, so its relative
+//                url(fonts/…) sources resolve next to index.css
+//   fonts        the woff2 files copied into <install>/webview/fonts/ (the
+//                webview CSP allows font-src from the extension directory;
+//                data: URIs are not in font-src, so inlining is not an
+//                option); removed again on OFF/restore
+//
+// The math size rides chatMathFontSizeEm (em, relative to the chat text):
+// KaTeX's own default is 1.21em, sized for documents; 1.0 matches the chat
+// text. The em value is baked into the css line, so a change re-applies via
+// the same stale-line reconcile as any other knob (the key is listed in
+// EXTRA_PATCH_KEYS so the config listener picks it up).
+//
+// The two inline anchors are all-or-nothing: if either regex fails to match
+// this build, nothing is inserted (a wrapper without the code hook would leak
+// marker text into the chat). The current-state check compares each piece
+// separately (inline fragments by re-deriving them onto the stripped bundle,
+// helper/katex/css lines by marker extraction), NOT whole-file equality, so
+// it stays true however other EOF-appended toggle lines are ordered around
+// ours. mathSet returns the input unchanged when already current, so a
+// re-apply never shuffles EOF lines for nothing.
+// ---------------------------------------------------------------------------
+
+// KaTeX assets, loaded once at activation from this extension's own install
+// dir (initMathAssets). undefined => feature reports missing and stays inert.
+interface MathAssets {
+  js: string; // katex.min.js (single line, verbatim)
+  css: string; // katex.min.css (single line)
+  fontsDir: string; // absolute path to the vendored woff2 files
+  fontNames: string[]; // KaTeX_*.woff2 names shipped by this build
+}
+let mathAssets: MathAssets | undefined;
+
+export function initMathAssets(extensionDir: string): void {
+  try {
+    const base = path.join(extensionDir, "assets", "katex");
+    const js = fs
+      .readFileSync(path.join(base, "katex.min.js"), "utf8")
+      .replace(/\/\/# sourceMappingURL=[^\n]*/g, "")
+      .trim();
+    const css = fs.readFileSync(path.join(base, "katex.min.css"), "utf8").trim();
+    const fontsDir = path.join(base, "fonts");
+    const fontNames = fs
+      .readdirSync(fontsDir)
+      .filter((f) => /^KaTeX_[\w-]+\.woff2$/.test(f));
+    // The payload strips/anchors are line- and marker-based: a multi-line or
+    // marker-colliding asset can't be embedded safely, so refuse it (the
+    // toggle then reports missing rather than corrupting the bundle).
+    if (
+      !js ||
+      !css ||
+      js.includes("\n") ||
+      css.includes("\n") ||
+      js.includes("ccup") ||
+      css.includes("ccup") ||
+      !fontNames.length
+    ) {
+      mathAssets = undefined;
+      return;
+    }
+    mathAssets = { js, css, fontsDir, fontNames };
+  } catch {
+    mathAssets = undefined;
+  }
+}
+
+// wrap: the markdown component's content initializer,
+// `({content:e,context:t,isPartialText:i}){let n=i?wlt(e):e,` (captures:
+// 1=head, 2=content, 3=isPartialText, 4=initializer, 5=separator).
+const MATH_WRAP_RE =
+  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)\}\)\{let [\w$]+=)(\3\?[\w$]+\(\2\):\2)([,;])/g;
+
+// code: the head of the component map's `code` renderer,
+// `code:({children:c,className:d})=>{if(d)return b("code",...)` (captures:
+// 1=head, 2=children, 3=className, 4=original first statement, 5=jsx factory).
+const MATH_CODE_RE =
+  /(code:\(\{children:([\w$]+),className:([\w$]+)\}\)=>\{)(if\(\3\)return ([\w$]+)\("code",\{className:\3,children:\2\}\);)/g;
+
+const MATH_FRAG_END = "/*ccup:mathEnd*/";
+const mathFrag = (tag: string, code: string): string =>
+  `/*ccup:math:${tag}*/${code}${MATH_FRAG_END}`;
+const MATH_FRAG_RE = /\/\*ccup:math:[-\w]+\*\/[\s\S]*?\/\*ccup:mathEnd\*\//g;
+
+const MATH_KATEX_START = "/*ccup:mathKatexStart*/";
+const MATH_KATEX_BLOCK_RE =
+  /\n?\/\*ccup:mathKatexStart\*\/[\s\S]*?\/\*ccup:mathKatexEnd\*\//g;
+
+const MATH_HELPER_START = "/*ccup:mathHelperStart*/";
+const MATH_HELPER_BLOCK_RE =
+  /\n?\/\*ccup:mathHelperStart\*\/[\s\S]*?\/\*ccup:mathHelperEnd\*\//g;
+
+const MATH_CSS_MARKER = "/*ccup:mathCss*/";
+const MATH_EM_KEY = "chatMathFontSizeEm";
+
+// Settings that feed a point's build output without being a point of their own
+// (the math css line bakes the em size in), so a change must run autoApply and
+// a factory reset must clear them like any point key.
+export const EXTRA_PATCH_KEYS: [string, number | string][] = [[MATH_EM_KEY, 1]];
+
+function readMathEm(): string {
+  const raw = vscode.workspace
+    .getConfiguration(CONFIG_NS)
+    .get<number>(MATH_EM_KEY, 1);
+  const n = typeof raw === "number" && Number.isFinite(raw) ? raw : 1;
+  return String(Math.round(Math.min(3, Math.max(0.5, n)) * 100) / 100);
+}
+
+// Runs inside the chat webview, injected verbatim via toString(): it must stay
+// fully self-contained (no references to module scope, no TS-only runtime
+// constructs) and must never contain the literal comment-closer of the block
+// markers. Everything is try/catch-wrapped so it can never break the chat.
+function ccupMathHelperWebview(): void {
+  const g = globalThis as Record<string, any>;
+  try {
+    if (g.__ccupMathW) return;
+    const S = "\uE000"; // private-use sentinel, never in real chat text
+    const MRE = new RegExp("^" + S + "([DI]):([A-Za-z0-9+/=]*)" + S + "$");
+    const enc = (t: string): string => {
+      try {
+        return g.btoa(unescape(encodeURIComponent(t)));
+      } catch {
+        return "";
+      }
+    };
+    const dec = (t: string): string => {
+      try {
+        return decodeURIComponent(escape(g.atob(t)));
+      } catch {
+        return "";
+      }
+    };
+    const mark = (kind: string, tex: string): string | null => {
+      const b = enc(tex);
+      return b ? "`" + S + kind + ":" + b + S + "`" : null;
+    };
+    const ink = (t: string): boolean => /\S/.test(t);
+    const isSp = (c: string): boolean => c === " " || c === "\t";
+    // Next unescaped `tok` at or after `from`; rejected when a blank line
+    // (paragraph break, which TeX math cannot contain) sits before it.
+    const findTok = (s: string, from: number, tok: string): number => {
+      let j = s.indexOf(tok, from);
+      while (j >= 0) {
+        let b = 0;
+        let k = j - 1;
+        while (k >= from && s.charAt(k) === "\\") {
+          b++;
+          k--;
+        }
+        if (b % 2 === 0) {
+          const bl = s.indexOf("\n\n", from);
+          return bl >= 0 && bl < j ? -1 : j;
+        }
+        j = s.indexOf(tok, j + 1);
+      }
+      return -1;
+    };
+
+    // Preprocessor: raw markdown in, markdown with math spans replaced by
+    // `<sentinel-tagged base64>` inline code spans out.
+    g.__ccupMathW = function (s: unknown): unknown {
+      try {
+        if (typeof s !== "string") return s;
+        if (
+          s.indexOf("$") < 0 &&
+          s.indexOf("\\(") < 0 &&
+          s.indexOf("\\[") < 0
+        ) {
+          return s;
+        }
+        const n = s.length;
+        let out = "";
+        let i = 0;
+        let lineStart = true;
+        let poison = -1; // after a stray backtick: no conversion before this index
+        while (i < n) {
+          const c = s.charAt(i);
+          if (c === "\n") {
+            out += c;
+            i++;
+            lineStart = true;
+            continue;
+          }
+          if (lineStart) {
+            lineStart = false;
+            // Fenced code block (0-3 spaces, then 3+ backticks or tildes):
+            // copy through the closing fence untouched.
+            let j = i;
+            let spn = 0;
+            while (j < n && s.charAt(j) === " " && spn < 3) {
+              j++;
+              spn++;
+            }
+            const f = s.charAt(j);
+            if (f === "`" || f === "~") {
+              let k = j;
+              while (k < n && s.charAt(k) === f) k++;
+              const flen = k - j;
+              if (flen >= 3) {
+                let close = -1;
+                let p = k;
+                for (;;) {
+                  const nl = s.indexOf("\n", p);
+                  if (nl < 0) break;
+                  let q = nl + 1;
+                  let sp2 = 0;
+                  while (q < n && s.charAt(q) === " " && sp2 < 3) {
+                    q++;
+                    sp2++;
+                  }
+                  let r = q;
+                  while (r < n && s.charAt(r) === f) r++;
+                  if (r - q >= flen) {
+                    let t = r;
+                    while (t < n && isSp(s.charAt(t))) t++;
+                    if (t >= n || s.charAt(t) === "\n") {
+                      close = t;
+                      break;
+                    }
+                  }
+                  p = nl + 1;
+                }
+                if (close < 0) {
+                  out += s.slice(i); // unclosed fence: rest is code
+                  i = n;
+                  break;
+                }
+                out += s.slice(i, close);
+                i = close;
+                continue;
+              }
+            }
+          }
+          if (c === "`") {
+            // Inline code span: a run of L backticks closes at the next run of
+            // exactly L within the paragraph. Unpaired runs poison the rest of
+            // the paragraph (a marker's backticks could re-pair with them).
+            let k = i;
+            while (k < n && s.charAt(k) === "`") k++;
+            const L = k - i;
+            let lim = s.indexOf("\n\n", k);
+            if (lim < 0) lim = n;
+            let p = k;
+            let close = -1;
+            while (p < lim) {
+              const b1 = s.indexOf("`", p);
+              if (b1 < 0 || b1 >= lim) break;
+              let b2 = b1;
+              while (b2 < n && s.charAt(b2) === "`") b2++;
+              if (b2 - b1 === L) {
+                close = b2;
+                break;
+              }
+              p = b2;
+            }
+            if (close >= 0) {
+              out += s.slice(i, close);
+              i = close;
+              continue;
+            }
+            out += s.slice(i, k);
+            i = k;
+            poison = lim;
+            continue;
+          }
+          if (poison >= 0) {
+            if (i < poison) {
+              let nl = s.indexOf("\n", i);
+              if (nl < 0) nl = n;
+              let stop = Math.min(poison, nl);
+              if (stop <= i) stop = i + 1;
+              out += s.slice(i, stop);
+              i = stop;
+              continue;
+            }
+            poison = -1;
+          }
+          if (c === "\\") {
+            const d = s.charAt(i + 1);
+            if (d === "(" || d === "[") {
+              const e = findTok(s, i + 2, d === "(" ? "\\)" : "\\]");
+              if (e >= 0) {
+                const tex = s.slice(i + 2, e);
+                if (ink(tex) && tex.length <= 5000) {
+                  const mk = mark(d === "[" ? "D" : "I", tex);
+                  if (mk) {
+                    out += mk;
+                    i = e + 2;
+                    continue;
+                  }
+                }
+              }
+            }
+            out += s.slice(i, i + 2); // escape pair (covers \$) stays verbatim
+            i += 2;
+            continue;
+          }
+          if (c === "$") {
+            if (s.charAt(i + 1) === "$") {
+              const e = findTok(s, i + 2, "$$");
+              if (e >= 0) {
+                const tex = s.slice(i + 2, e);
+                if (ink(tex) && tex.length <= 5000) {
+                  // Display only when the $$…$$ sits alone on its line(s)
+                  // (blockquote `>` prefixes allowed); inline otherwise.
+                  const ls = s.lastIndexOf("\n", i - 1) + 1;
+                  const head = s.slice(ls, i);
+                  const after = e + 2;
+                  let nl = s.indexOf("\n", after);
+                  if (nl < 0) nl = n;
+                  const tail = s.slice(after, nl);
+                  const disp =
+                    /^[ \t>]*$/.test(head) && /^[ \t]*$/.test(tail);
+                  // Inside a blockquote the continuation lines carry "> "
+                  // prefixes that are markdown syntax, not TeX: strip them.
+                  const tex2 =
+                    disp && head.indexOf(">") >= 0
+                      ? tex.replace(/\n[ \t]*(?:>[ \t]?)+/g, "\n")
+                      : tex;
+                  const mk = mark(disp ? "D" : "I", tex2);
+                  if (mk) {
+                    out += mk;
+                    i = after;
+                    continue;
+                  }
+                }
+              }
+              out += "$$";
+              i += 2;
+              continue;
+            }
+            // Single $: same line only; opener not followed by whitespace or
+            // $, closer not preceded by whitespace nor followed by a digit
+            // (Pandoc's heuristic, so currency stays literal).
+            const prev = i > 0 ? s.charAt(i - 1) : "";
+            const next = s.charAt(i + 1);
+            if (next !== "" && next !== "$" && !isSp(next) && prev !== "$") {
+              let j2 = i + 1;
+              let close = -1;
+              while (j2 < n) {
+                const ch = s.charAt(j2);
+                if (ch === "\n") break;
+                if (ch === "\\") {
+                  j2 += 2;
+                  continue;
+                }
+                if (ch === "$") {
+                  const pb = s.charAt(j2 - 1);
+                  const pa = s.charAt(j2 + 1);
+                  if (!isSp(pb) && !(pa >= "0" && pa <= "9")) close = j2;
+                  break;
+                }
+                j2++;
+              }
+              if (close > i + 1) {
+                const tex = s.slice(i + 1, close);
+                if (ink(tex) && tex.length <= 2000) {
+                  const mk = mark("I", tex);
+                  if (mk) {
+                    out += mk;
+                    i = close + 1;
+                    continue;
+                  }
+                }
+              }
+            }
+            out += c;
+            i++;
+            continue;
+          }
+          // Bulk copy to the next character of interest (\n $ \ `).
+          let stop = n;
+          for (let t = i + 1; t < n; t++) {
+            const cc = s.charCodeAt(t);
+            if (cc === 10 || cc === 36 || cc === 92 || cc === 96) {
+              stop = t;
+              break;
+            }
+          }
+          out += s.slice(i, stop);
+          i = stop;
+        }
+        return out;
+      } catch {
+        return s;
+      }
+    };
+
+    // Renderer hook: called at the head of the `code` component with the
+    // build's jsx factory and the code span's children. Returns a React
+    // element for marker payloads, null for everything else (real code).
+    const cache = new Map<string, string | null>();
+    g.__ccupMathR = function (jsx: any, children: unknown): any {
+      try {
+        if (typeof children !== "string") return null;
+        const m = MRE.exec(children);
+        if (!m) return null;
+        const disp = m[1] === "D";
+        const tex = dec(m[2]);
+        const raw = disp ? "$$" + tex + "$$" : "$" + tex + "$";
+        const K = g.katex;
+        if (!K || !K.renderToString) return jsx("span", { children: raw });
+        const key = m[1] + m[2];
+        let html = cache.get(key);
+        if (html === undefined) {
+          try {
+            html = K.renderToString(tex, {
+              displayMode: disp,
+              throwOnError: false,
+              strict: "ignore",
+            }) as string;
+          } catch {
+            html = null; // wrong-type ParseError etc.: fall back to raw TeX
+          }
+          if (cache.size > 800) cache.clear();
+          cache.set(key, html);
+        }
+        if (!html) return jsx("span", { children: raw });
+        return jsx("span", {
+          className: disp ? "ccup-math ccup-math-d" : "ccup-math",
+          dangerouslySetInnerHTML: { __html: html },
+        });
+      } catch {
+        return null;
+      }
+    };
+  } catch {
+    // never break the webview
+  }
+}
+
+function mathHelperBlock(): string {
+  return `${MATH_HELPER_START};(${ccupMathHelperWebview.toString()})();/*ccup:mathHelperEnd*/`;
+}
+
+function mathKatexBlock(): string | undefined {
+  if (!mathAssets) return undefined;
+  return `${MATH_KATEX_START};(function(define,module,exports){${mathAssets.js}})();/*ccup:mathKatexEnd*/`;
+}
+
+function mathAnchorsPresent(c: string): boolean {
+  MATH_WRAP_RE.lastIndex = 0;
+  MATH_CODE_RE.lastIndex = 0;
+  return MATH_WRAP_RE.test(c) && MATH_CODE_RE.test(c);
+}
+function mathMarksPresent(c: string): boolean {
+  return (
+    c.includes("/*ccup:math:") ||
+    c.includes(MATH_HELPER_START) ||
+    c.includes(MATH_KATEX_START)
+  );
+}
+// Remove every trace (inline fragments + both EOF blocks), restoring those
+// spots to stock bytes.
+function mathStrip(c: string): string {
+  return c
+    .replace(MATH_KATEX_BLOCK_RE, "")
+    .replace(MATH_HELPER_BLOCK_RE, "")
+    .replace(MATH_FRAG_RE, "");
+}
+// Remove only the EOF blocks, keeping the inline fragments in place (for the
+// order-insensitive current check).
+function mathStripEof(c: string): string {
+  return c.replace(MATH_KATEX_BLOCK_RE, "").replace(MATH_HELPER_BLOCK_RE, "");
+}
+// Insert the inline fragments into a STRIPPED bundle (caller verified both
+// anchors; all-or-nothing is the anchors' job, the two replaces are safe).
+function mathApplyInline(c: string): string {
+  let out = c.replace(
+    MATH_WRAP_RE,
+    (_w, head, _content, _partial, init, sep) =>
+      `${head}${mathFrag(
+        "wrapA",
+        "(window.__ccupMathW||function(ccupX){return ccupX})(",
+      )}${init}${mathFrag("wrapB", ")")}${sep}`,
+  );
+  out = out.replace(
+    MATH_CODE_RE,
+    (_w, head, ch, _cls, origIf, jsx) =>
+      `${head}${mathFrag(
+        "code",
+        `var ccupM=window.__ccupMathR&&window.__ccupMathR(${jsx},${ch});if(ccupM)return ccupM;`,
+      )}${origIf}`,
+  );
+  return out;
+}
+
+function mathPresent(c: string): boolean {
+  return mathMarksPresent(c) || (mathAssets !== undefined && mathAnchorsPresent(c));
+}
+// true = ON in exactly this build's form (also when marked but unrebuildable,
+// so an orphaned patch still reads as ON and stays removable), false = OFF or
+// stale, undefined = no marks and no anchors. Each piece is compared on its
+// own (never whole-file equality), so other toggles' EOF lines can sit in any
+// order around ours without reading as drift.
+function mathCurrentOn(c: string): boolean | undefined {
+  if (!mathMarksPresent(c)) {
+    return mathAssets && mathAnchorsPresent(c) ? false : undefined;
+  }
+  const stripped = mathStrip(c);
+  const katex = mathKatexBlock();
+  if (!katex || !mathAnchorsPresent(stripped)) return true;
+  if (mathStripEof(c) !== mathApplyInline(stripped)) return false;
+  MATH_HELPER_BLOCK_RE.lastIndex = 0;
+  const h = MATH_HELPER_BLOCK_RE.exec(c)?.[0]?.replace(/^\n/, "");
+  if (h !== mathHelperBlock()) return false;
+  MATH_KATEX_BLOCK_RE.lastIndex = 0;
+  const k = MATH_KATEX_BLOCK_RE.exec(c)?.[0]?.replace(/^\n/, "");
+  return k === katex;
+}
+function mathSet(c: string, on: boolean): string {
+  if (!on) return mathStrip(c);
+  if (mathCurrentOn(c) === true) return c; // stable: no EOF reshuffle on re-apply
+  const stripped = mathStrip(c);
+  const katex = mathKatexBlock();
+  if (!katex || !mathAnchorsPresent(stripped)) return c; // can't build here
+  return `${mathApplyInline(stripped)}\n${katex}\n${mathHelperBlock()}`;
+}
+
+// The css side-effect: katex.min.css plus the em-size override, one marked
+// line. Baking the em in means an em change reads as a stale line and
+// re-applies through the ordinary reconcile.
+function mathCssBuild(_css: string): string | undefined {
+  if (!mathAssets) return undefined;
+  return (
+    `${MATH_CSS_MARKER}${mathAssets.css}` +
+    `.ccup-math .katex{font-size:${readMathEm()}em}` +
+    `.ccup-math .katex-display{overflow-x:auto;overflow-y:hidden;padding:3px 0}`
+  );
+}
+
+// Copy the KaTeX woff2 fonts into <install>/webview/fonts when ON (skipping
+// up-to-date files); remove exactly those files (and the dir if it emptied)
+// when OFF. Same atomic stage-and-rename as the bundle writes.
+function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
+  const dir = path.join(ext.dir, "webview", "fonts");
+  if (on && mathAssets) {
+    fs.mkdirSync(dir, { recursive: true });
+    let copied = 0;
+    for (const name of mathAssets.fontNames) {
+      const src = path.join(mathAssets.fontsDir, name);
+      const dst = path.join(dir, name);
+      try {
+        if (fs.statSync(dst).size === fs.statSync(src).size) continue;
+      } catch {
+        // missing: copy below
+      }
+      const tmp = `${dst}.${process.pid}.${atomicWriteCounter++}.tmp`;
+      try {
+        fs.copyFileSync(src, tmp);
+        fs.renameSync(tmp, dst);
+        copied++;
+      } catch (err) {
+        try {
+          fs.unlinkSync(tmp);
+        } catch {
+          // best effort: nothing to clean up if the temp was never created
+        }
+        throw err;
+      }
+    }
+    if (copied) changed.push(`math fonts x${copied}`);
+    return;
+  }
+  let removed = 0;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!/^KaTeX_[\w-]+\.woff2$/.test(f)) continue; // never touch other files
+      try {
+        fs.unlinkSync(path.join(dir, f));
+        removed++;
+      } catch {
+        // best effort: a locked file just lingers
+      }
+    }
+    if (!fs.readdirSync(dir).length) fs.rmdirSync(dir);
+  } catch {
+    // dir absent: nothing to remove
+  }
+  if (removed) changed.push("math fonts removed");
 }
 
 // Scroll-to-bottom button (ON): the chat auto-sticks to the newest message only
@@ -1131,6 +1765,20 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: permNoWrapPresent,
     fnCurrentOn: permNoWrapCurrentOn,
     fnSet: permNoWrapSet,
+  },
+  {
+    id: "chatMath",
+    section: "Chat Panel or Tab",
+    label: "math rendering (KaTeX)",
+    key: "chatMathRendering",
+    defaultOn: false,
+    file: "webview/index.js",
+    fnPresent: mathPresent,
+    fnCurrentOn: mathCurrentOn,
+    fnSet: mathSet,
+    cssFile: "webview/index.css",
+    cssMarker: MATH_CSS_MARKER,
+    cssBuild: mathCssBuild,
   },
   {
     id: "scrollDot",
@@ -2327,11 +2975,14 @@ export function applyPatch(
         : cssRemoveLine(out, t.cssMarker);
       if (next !== out) {
         out = next;
-        changed.push(`${t.label} gutter ${wantOn ? "clean" : "native"}`);
+        changed.push(`${t.label} css ${wantOn ? "applied" : "native"}`);
       }
     }
     if (out !== content) writeFileAtomic(abs, out);
   }
+  // Math rendering ships webfont FILES alongside the bundle edits: keep them in
+  // step with the toggle (copied when on, removed when off).
+  syncMathFonts(ext, toggles["chatMath"] === true, changed);
   return { version: ext.version, changed };
 }
 
@@ -2395,11 +3046,12 @@ export function restorePatch(
       const next = cssRemoveLine(out, t.cssMarker);
       if (next !== out) {
         out = next;
-        changed.push(`${t.label} gutter restored`);
+        changed.push(`${t.label} css restored`);
       }
     }
     if (out !== content) writeFileAtomic(abs, out);
   }
+  syncMathFonts(ext, false, changed);
   return { version: ext.version, changed };
 }
 
@@ -2473,6 +3125,7 @@ export class Patcher {
       ...PATCH_POINTS.map((p) => p.key),
       ...TOGGLE_POINTS.map((t) => t.key),
       ...INJECT_POINTS.map((ip) => ip.key),
+      ...EXTRA_PATCH_KEYS.map(([k]) => k),
     ].map((k) => `${CONFIG_NS}.${k}`);
     // chat.fontSize is no longer a knob, but the chatHistoryFontSize knob shows it
     // while inheriting, so a native change should refresh (not re-patch) the view.
@@ -2877,6 +3530,9 @@ export class Patcher {
       ),
       ...INJECT_POINTS.map((ip) =>
         cfg.update(ip.key, ip.defaultRaw, vscode.ConfigurationTarget.Global),
+      ),
+      ...EXTRA_PATCH_KEYS.map(([k, v]) =>
+        cfg.update(k, v, vscode.ConfigurationTarget.Global),
       ),
     ]);
     this.refresh();

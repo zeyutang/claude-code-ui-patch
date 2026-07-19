@@ -101,6 +101,18 @@
           "default": false,
           "markdownDescription": "Sync the diff card theme to the VS Code light/dark theme instead of forcing dark."
         },
+        "claudeCodeUiPatch.chatMathRendering": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Render TeX math in agent chat messages with a bundled KaTeX (`$...$`, `$$...$$`, `\\(...\\)`, `\\[...\\]`). Math is detected in the raw markdown before the parser runs, so underscores and asterisks inside math never turn into emphasis, and math inside code blocks or inline code is left alone. `$$...$$` renders as display math when it sits alone on its line(s), inline otherwise; a `$...$` opener followed by whitespace or a closer next to whitespace/digits stays literal, so `$5 and $10` is untouched. Off = native (raw TeX source shown)."
+        },
+        "claudeCodeUiPatch.chatMathFontSizeEm": {
+          "type": "number",
+          "default": 1.0,
+          "minimum": 0.5,
+          "maximum": 3,
+          "markdownDescription": "Math size in `em`, relative to the surrounding chat text (applies while `#claudeCodeUiPatch.chatMathRendering#` is on). KaTeX's own default is `1.21`, sized for documents; `1.0` matches the surrounding text."
+        },
         "claudeCodeUiPatch.chatPermissionCodeMatchChatCodeBlock": {
           "type": "boolean",
           "default": false,
@@ -206,11 +218,13 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "update-katex": "node scripts/update-katex.js",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "katex": "^0.18.1",
     "typescript": "^5.4.0"
   }
 }

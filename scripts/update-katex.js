@@ -4,7 +4,10 @@
 // are copied: the minified UMD bundle, the minified stylesheet, the woff2
 // fonts (the stylesheet lists woff/ttf fallbacks, but Chromium-based webviews
 // always take the woff2 source, so the fallbacks are not shipped), and the
-// license.
+// MIT license. FONTS-LICENSE.txt (the fonts' SIL OFL 1.1 notice, matching the
+// license metadata embedded in the font files) is maintained by hand and
+// preserved across refreshes; re-check it against the new fonts' name-table
+// entries when bumping.
 "use strict";
 
 const fs = require("fs");
@@ -19,7 +22,12 @@ const version = JSON.parse(
   fs.readFileSync(path.join(src, "package.json"), "utf8"),
 ).version;
 
-fs.rmSync(dest, { recursive: true, force: true });
+// Selective refresh: replace only what this script owns, so the hand-written
+// FONTS-LICENSE.txt survives.
+for (const f of ["katex.min.js", "katex.min.css", "LICENSE", "VERSION"]) {
+  fs.rmSync(path.join(dest, f), { force: true });
+}
+fs.rmSync(path.join(dest, "fonts"), { recursive: true, force: true });
 fs.mkdirSync(path.join(dest, "fonts"), { recursive: true });
 
 fs.copyFileSync(

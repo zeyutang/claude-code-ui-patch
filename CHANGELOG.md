@@ -2,6 +2,10 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.2.2
+
+- Rename the settings link in the panel and the status-bar tooltip from "Open VS Code Settings" to "Open Settings", which stays accurate on forks.
+
 ## 1.2.1
 
 - Resolve the Claude Code install through the extensions API (`vscode.extensions.getExtension`) instead of scanning hardcoded per-product directories (`~/.vscode`, `~/.vscode-insiders`, `~/.vscode-oss`).

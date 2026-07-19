@@ -3690,7 +3690,7 @@ export function tooltipLines(snap: Snapshot | undefined): string[] {
     "",
     "---",
     "",
-    `${cmdLink("$(gear) Open VS Code Settings", "workbench.action.openSettings", ["claudeCodeUiPatch"])}  ·  ${cmdLink("$(refresh) Reload Window", "workbench.action.reloadWindow")}`,
+    `${cmdLink("$(gear) Open Settings", "workbench.action.openSettings", ["claudeCodeUiPatch"])}  ·  ${cmdLink("$(refresh) Reload Window", "workbench.action.reloadWindow")}`,
   );
 
   if (!snap.supported) {

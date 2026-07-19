@@ -160,7 +160,7 @@ ${sections}
     <button class="btn btn-green${snap.needsReload ? "" : " quiet"}" data-cmd="discard" title="Revert to the values on disk at the last window reload">Restore Last Applied</button>
     <button class="btn btn-red" data-cmd="restore" title="Reset every setting to Claude Code's native values">Factory Reset</button>
   </div>
-  <a class="link" data-cmd="openSettings">&#9881; Open VS Code Settings</a>
+  <a class="link" data-cmd="openSettings">&#9881; Open Settings</a>
   <a class="link link-reload${snap.needsReload ? " link-reload-pending" : ""}" data-cmd="reload">&#8635; Reload Window</a>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();

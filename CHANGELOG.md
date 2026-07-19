@@ -2,6 +2,13 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.2.1
+
+- Resolve the Claude Code install through the extensions API (`vscode.extensions.getExtension`) instead of scanning hardcoded per-product directories (`~/.vscode`, `~/.vscode-insiders`, `~/.vscode-oss`).
+  The patcher now targets exactly the copy the current window loaded, so it works unchanged on VS Code forks (VSCodium, code-server, Cursor, ...), on remote hosts, in portable installs, and under custom `--extensions-dir` locations, and it can no longer patch a copy belonging to a different product that happens to carry a newer version.
+  The parent directory of the resolved install (or of this extension, when Claude Code is not loaded in the extension host) is still scanned, so a newer, not-yet-loaded sibling laid down by an auto-update keeps winning the version pick.
+- Skip install folders listed in the extensions root's `.obsolete` file (pending deletion after an uninstall, update, or downgrade), so a doomed leftover can never be selected as the patch target.
+
 ## 1.2.0
 
 - Add `claudeCodeUiPatch.chatMathRendering`: render TeX math in agent chat messages with a bundled KaTeX (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`), off by default.

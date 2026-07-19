@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 
 // The installed Claude Code extension is laid down as one directory per
 // version/platform, e.g. anthropic.claude-code-2.1.200-darwin-arm64. We patch
@@ -2780,13 +2779,33 @@ function filePath(ext: ClaudeExt, rel: string): string {
   return path.join(ext.dir, rel);
 }
 
+// Roots that may hold Claude Code installs. The extensions API names the copy
+// this window actually loaded, exact on any fork, remote host, or custom
+// --extensions-dir (`?.`: absent in the test stub's vscode). The parent of our
+// own install covers an API miss (Claude Code installed but not loaded in
+// this extension host): both extensions live in the same extensions root.
+// Scanning other products' roots (~/.vscode, ~/.vscode-oss, ...) would risk
+// patching a copy the current window never loads, so only these two count.
 function extensionsDirs(context: vscode.ExtensionContext): string[] {
   const dirs = new Set<string>();
+  const loaded = vscode.extensions?.getExtension("anthropic.claude-code");
+  if (loaded) dirs.add(path.dirname(loaded.extensionUri.fsPath));
   dirs.add(path.dirname(context.extensionUri.fsPath));
-  dirs.add(path.join(os.homedir(), ".vscode", "extensions"));
-  dirs.add(path.join(os.homedir(), ".vscode-insiders", "extensions"));
-  dirs.add(path.join(os.homedir(), ".vscode-oss", "extensions"));
   return [...dirs].filter((d) => fs.existsSync(d));
+}
+
+// The extensions root's .obsolete file maps folder names pending deletion to
+// true (an uninstall, the old version after an update, or the new one after a
+// downgrade). A leftover listed there must not win the version scan.
+function readObsolete(base: string): Set<string> {
+  try {
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(base, ".obsolete"), "utf8"),
+    );
+    return new Set(Object.keys(raw).filter((k) => raw[k] === true));
+  } catch {
+    return new Set();
+  }
 }
 
 function compareVersions(a: string, b: string): number {
@@ -2811,8 +2830,10 @@ export function findLatestClaudeExt(
     } catch {
       continue;
     }
+    const obsolete = readObsolete(base);
     for (const name of entries) {
       if (!name.startsWith(EXT_PREFIX)) continue;
+      if (obsolete.has(name)) continue;
       const m = name.match(verRe);
       if (!m) continue;
       const dir = path.join(base, name);

@@ -148,7 +148,7 @@
         "claudeCodeUiPatch.chatFindBar": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Replace `Cmd`/`Ctrl`+`F` in the chat with a find bar whose navigation works (the native widget highlights but cannot advance between matches). Matches show in the editor's find colors with a counter, and `Escape` closes. Next/previous wraps and follows your **Find Next** / **Find Previous** keybindings plus the platform defaults, single chords only. The sidebar chat gets the same bar. Off = native."
+          "markdownDescription": "Replace `Cmd`/`Ctrl`+`F` in Claude Code interface with a find bar. Matches show in the editor's find colors with a counter, and `Escape` closes. Next/previous wraps and follows your **Find Next** / **Find Previous** keybindings plus the platform defaults. Block-skip buttons jump between the blocks that hold matches, and a side ruler marks the active match's block (nothing auto-expands). Off = native."
         },
         "claudeCodeUiPatch.chatShowMoreAndLessAlign": {
           "type": "string",

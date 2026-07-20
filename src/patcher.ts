@@ -1688,9 +1688,29 @@ function jumpMsgSet(c: string, on: boolean): string {
 //           DOM mutation, so React re-renders never fight the highlights
 //   nav     next/previous wrap around, move the active highlight, and scroll
 //           the transcript scroller just enough to center an off-screen match
+//   blocks  a second button pair skips between the BLOCKS that hold matches,
+//           because a match can be legible only after manual action the bar
+//           deliberately never takes (no auto-expand, no focus steal): inside
+//           a folded IN/OUT row or an unexpanded diff card the orange
+//           highlight is clipped or tiny. A match's block is its nearest
+//           ancestor among the baked block classes (diff card containers,
+//           IN/OUT row, the tool card wrapper, one markdown chunk of an agent
+//           response, a user message, a turn's sticky header), falling back
+//           to the transcript row; previous lands on a block's first match. A
+//           fixed ruler bar (the active-match highlight color, pinned to the
+//           user-message column's left gutter, tracked on scroll/resize/
+//           mutation) marks the block of the active match, so the eye finds
+//           the right block even when the highlight itself is not visible in
+//           place
 //   rescan  a body MutationObserver (debounced, active only while the bar is
 //           open) recomputes matches when the chat re-renders or streams,
-//           keeping the active match by its haystack offset, without scrolling
+//           without scrolling. Batches produced entirely by the bar/ruler are
+//           dropped (the counter's textContent writes would otherwise
+//           re-trigger it), and the active match re-anchors via its LIVE
+//           Range, whose boundaries track surrounding mutations, so content
+//           mounting above (sticky pinning, Monaco's virtualized diff lines
+//           during scroll) cannot walk the active match forward; the haystack
+//           offset is only the fallback for a re-rendered active node
 //
 // Keys are resolved on the HOST at patch time and baked into a small cfg line
 // (window.__ccupFindCfg) separate from the engine block, so a keybinding edit
@@ -1927,12 +1947,26 @@ function ccupFindBarWebview(): void {
     let count: any = null;
     let prevB: any = null;
     let nextB: any = null;
+    let blockPrevB: any = null;
+    let blockNextB: any = null;
+    let ruler: any = null;
     let ranges: any[] = [];
     let starts: number[] = []; // haystack offset per match, for rescan continuity
+    let blkMemo = new Map(); // match index -> block element, reset per scan
     let active = -1;
     let lastFocus: any = null;
     let scanT: any = 0;
     let mutT: any = 0;
+    let rraf: any = 0;
+    const BLOCKS: string[] = cfg.blocks || [];
+    // Ruler column reference: the user-message (or turn-header) left edge.
+    let refEl: any = null;
+    let umClass = "";
+    let shClass = "";
+    for (let i = 0; i < BLOCKS.length; i++) {
+      if (!umClass && BLOCKS[i].indexOf("userMessage_") === 0) umClass = BLOCKS[i];
+      if (!shClass && BLOCKS[i].indexOf("stickyHeader_") === 0) shClass = BLOCKS[i];
+    }
 
     const container = (): any =>
       doc.querySelector(".messagesContainer_" + cfg.chat);
@@ -1996,6 +2030,7 @@ function ccupFindBarWebview(): void {
     const search = (q: string): void => {
       ranges = [];
       starts = [];
+      blkMemo = new Map();
       if (!q) return;
       const col = collect();
       const nodes = col.nodes;
@@ -2044,16 +2079,20 @@ function ccupFindBarWebview(): void {
       } catch {
         // Highlight registry unavailable: matches still navigate by scroll
       }
+      rulerQ();
     };
 
     const status = (): void => {
       if (!count) return;
       const q = input ? input.value : "";
-      count.textContent = !q
+      const txt = !q
         ? ""
         : ranges.length
           ? active + 1 + " of " + (ranges.length >= MAXM ? MAXM + "+" : ranges.length)
           : "No results";
+      // Write only on change: textContent assignment always emits a mutation,
+      // which the body observer must never see as chat activity.
+      if (count.textContent !== txt) count.textContent = txt;
       if (bar) {
         if (q && !ranges.length) bar.setAttribute("data-none", "");
         else bar.removeAttribute("data-none");
@@ -2061,6 +2100,8 @@ function ccupFindBarWebview(): void {
       const dis = !ranges.length;
       if (prevB) prevB.disabled = dis;
       if (nextB) nextB.disabled = dis;
+      if (blockPrevB) blockPrevB.disabled = dis;
+      if (blockNextB) blockNextB.disabled = dis;
     };
 
     // Scroll the transcript scroller just enough to center an off-view match.
@@ -2091,6 +2132,67 @@ function ccupFindBarWebview(): void {
       reveal();
     };
 
+    // The block a match lives in: the nearest ancestor carrying one of the
+    // baked block classes, else the transcript row that contains the match.
+    const blockAt = (k: number): any => {
+      let el = blkMemo.get(k);
+      if (el !== undefined) return el;
+      el = null;
+      try {
+        const root = container();
+        let e = ranges[k].startContainer.parentElement;
+        let row = null;
+        while (e && e !== root) {
+          if (e.classList) {
+            for (let i = 0; i < BLOCKS.length; i++) {
+              if (e.classList.contains(BLOCKS[i])) {
+                blkMemo.set(k, e);
+                return e;
+              }
+            }
+          }
+          row = e;
+          e = e.parentElement;
+        }
+        el = e === root ? row : null;
+      } catch {
+        el = null;
+      }
+      blkMemo.set(k, el);
+      return el;
+    };
+
+    // Skip to the nearest match in a DIFFERENT block (wrapping); previous
+    // lands on that block's first match, so both directions enter a block at
+    // its top. A single block with matches leaves nothing to skip to.
+    const navBlock = (dir: number): void => {
+      const n = ranges.length;
+      if (!n) return;
+      const cur = active < 0 ? 0 : active;
+      const b = blockAt(cur);
+      let j = -1;
+      for (let s = 1; s < n; s++) {
+        const k = (((cur + dir * s) % n) + n) % n;
+        if (blockAt(k) !== b) {
+          j = k;
+          break;
+        }
+      }
+      if (j < 0) return;
+      if (dir < 0) {
+        const bb = blockAt(j);
+        while (j !== cur) {
+          const p = (j - 1 + n) % n;
+          if (blockAt(p) !== bb) break;
+          j = p;
+        }
+      }
+      active = j;
+      paint();
+      status();
+      reveal();
+    };
+
     // Query changed: rescan and land on the first match in or below the
     // current view (wrapping to the first overall), like a fresh native find.
     const update = (): void => {
@@ -2116,21 +2218,45 @@ function ccupFindBarWebview(): void {
       if (active >= 0) reveal();
     };
 
-    // Transcript re-rendered while open: recompute, keep the active match by
-    // its haystack offset, and never scroll (background changes must not yank).
+    // Transcript re-rendered while open: recompute and never scroll
+    // (background changes must not yank). The active match is re-anchored by
+    // its LIVE Range first: mutations around it adjust the boundary points,
+    // so the same text keeps being the active match even when content
+    // mounting above it (sticky pinning, Monaco's virtualized diff lines on
+    // scroll) shifts every haystack offset. The offset is only the fallback
+    // for a re-rendered (disconnected) active node.
     const rescan = (): void => {
       if (!isOpen() || !input || !input.value) return;
+      const prevRange = active >= 0 ? ranges[active] : null;
       const prevStart = active >= 0 && starts[active] !== undefined ? starts[active] : -1;
       search(input.value);
       active = -1;
       if (ranges.length) {
-        active = ranges.length - 1;
-        for (let k = 0; k < starts.length; k++) {
-          if (starts[k] >= prevStart) {
-            active = k;
-            break;
+        let found = -1;
+        if (prevRange) {
+          try {
+            if (prevRange.startContainer && prevRange.startContainer.isConnected) {
+              for (let k = 0; k < ranges.length; k++) {
+                // 0 = START_TO_START: first new match at or after the old one
+                if (ranges[k].compareBoundaryPoints(0, prevRange) >= 0) {
+                  found = k;
+                  break;
+                }
+              }
+            }
+          } catch {
+            found = -1;
           }
         }
+        if (found < 0) {
+          for (let k = 0; k < starts.length; k++) {
+            if (starts[k] >= prevStart) {
+              found = k;
+              break;
+            }
+          }
+        }
+        active = found >= 0 ? found : ranges.length - 1;
       }
       paint();
       status();
@@ -2142,6 +2268,10 @@ function ccupFindBarWebview(): void {
       "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>";
     const CROSS =
       "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M18 6L6 18'/><path d='M6 6l12 12'/></svg>";
+    const CHEVS_UP =
+      "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M17 11l-5-5-5 5'/><path d='M17 18l-5-5-5 5'/></svg>";
+    const CHEVS_DN =
+      "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M7 6l5 5 5-5'/><path d='M7 13l5 5 5-5'/></svg>";
 
     // Buttons swallow mousedown so the input keeps focus (house pattern).
     const mkBtn = (svg: string, title: string, fn: any): any => {
@@ -2185,16 +2315,76 @@ function ccupFindBarWebview(): void {
       count.setAttribute("aria-live", "polite");
       prevB = mkBtn(CHEV_UP, "Previous match", () => nav(-1));
       nextB = mkBtn(CHEV_DN, "Next match", () => nav(1));
+      blockPrevB = mkBtn(CHEVS_UP, "Previous block", () => navBlock(-1));
+      blockPrevB.classList.add("ccup-find-sep");
+      blockNextB = mkBtn(CHEVS_DN, "Next block", () => navBlock(1));
       const closeB = mkBtn(CROSS, "Close (Escape)", () => closeBar());
+      closeB.classList.add("ccup-find-sep");
       bar.appendChild(input);
       bar.appendChild(count);
       bar.appendChild(prevB);
       bar.appendChild(nextB);
+      bar.appendChild(blockPrevB);
+      bar.appendChild(blockNextB);
       bar.appendChild(closeB);
       doc.body.appendChild(bar);
+      ruler = doc.createElement("div");
+      ruler.className = "ccup-find-ruler";
+      doc.body.appendChild(ruler);
     };
 
     const isOpen = (): boolean => !!(bar && bar.hasAttribute("data-open"));
+
+    // Ruler: a slim fixed bar on the left edge of the active match's block,
+    // clamped to the viewport and tracked on scroll/resize/mutation, so the
+    // right block stands out even when the match highlight itself is clipped
+    // (a folded IN/OUT row) or tiny (an unexpanded diff card).
+    const rulerUpd = (): void => {
+      rraf = 0;
+      if (!ruler) return;
+      let el = null;
+      if (isOpen() && active >= 0 && ranges[active]) el = blockAt(active);
+      if (!el || !el.isConnected) {
+        ruler.style.display = "none";
+        return;
+      }
+      let r;
+      try {
+        r = el.getBoundingClientRect();
+      } catch {
+        ruler.style.display = "none";
+        return;
+      }
+      const vh = g.window.innerHeight || 0;
+      const top = Math.max(r.top, 4);
+      const bot = Math.min(r.bottom, vh - 4);
+      if (bot - top < 8 || r.width <= 0) {
+        ruler.style.display = "none";
+        return;
+      }
+      ruler.style.display = "block";
+      // Fixed column: just left of the user-message history's own left rule,
+      // so the bar always lives in one gutter instead of hugging whichever
+      // indentation the block happens to have.
+      if (!refEl || !refEl.isConnected) {
+        refEl =
+          (umClass && doc.querySelector("." + umClass)) ||
+          (shClass && doc.querySelector("." + shClass)) ||
+          null;
+      }
+      let left;
+      if (refEl) left = refEl.getBoundingClientRect().left - 6;
+      else {
+        const root = container();
+        left = root ? root.getBoundingClientRect().left + 4 : 4;
+      }
+      ruler.style.left = Math.max(2, left) + "px";
+      ruler.style.top = top + "px";
+      ruler.style.height = bot - top + "px";
+    };
+    const rulerQ = (): void => {
+      if (!rraf) rraf = g.requestAnimationFrame(rulerUpd);
+    };
 
     const openBar = (): void => {
       build();
@@ -2225,7 +2415,9 @@ function ccupFindBarWebview(): void {
       }
       ranges = [];
       starts = [];
+      blkMemo = new Map();
       active = -1;
+      if (ruler) ruler.style.display = "none";
       const lf = lastFocus;
       lastFocus = null;
       try {
@@ -2299,9 +2491,25 @@ function ccupFindBarWebview(): void {
       true,
     );
 
+    doc.addEventListener("scroll", rulerQ, true);
+    g.window.addEventListener("resize", rulerQ);
+
     try {
-      new g.MutationObserver(() => {
-        if (!isOpen() || mutT) return;
+      new g.MutationObserver((rs: any) => {
+        if (!isOpen()) return;
+        // Drop batches produced entirely by our own bar/ruler (the counter's
+        // textContent writes), or the rescan would re-trigger itself.
+        let ours = true;
+        for (let i = 0; i < rs.length; i++) {
+          const t = rs[i].target;
+          if (t !== ruler && !(bar && bar.contains(t))) {
+            ours = false;
+            break;
+          }
+        }
+        if (ours) return;
+        rulerQ();
+        if (mutT) return;
         mutT = g.setTimeout(() => {
           mutT = 0;
           rescan();
@@ -2326,8 +2534,32 @@ function findBarCfgBuild(c: string): string | undefined {
   const chat = c.match(FINDBAR_CHAT_HASH_RE)?.[1];
   if (!chat) return undefined;
   const input = c.match(FINDBAR_INPUT_HASH_RE)?.[1] ?? "";
+  // Block classes for the block-skip buttons and the ruler, read from the
+  // bundle's class maps; each is optional (a missing one just falls back to
+  // the transcript-row block). The markdown module shares one hash across its
+  // classes, so the chunk wrapper root_<hash> derives from codeBlockWrapper.
+  const blocks: string[] = [];
+  const push = (name: string | undefined): void => {
+    if (name && !blocks.includes(name)) blocks.push(name);
+  };
+  for (const m of c.matchAll(
+    /diffEditorContainer:"(diffEditorContainer_[-\w]+)"/g,
+  )) {
+    push(m[1]);
+  }
+  // The tool module's hash also names its card wrapper (root_<hash>), the
+  // medium-granularity block for matches in a card's header/summary.
+  const io = c.match(/toolBodyRow:"toolBodyRow_([-\w]+)"/)?.[1];
+  if (io) {
+    push(`toolBodyRow_${io}`);
+    push(`root_${io}`);
+  }
+  const md = c.match(/codeBlockWrapper:"codeBlockWrapper_([-\w]+)"/)?.[1];
+  if (md) push(`root_${md}`);
+  push(c.match(/userMessage:"(userMessage_[-\w]+)"/)?.[1]);
+  push(c.match(/stickyHeader:"(stickyHeader_[-\w]+)"/)?.[1]);
   const k = readFindKeys();
-  const cfg = { chat, input, open: k.open, next: k.next, prev: k.prev };
+  const cfg = { chat, input, blocks, open: k.open, next: k.next, prev: k.prev };
   return `${FINDBAR_CFG_MARKER}window.__ccupFindCfg=${JSON.stringify(cfg)};`;
 }
 
@@ -2387,7 +2619,9 @@ function findBarCssBuild(css: string): string | undefined {
     ".ccup-find-bar button{display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin:0;padding:0;border:none;border-radius:4px;background:transparent;color:inherit;cursor:pointer}" +
     `.ccup-find-bar button:hover{background:${ghost}}` +
     ".ccup-find-bar button[disabled]{opacity:.4;cursor:default;background:transparent}" +
-    ".ccup-find-bar svg{display:block;width:16px;height:16px}"
+    ".ccup-find-bar svg{display:block;width:16px;height:16px}" +
+    ".ccup-find-bar .ccup-find-sep{margin-left:4px}" +
+    ".ccup-find-ruler{position:fixed;display:none;width:3px;border-radius:2px;background:var(--vscode-editor-findMatchBackground,var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.8)));z-index:1199;pointer-events:none}"
   );
 }
 

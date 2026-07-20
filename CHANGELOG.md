@@ -13,6 +13,8 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
   Navigation honors your keybindings for Find Next / Find Previous (`editor.action.nextMatchFindAction` / `editor.action.previousMatchFindAction`) on top of the platform defaults (`Enter`/`Shift`+`Enter`, `F3`/`Shift`+`F3`, plus `Cmd`+`G`/`Cmd`+`Shift`+`G` on macOS), and the open chord honors rebinds of `editor.action.webvieweditor.showFind`.
   Chords are baked at patch time; editing `keybindings.json` re-applies automatically and lights the reload cue.
   Single chords only (a `Cmd+K Cmd+G` sequence cannot be captured in a webview).
+  Block-skip buttons (double chevrons) jump between the blocks that hold matches, entering each at its first match: a diff card, an IN/OUT row, a tool card, one markdown chunk of an agent response, or a user message.
+  A slim ruler in the match-highlight color, pinned to the user-message column, marks the block of the active match, because the bar deliberately never auto-expands a folded IN/OUT row or a diff card, where a match may not be legible in place.
   The sidebar chat, which natively has no find widget at all (microsoft/vscode#173643), gets the same bar.
 - Rename the settings link in the panel and the status-bar tooltip from "Open VS Code Settings" to "Open Settings", which stays accurate on forks.
 - Tighten every settings description in `package.json` to one unified, concise shape: what the setting controls, at most one behavior note, and the closing default shorthand (`0` follows ..., `Empty = native`, `Off = native`).

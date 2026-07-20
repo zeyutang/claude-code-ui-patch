@@ -866,9 +866,16 @@ const MATH_CSS_MARKER = "/*ccup:mathCss*/";
 const MATH_EM_KEY = "chatMathFontSizeEm";
 
 // Settings that feed a point's build output without being a point of their own
-// (the math css line bakes the em size in), so a change must run autoApply and
-// a factory reset must clear them like any point key.
-export const EXTRA_PATCH_KEYS: [string, number | string][] = [[MATH_EM_KEY, 1]];
+// (the math css line bakes the em size in; the find-bar chord settings bake
+// into its cfg line), so a change must run autoApply and a factory reset must
+// clear them like any point key.
+export const EXTRA_PATCH_KEYS: [string, number | string][] = [
+  [MATH_EM_KEY, 1],
+  ["chatFindBarNextMatchKeys", ""],
+  ["chatFindBarPreviousMatchKeys", ""],
+  ["chatFindBarNextMatchBlockKeys", ""],
+  ["chatFindBarPreviousMatchBlockKeys", ""],
+];
 
 function readMathEm(): string {
   const raw = vscode.workspace
@@ -1367,8 +1374,8 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
 // border, and text color so it reads as a secondary control; hover stacks the
 // native ghost-button hover token twice over that surface and lifts the border
 // (theme-adaptive, unlike a brightness filter, which clips to nothing on light
-// surfaces), and it carries a downward arrow plus a native
-// tooltip. Clicking runs a fixed-duration scroll to the container's end: a
+// surfaces), and it carries a downward arrow plus the shared custom hover tip
+// ("Scroll to Bottom"). Clicking runs a fixed-duration scroll to the container's end: a
 // 100ms ease-out rAF animation, so the jump takes the same time however long
 // the history is (native behavior:"smooth" animates by distance and can crawl
 // on a long conversation). The bottom target is re-read every frame so a
@@ -1378,7 +1385,7 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
 // stick-to-bottom flag re-arms by itself, being recomputed from the live
 // scroll position on every render. The button is always visible; while the view
 // sits within 8px of the bottom (nothing to scroll to) it dims inert (data-off:
-// faded, pointer-events off) instead of hiding, re-checked through one
+// faded, clicks ignored, hover tip still shows) instead of hiding, re-checked through one
 // rAF-coalesced updater fed by capture-phase scroll
 // events, window resizes, and a body-wide MutationObserver (which also re-mounts
 // the button if a re-render drops it). data-show/data-off are toggled only on an
@@ -1392,6 +1399,25 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
 // ON state detectable; a marked line that no longer matches the current build
 // (an older patch version) reads as OFF, so the next apply rebuilds it in place
 // or strips it.
+// Custom hover tip shared by the scroll-to-bottom and jump buttons (the find
+// bar carries its own below-the-button variant): the native title tooltip is
+// unreliable inside the webview (long OS delay, often absent), so a small
+// fixed-delay tip shows ABOVE the button (they sit at the viewport's bottom
+// edge). One copy is embedded per toggle line so each stays self-contained;
+// the duplicate CSS rule is byte-identical and harmless.
+const HOVER_TIP_CSS =
+  ".ccup-hover-tip{position:fixed;display:none;padding:2px 8px;border:1px solid var(--vscode-editorHoverWidget-border,var(--vscode-widget-border,#454545));border-radius:4px;background:var(--vscode-editorHoverWidget-background,var(--vscode-editorWidget-background,#252526));color:var(--vscode-editorHoverWidget-foreground,var(--vscode-editorWidget-foreground,#cccccc));font-size:11px;white-space:nowrap;z-index:1300;pointer-events:none;box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36))}";
+const HOVER_TIP_JS =
+  `var tip=null,tipT=0;` +
+  `function showTip(b,t){if(!tip){tip=document.createElement("div");tip.className="ccup-hover-tip";document.body.appendChild(tip)}` +
+  `tip.textContent=t;tip.style.display="block";` +
+  `var r=b.getBoundingClientRect(),w=tip.offsetWidth,h=tip.offsetHeight,vw=document.documentElement.clientWidth||0;` +
+  `tip.style.left=Math.max(4,Math.min(r.left+r.width/2-w/2,vw-w-4))+"px";tip.style.top=(r.top-h-6)+"px"}` +
+  `function hideTip(){if(tipT){clearTimeout(tipT);tipT=0}if(tip)tip.style.display="none"}` +
+  `function att(b,t){b.addEventListener("mouseenter",function(){if(tipT)clearTimeout(tipT);` +
+  `tipT=setTimeout(function(){tipT=0;try{showTip(b,t)}catch(e){}},250)});` +
+  `b.addEventListener("mouseleave",hideTip)}`;
+
 const SCROLL_DOT_MARKER = "/*ccup:scrollDot*/";
 const SCROLL_DOT_LINE_RE = /\n?\/\*ccup:scrollDot\*\/[^\n]*/g;
 const SCROLL_DOT_INPUT_HASH_RE = /messageInput:"messageInput_([-\w]+)"/;
@@ -1413,10 +1439,12 @@ function scrollDotBuild(c: string): string | undefined {
   const css =
     ".ccup-scroll-btn{box-sizing:border-box;position:absolute;top:-34px;right:5px;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}" +
     ".ccup-scroll-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
-    ".ccup-scroll-btn[data-show][data-off]{opacity:.35;pointer-events:none}" +
+    ".ccup-scroll-btn[data-show][data-off]{opacity:.35;cursor:default}" +
     `.ccup-scroll-btn:hover{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
-    ".ccup-scroll-btn:active{filter:brightness(.85)}" +
-    ".ccup-scroll-btn svg{display:block;width:20px;height:20px}";
+    ".ccup-scroll-btn[data-off]:hover{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}" +
+    ".ccup-scroll-btn:not([data-off]):active{filter:brightness(.85)}" +
+    ".ccup-scroll-btn svg{display:block;width:20px;height:20px}" +
+    HOVER_TIP_CSS;
   // Down arrow, drawn with currentColor strokes; single-quoted attributes so the
   // whole markup embeds in a double-quoted JS string below without escaping.
   const arrow =
@@ -1426,6 +1454,7 @@ function scrollDotBuild(c: string): string | undefined {
     `if(window.__ccupScrollDot)return;window.__ccupScrollDot=1;` +
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
     `var ARROW="${arrow}",raf=0,gen=0;` +
+    HOVER_TIP_JS +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
     // Fixed 100ms ease-out glide to the bottom; target re-read per frame.
     `function go(){var t=sc();if(!t)return;` +
@@ -1440,8 +1469,8 @@ function scrollDotBuild(c: string): string | undefined {
     `function upd(){raf=0;var s=sc(),can=!!s&&s.scrollHeight-s.scrollTop-s.clientHeight>8,boxes=document.querySelectorAll(".inputContainer_${input}");` +
     `for(var i=0;i<boxes.length;i++){var box=boxes[i],d=box.querySelector(".ccup-scroll-btn");` +
     `if(!d){d=document.createElement("button");d.type="button";d.className="ccup-scroll-btn";` +
-    `d.title="Go to the bottom of the conversation";d.setAttribute("aria-label","Go to the bottom of the conversation");d.innerHTML=ARROW;` +
-    `d.addEventListener("click",go);box.appendChild(d)}` +
+    `d.setAttribute("aria-label","Scroll to Bottom");d.innerHTML=ARROW;` +
+    `d.addEventListener("click",function(){hideTip();if(!this.hasAttribute("data-off"))go()});att(d,"Scroll to Bottom");box.appendChild(d)}` +
     `if(!d.hasAttribute("data-show"))d.setAttribute("data-show","");` +
     `var off=d.hasAttribute("data-off");if(can&&off)d.removeAttribute("data-off");else if(!can&&!off)d.setAttribute("data-off","")}}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
@@ -1489,7 +1518,8 @@ function scrollDotSet(c: string, on: boolean): string {
 // state, and a later scrollDot flip re-applies this line through the staleness
 // check. Each square matches the send button's rounded-square look via the
 // input's own surface, border, and text color, with the same doubled
-// ghost-button hover, and carries a native tooltip.
+// ghost-button hover, and carries the shared custom hover tip
+// ("Previous Message" / "Next Message").
 //
 // The stops are the headers' natural (unstuck) positions in the scroll range,
 // and offsetTop alone cannot supply them: the sticky shift is part of layout, so
@@ -1566,10 +1596,12 @@ function jumpMsgBuild(c: string): string | undefined {
     ".ccup-nav-btn{box-sizing:border-box;position:absolute;top:-34px;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}" +
     `.ccup-nav-prev{right:${withDot ? 65 : 35}px}.ccup-nav-next{right:${withDot ? 35 : 5}px}` +
     ".ccup-nav-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
-    ".ccup-nav-btn[data-show][data-off]{opacity:.35;pointer-events:none}" +
+    ".ccup-nav-btn[data-show][data-off]{opacity:.35;cursor:default}" +
     `.ccup-nav-btn:hover{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
-    ".ccup-nav-btn:active{filter:brightness(.85)}" +
-    ".ccup-nav-btn svg{display:block;width:20px;height:20px}";
+    ".ccup-nav-btn[data-off]:hover{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}" +
+    ".ccup-nav-btn:not([data-off]):active{filter:brightness(.85)}" +
+    ".ccup-nav-btn svg{display:block;width:20px;height:20px}" +
+    HOVER_TIP_CSS;
   // Chevron up / down (no stem), distinct from the scroll button's stemmed arrow;
   // single-quoted attributes embed in the double-quoted JS strings below unescaped.
   const up =
@@ -1581,6 +1613,7 @@ function jumpMsgBuild(c: string): string | undefined {
     `if(window.__ccupJumpMsg)return;window.__ccupJumpMsg=1;` +
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
     `var UP="${up}",DN="${dn}",raf=0,gen=0,n0el=null,n0=0;` +
+    HOVER_TIP_JS +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
     `function hh(t){return t.querySelectorAll(".stickyHeader_${sticky}")}` +
     // Natural (unstuck) header positions: neutralize sticky, read all, restore.
@@ -1601,10 +1634,10 @@ function jumpMsgBuild(c: string): string | undefined {
     `else if(o>cur+4&&(best===null||o<best))best=o}` +
     `if(best!==null)go(best)}` +
     // Buttons swallow mousedown/click so the composer never steals focus or scrolls.
-    `function mk(cls,svg,title,dir){var b=document.createElement("button");b.type="button";b.className="ccup-nav-btn "+cls;` +
-    `b.title=title;b.setAttribute("aria-label",title);b.innerHTML=svg;` +
-    `b.addEventListener("mousedown",function(e){e.preventDefault();e.stopPropagation()});` +
-    `b.addEventListener("click",function(e){e.stopPropagation();jump(dir)});return b}` +
+    `function mk(cls,svg,t,dir){var b=document.createElement("button");b.type="button";b.className="ccup-nav-btn "+cls;` +
+    `b.setAttribute("aria-label",t);b.innerHTML=svg;att(b,t);` +
+    `b.addEventListener("mousedown",function(e){e.preventDefault();e.stopPropagation();hideTip()});` +
+    `b.addEventListener("click",function(e){e.stopPropagation();if(!b.hasAttribute("data-off"))jump(dir)});return b}` +
     // Toggle data-show/data-off only on an actual change (outside the observer filter).
     `function ss(el,show,off){var s=el.hasAttribute("data-show");if(show&&!s)el.setAttribute("data-show","");else if(!show&&s)el.removeAttribute("data-show");var o=el.hasAttribute("data-off");if(off&&!o)el.setAttribute("data-off","");else if(!off&&o)el.removeAttribute("data-off")}` +
     // Census on raw offsetTops: pile = pinned at/above the top, below = trustworthy.
@@ -1616,8 +1649,8 @@ function jumpMsgBuild(c: string): string | undefined {
     `if(!canP&&pile===1){if(n0el!==m){n0el=m;m.style.position="static";n0=m.offsetTop;m.style.position=""}canP=n0<cur-4}` +
     `var boxes=document.querySelectorAll(".inputContainer_${input}");` +
     `for(var j=0;j<boxes.length;j++){var box=boxes[j],p=box.querySelector(".ccup-nav-prev"),n=box.querySelector(".ccup-nav-next");` +
-    `if(!p){p=mk("ccup-nav-prev",UP,"Jump to the previous message",-1);box.appendChild(p)}` +
-    `if(!n){n=mk("ccup-nav-next",DN,"Jump to the next message",1);box.appendChild(n)}` +
+    `if(!p){p=mk("ccup-nav-prev",UP,"Previous Message",-1);box.appendChild(p)}` +
+    `if(!n){n=mk("ccup-nav-next",DN,"Next Message",1);box.appendChild(n)}` +
     `ss(p,!0,!canP);ss(n,!0,!canN)}}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
     `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
@@ -1697,9 +1730,10 @@ function jumpMsgSet(c: string, on: boolean): string {
 //           a folded IN/OUT row or an unexpanded diff card the orange
 //           highlight is clipped or tiny. A match's block is its nearest
 //           ancestor among the baked block classes (diff card containers,
-//           IN/OUT row, the tool card wrapper, one markdown chunk of an agent
-//           response, a user message, a turn's sticky header), falling back
-//           to the transcript row; previous lands on a block's first match. A
+//           IN/OUT row, tool card body, the tool card wrapper, one markdown
+//           chunk of an agent response, a user message, a turn's sticky
+//           header), falling back to the transcript row; previous lands on a
+//           block's first match. A
 //           fixed ruler bar (the active-match highlight color, pinned to the
 //           user-message column's left gutter, tracked on scroll/resize/
 //           mutation) marks the block of the active match, so the eye finds
@@ -1760,6 +1794,8 @@ interface FindKeys {
   open: FindChord[];
   next: FindChord[];
   prev: FindChord[];
+  bnext: FindChord[]; // next match block
+  bprev: FindChord[]; // previous match block
 }
 
 // User keybindings.json location, supplied at activation (extension.ts derives
@@ -1804,12 +1840,15 @@ function parseChord(spec: string): FindChord | undefined {
   let sh = 0;
   let a = 0;
   let key = "";
-  for (const part of s.split("+")) {
+  const parts = s.split("+");
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
     if (part === "cmd" || part === "meta" || part === "win") m = 1;
     else if (part === "ctrl") c = 1;
     else if (part === "shift") sh = 1;
     else if (part === "alt" || part === "opt" || part === "option") a = 1;
-    else key = part;
+    else if (i === parts.length - 1 && part) key = part;
+    else return undefined; // a misspelled modifier must not silently become the key
   }
   if (!key) return undefined;
   return { k: named[key] ?? key, m, c, s: sh, a };
@@ -1817,7 +1856,9 @@ function parseChord(spec: string): FindChord | undefined {
 
 // The stock bindings: open mirrors editor.action.webvieweditor.showFind
 // (Cmd/Ctrl+F), next/previous mirror the editor find actions (Enter and F3,
-// shifted for previous, plus Cmd+G / Cmd+Shift+G on macOS).
+// shifted for previous, plus Cmd+G / Cmd+Shift+G on macOS), and block skip
+// defaults to Cmd/Ctrl+Enter with the shifted variant for previous (the
+// modifier reads as "coarser jump", and inside the bar the chord is free).
 function defaultFindKeys(): FindKeys {
   const mac = process.platform === "darwin";
   const mod = (k: string): FindChord =>
@@ -1829,7 +1870,13 @@ function defaultFindKeys(): FindKeys {
     next.push(mod("g"));
     prev.push({ ...mod("g"), s: 1 });
   }
-  return { open: [mod("f")], next, prev };
+  return {
+    open: [mod("f")],
+    next,
+    prev,
+    bnext: [mod("enter")],
+    bprev: [{ ...mod("enter"), s: 1 }],
+  };
 }
 
 // Strip // and /* */ comments and trailing commas from a JSONC source, string
@@ -1881,6 +1928,45 @@ const FINDBAR_COMMANDS: Record<string, keyof FindKeys> = {
 
 function chordEq(a: FindChord, b: FindChord): boolean {
   return a.k === b.k && a.m === b.m && a.c === b.c && a.s === b.s && a.a === b.a;
+}
+
+// Comma-separated chord specs from a claudeCodeUiPatch setting ("f6, cmd+j"),
+// parsed with the same rules as keybindings.json entries. The four
+// chatFindBar*Keys settings make every navigation button bindable: the match
+// pair ADDS to the resolved Find Next / Find Previous chords, the block pair
+// ADDS to the Cmd/Ctrl+Enter (shifted for previous) block-skip defaults.
+// One warning per new setting value: readFindChordSetting runs several times
+// per apply (currentOn, set, analyze), and repeated toasts would spam.
+const warnedChordSpecs: Record<string, string> = {};
+
+function readFindChordSetting(key: string): FindChord[] {
+  const raw = vscode.workspace.getConfiguration(CONFIG_NS).get<string>(key, "");
+  const out: FindChord[] = [];
+  if (typeof raw !== "string" || !raw.trim()) return out;
+  const bad: string[] = [];
+  for (const part of raw.split(",")) {
+    if (!part.trim()) continue; // tolerate a trailing comma
+    const ch = parseChord(part);
+    if (!ch) {
+      bad.push(part.trim());
+      continue;
+    }
+    if (!out.some((x) => chordEq(x, ch)) && out.length < 8) out.push(ch);
+  }
+  if (bad.length && warnedChordSpecs[key] !== raw) {
+    warnedChordSpecs[key] = raw;
+    void vscode.window.showWarningMessage(
+      `Claude Code UI Patch: ${key} skipped invalid chord(s): ${bad.join(", ")}`,
+    );
+  }
+  return out;
+}
+
+function mergeChords(base: FindChord[], extra: FindChord[]): FindChord[] {
+  for (const ch of extra) {
+    if (!base.some((x) => chordEq(x, ch)) && base.length < 8) base.push(ch);
+  }
+  return base;
 }
 
 // The effective chords: platform defaults, minus the user's `-command`
@@ -1936,7 +2022,12 @@ function ccupFindBarWebview(): void {
     }
     g.__ccupFindBar = 1;
 
-    const MAXM = 5000; // match cap: bounds Range building on huge chats
+    // Match cap: bounds Range building, highlight registration, and the
+    // per-scan rect walks, so a degenerate query (one letter over a huge
+    // transcript) cannot freeze the webview. Real word searches stay far
+    // below it; beyond it the counter reads "20000+" and navigation wraps
+    // within the built matches.
+    const MAXM = 20000;
     const TOP = 48; // px kept clear under the fixed bar when revealing
     const INLINE: Record<string, number> = {
       A: 1, ABBR: 1, B: 1, BDI: 1, BDO: 1, CITE: 1, CODE: 1, DATA: 1, DEL: 1,
@@ -1948,6 +2039,10 @@ function ccupFindBarWebview(): void {
     let bar: any = null;
     let input: any = null;
     let count: any = null;
+    let countText: any = null;
+    let countSize: any = null;
+    let tip: any = null;
+    let tipT: any = 0;
     let prevB: any = null;
     let nextB: any = null;
     let blockPrevB: any = null;
@@ -2095,21 +2190,35 @@ function ccupFindBarWebview(): void {
           ? active + 1 + " of " + total
           : "No results";
       // Write only on change: textContent assignment always emits a mutation,
-      // which the body observer must never see as chat activity.
-      if (count.textContent !== txt) count.textContent = txt;
-      // Reserve the worst case "n of n" width up front (tabular digits in the
-      // stylesheet do the rest), so navigating never resizes the bar.
-      const wantW = !q ? "3ch" : ranges.length ? total.length * 2 + 4 + "ch" : "10ch";
-      if (count.style.minWidth !== wantW) count.style.minWidth = wantW;
+      // which the body observer must never see as chat activity. The hidden
+      // sizer twin holds a fixed "9999 of 9999" (or the real worst case once
+      // the total runs wider), so the bar keeps one width across queries and
+      // navigation alike.
+      if (countText && countText.textContent !== txt) countText.textContent = txt;
+      const sz = total.length > 4 ? total + " of " + total : "9999 of 9999";
+      if (countSize && countSize.textContent !== sz) countSize.textContent = sz;
       if (bar) {
         if (q && !ranges.length) bar.setAttribute("data-none", "");
         else bar.removeAttribute("data-none");
       }
+      // data-off instead of the disabled attribute: a disabled button gets no
+      // mouse events, which would keep the hover tip from ever showing.
       const dis = !ranges.length;
-      if (prevB) prevB.disabled = dis;
-      if (nextB) nextB.disabled = dis;
-      if (blockPrevB) blockPrevB.disabled = dis;
-      if (blockNextB) blockNextB.disabled = dis;
+      const off = (b: any): void => {
+        if (!b) return;
+        const has = b.hasAttribute("data-off");
+        if (dis && !has) {
+          b.setAttribute("data-off", "");
+          b.setAttribute("aria-disabled", "true");
+        } else if (!dis && has) {
+          b.removeAttribute("data-off");
+          b.removeAttribute("aria-disabled");
+        }
+      };
+      off(prevB);
+      off(nextB);
+      off(blockPrevB);
+      off(blockNextB);
     };
 
     // The band a match must land in to read comfortably: below the find bar
@@ -2152,15 +2261,33 @@ function ccupFindBarWebview(): void {
     };
 
     // Scroll the transcript scroller so the active match sits inside the safe
-    // band. Sticky pinning and Monaco's virtualized diff lines re-layout
+    // band. A match clipped inside a folded box (overflow hides paint, not
+    // layout, so its rect can sit far below anything visible) reveals its
+    // BLOCK instead; a block taller than the band aligns its top under the
+    // band top. Sticky pinning and Monaco's virtualized diff lines re-layout
     // DURING the scroll (a different header pins, lines mount), so a bounded
-    // correction pass re-measures on the next frames until the match settles.
+    // correction pass re-measures on the next frames until the target settles.
     const reveal = (tries?: number): void => {
       if (active < 0 || !ranges[active]) return;
       try {
-        const r = ranges[active].getBoundingClientRect();
+        let tr = ranges[active].getBoundingClientRect();
+        try {
+          const bl = blockAt(active);
+          if (bl && bl.isConnected) {
+            const br = bl.getBoundingClientRect();
+            if (tr.bottom <= br.top + 1 || tr.top >= br.bottom - 1) tr = br;
+          }
+        } catch {
+          // no block: the match rect itself is the target
+        }
         const band = safeBand();
-        if (r.top >= band[0] && r.bottom <= band[1]) return;
+        const bandH = band[1] - band[0];
+        const trH = tr.bottom - tr.top;
+        if (trH < bandH - 24) {
+          if (tr.top >= band[0] && tr.bottom <= band[1]) return;
+        } else if (tr.top <= band[0] + 8 && tr.bottom >= band[1] - 8) {
+          return; // a tall block already fills the band
+        }
         let sc = container();
         if (!sc || sc.scrollHeight <= sc.clientHeight + 1) {
           let e = ranges[active].startContainer.parentElement;
@@ -2168,7 +2295,10 @@ function ccupFindBarWebview(): void {
           sc = e;
         }
         if (!sc) return;
-        sc.scrollTop += r.top - (band[0] + (band[1] - band[0]) / 2);
+        sc.scrollTop +=
+          trH < bandH - 24
+            ? tr.top + trH / 2 - (band[0] + bandH / 2)
+            : tr.top - (band[0] + 12);
         const t = typeof tries === "number" ? tries : 0;
         if (t < 2) {
           g.requestAnimationFrame(() => {
@@ -2334,43 +2464,49 @@ function ccupFindBarWebview(): void {
     const CHEVS_DN =
       "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M7 6l5 5 5-5'/><path d='M7 13l5 5 5-5'/></svg>";
 
-    // Tooltip text: the button's action plus its first resolved chord, e.g.
-    // "Next match (Enter)"; block skipping has buttons only, so no suffix.
-    const KEYNAME: Record<string, string> = {
-      " ": "Space",
-      arrowup: "Up",
-      arrowdown: "Down",
-      arrowleft: "Left",
-      arrowright: "Right",
+    // Custom hover tip with a short fixed delay: the native title tooltip is
+    // unreliable inside the webview (long OS delay, often absent entirely).
+    const showTip = (btn: any, text: string): void => {
+      if (!tip) return;
+      tip.textContent = text;
+      tip.style.display = "block";
+      const br = btn.getBoundingClientRect();
+      const tw = tip.offsetWidth;
+      const vw = doc.documentElement.clientWidth || 0;
+      const x = Math.max(4, Math.min(br.left + br.width / 2 - tw / 2, vw - tw - 4));
+      tip.style.left = x + "px";
+      tip.style.top = br.bottom + 6 + "px";
     };
-    const withKey = (base: string, list: any): string => {
-      try {
-        const c = list && list[0];
-        if (!c) return base;
-        const parts: string[] = [];
-        if (c.c) parts.push("Ctrl");
-        if (c.a) parts.push(cfg.mac ? "Option" : "Alt");
-        if (c.s) parts.push("Shift");
-        if (c.m) parts.push(cfg.mac ? "Cmd" : "Win");
-        let k = String(c.k || "");
-        k = KEYNAME[k] || (k.length === 1 ? k.toUpperCase() : k.charAt(0).toUpperCase() + k.slice(1));
-        parts.push(k);
-        return base + " (" + parts.join("+") + ")";
-      } catch {
-        return base;
+    const hideTip = (): void => {
+      if (tipT) {
+        g.clearTimeout(tipT);
+        tipT = 0;
       }
+      if (tip) tip.style.display = "none";
     };
 
     // Buttons swallow mousedown so the input keeps focus (house pattern).
-    const mkBtn = (svg: string, title: string, fn: any): any => {
+    const mkBtn = (svg: string, label: string, fn: any): any => {
       const b = doc.createElement("button");
       b.type = "button";
-      b.title = title;
-      b.setAttribute("aria-label", title);
+      b.setAttribute("aria-label", label);
       b.innerHTML = svg;
+      b.addEventListener("mouseenter", () => {
+        if (tipT) g.clearTimeout(tipT);
+        tipT = g.setTimeout(() => {
+          tipT = 0;
+          try {
+            showTip(b, label);
+          } catch {
+            // measuring a detached tip: skip this hover
+          }
+        }, 250);
+      });
+      b.addEventListener("mouseleave", hideTip);
       b.addEventListener("mousedown", (e: any) => {
         e.preventDefault();
         e.stopPropagation();
+        hideTip();
       });
       b.addEventListener("click", (e: any) => {
         e.stopPropagation();
@@ -2401,12 +2537,21 @@ function ccupFindBarWebview(): void {
       count = doc.createElement("span");
       count.className = "ccup-find-count";
       count.setAttribute("aria-live", "polite");
-      prevB = mkBtn(CHEV_UP, withKey("Previous match", cfg.prev), () => nav(-1));
-      nextB = mkBtn(CHEV_DN, withKey("Next match", cfg.next), () => nav(1));
-      blockPrevB = mkBtn(CHEVS_UP, "Previous block", () => navBlock(-1));
+      countText = doc.createElement("span");
+      countSize = doc.createElement("span");
+      countSize.className = "ccup-find-count-size";
+      countSize.setAttribute("aria-hidden", "true");
+      count.appendChild(countText);
+      count.appendChild(countSize);
+      tip = doc.createElement("div");
+      tip.className = "ccup-find-tip";
+      doc.body.appendChild(tip);
+      prevB = mkBtn(CHEV_UP, "Previous Match", () => nav(-1));
+      nextB = mkBtn(CHEV_DN, "Next Match", () => nav(1));
+      blockPrevB = mkBtn(CHEVS_UP, "Previous Match Block", () => navBlock(-1));
       blockPrevB.classList.add("ccup-find-sep");
-      blockNextB = mkBtn(CHEVS_DN, "Next block", () => navBlock(1));
-      const closeB = mkBtn(CROSS, "Close (Escape)", () => closeBar());
+      blockNextB = mkBtn(CHEVS_DN, "Next Match Block", () => navBlock(1));
+      const closeB = mkBtn(CROSS, "Close", () => closeBar());
       closeB.classList.add("ccup-find-sep");
       bar.appendChild(input);
       bar.appendChild(count);
@@ -2451,22 +2596,23 @@ function ccupFindBarWebview(): void {
         return;
       }
       ruler.style.display = "block";
-      // Fixed column: just left of the user-message history's own left rule,
-      // so the bar always lives in one gutter instead of hugging whichever
-      // indentation the block happens to have.
+      // Fixed column: the bar's RIGHT edge sits just left of the user-message
+      // history's own left rule, so it always lives in one gutter instead of
+      // hugging whichever indentation the block happens to have; the width
+      // grows leftward from that edge.
       if (!refEl || !refEl.isConnected) {
         refEl =
           (umClass && doc.querySelector("." + umClass)) ||
           (shClass && doc.querySelector("." + shClass)) ||
           null;
       }
-      let left;
-      if (refEl) left = refEl.getBoundingClientRect().left - 6;
+      let right;
+      if (refEl) right = refEl.getBoundingClientRect().left - 3;
       else {
         const root = container();
-        left = root ? root.getBoundingClientRect().left + 4 : 4;
+        right = root ? root.getBoundingClientRect().left + 7 : 11;
       }
-      ruler.style.left = Math.max(2, left) + "px";
+      ruler.style.left = Math.max(2, right - 7.5) + "px";
       ruler.style.top = top + "px";
       ruler.style.height = bot - top + "px";
     };
@@ -2495,6 +2641,7 @@ function ccupFindBarWebview(): void {
     const closeBar = (): void => {
       if (!isOpen()) return;
       bar.removeAttribute("data-open");
+      hideTip();
       try {
         g.CSS.highlights.delete("ccup-find");
         g.CSS.highlights.delete("ccup-find-active");
@@ -2571,6 +2718,18 @@ function ccupFindBarWebview(): void {
             e.preventDefault();
             e.stopImmediatePropagation();
             nav(1);
+            return;
+          }
+          if (chordHit(e, cfg.bprev)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            navBlock(-1);
+            return;
+          }
+          if (chordHit(e, cfg.bnext)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            navBlock(1);
           }
         } catch {
           // never break the chat's key handling
@@ -2635,11 +2794,16 @@ function findBarCfgBuild(c: string): string | undefined {
   )) {
     push(m[1]);
   }
-  // The tool module's hash also names its card wrapper (root_<hash>), the
-  // medium-granularity block for matches in a card's header/summary.
+  // The tool module's hash also names its body wrappers and card wrapper
+  // (root_<hash>). Nearest ancestor wins, so a match in an IN/OUT row marks
+  // the row, one elsewhere in a body (e.g. Write's plain-text content) marks
+  // the body without the card header, and only a header match falls back to
+  // the whole card.
   const io = c.match(/toolBodyRow:"toolBodyRow_([-\w]+)"/)?.[1];
   if (io) {
     push(`toolBodyRow_${io}`);
+    push(`toolBodyPlainText_${io}`);
+    push(`toolBody_${io}`);
     push(`root_${io}`);
   }
   const md = c.match(/codeBlockWrapper:"codeBlockWrapper_([-\w]+)"/)?.[1];
@@ -2647,14 +2811,23 @@ function findBarCfgBuild(c: string): string | undefined {
   push(c.match(/userMessage:"(userMessage_[-\w]+)"/)?.[1]);
   push(c.match(/stickyHeader:"(stickyHeader_[-\w]+)"/)?.[1]);
   const k = readFindKeys();
+  mergeChords(k.next, readFindChordSetting("chatFindBarNextMatchKeys"));
+  mergeChords(k.prev, readFindChordSetting("chatFindBarPreviousMatchKeys"));
   const cfg = {
     chat,
     input,
     blocks,
-    mac: process.platform === "darwin" ? 1 : 0,
     open: k.open,
     next: k.next,
     prev: k.prev,
+    bnext: mergeChords(
+      k.bnext,
+      readFindChordSetting("chatFindBarNextMatchBlockKeys"),
+    ),
+    bprev: mergeChords(
+      k.bprev,
+      readFindChordSetting("chatFindBarPreviousMatchBlockKeys"),
+    ),
   };
   return `${FINDBAR_CFG_MARKER}window.__ccupFindCfg=${JSON.stringify(cfg)};`;
 }
@@ -2708,16 +2881,19 @@ function findBarCssBuild(css: string): string | undefined {
     "::highlight(ccup-find-active){background-color:var(--vscode-editor-findMatchBackground,rgba(237,148,30,.8));color:var(--vscode-editor-foreground,inherit)}" +
     ".ccup-find-bar{position:fixed;top:8px;right:16px;z-index:1200;display:none;align-items:center;gap:4px;max-width:calc(100vw - 20px);padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--app-input-border,#454545));border-radius:6px;background:var(--vscode-editorWidget-background,var(--app-input-background,#252526));color:var(--vscode-editorWidget-foreground,var(--app-primary-foreground,#cccccc));box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36));font-size:12px}" +
     ".ccup-find-bar[data-open]{display:flex}" +
-    ".ccup-find-bar input{flex:1 1 auto;width:200px;min-width:60px;box-sizing:border-box;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));background:var(--app-input-background,var(--vscode-input-background,#3c3c3c));color:var(--app-input-foreground,var(--vscode-input-foreground,#cccccc));border-radius:4px;padding:3px 6px;font-size:var(--vscode-chat-font-size,13px);font-family:inherit;outline:none}" +
+    ".ccup-find-bar input{flex:1 1 auto;width:200px;min-width:60px;box-sizing:border-box;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));background:var(--app-input-background,var(--vscode-input-background,#3c3c3c));color:var(--app-input-foreground,var(--vscode-input-foreground,#cccccc));border-radius:4px;padding:3px 6px;font-size:calc(var(--vscode-chat-font-size,13px)*.9);font-family:inherit;outline:none}" +
     ".ccup-find-bar input:focus{border-color:var(--app-input-active-border,var(--vscode-focusBorder,#007fd4))}" +
-    ".ccup-find-bar .ccup-find-count{text-align:center;opacity:.85;white-space:nowrap;font-variant-numeric:tabular-nums}" +
+    ".ccup-find-bar .ccup-find-count{display:inline-flex;flex-direction:column;align-items:center;text-align:center;opacity:.85;white-space:nowrap;font-variant-numeric:tabular-nums}" +
+    ".ccup-find-bar .ccup-find-count-size{visibility:hidden;height:0;overflow:hidden}" +
+    ".ccup-find-tip{position:fixed;display:none;padding:2px 8px;border:1px solid var(--vscode-editorHoverWidget-border,var(--vscode-widget-border,#454545));border-radius:4px;background:var(--vscode-editorHoverWidget-background,var(--vscode-editorWidget-background,#252526));color:var(--vscode-editorHoverWidget-foreground,var(--vscode-editorWidget-foreground,#cccccc));font-size:11px;white-space:nowrap;z-index:1300;pointer-events:none;box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36))}" +
     ".ccup-find-bar[data-none] .ccup-find-count{color:var(--vscode-errorForeground,#f48771);opacity:1}" +
     ".ccup-find-bar button{display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin:0;padding:0;border:none;border-radius:4px;background:transparent;color:inherit;cursor:pointer}" +
     `.ccup-find-bar button:hover{background:${ghost}}` +
-    ".ccup-find-bar button[disabled]{opacity:.4;cursor:default;background:transparent}" +
+    ".ccup-find-bar button[data-off]{opacity:.4;cursor:default}" +
+    ".ccup-find-bar button[data-off]:hover{background:transparent}" +
     ".ccup-find-bar svg{display:block;width:16px;height:16px}" +
     ".ccup-find-bar .ccup-find-sep{margin-left:4px}" +
-    ".ccup-find-ruler{position:fixed;display:none;width:3px;border-radius:2px;background:var(--vscode-editor-findMatchBackground,var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.8)));z-index:1199;pointer-events:none}"
+    ".ccup-find-ruler{position:fixed;display:none;width:5px;border-radius:5px;background:var(--vscode-editor-findMatchBackground,var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.8)));z-index:1199;pointer-events:none}"
   );
 }
 

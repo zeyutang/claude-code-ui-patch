@@ -2,11 +2,13 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
-## 1.2.2
+## 1.3.0
 
 - Add `claudeCodeUiPatch.chatFindBar`, off by default: `Cmd`/`Ctrl`+`F` in the chat (tab or sidebar) opens a find bar that highlights matches with a "k of n" counter and, unlike the native search box, actually moves between them.
   Next/previous follow your Find Next / Find Previous keybindings (single chords); `Escape` closes.
   Block-skip buttons jump between the blocks that hold matches, and a ruler beside the transcript marks the current block; nothing auto-expands.
+  Block skip is also on `Cmd`/`Ctrl`+`Enter` (shifted for previous), and all four navigation buttons take extra comma-separated chords via `chatFindBar{Next,Previous}MatchKeys` / `chatFindBar{Next,Previous}MatchBlockKeys`.
+- The scroll-to-bottom and jump buttons now show prompt hover tips: "Scroll to Bottom", "Previous Message", "Next Message".
 - Rename the settings link in the panel and the status-bar tooltip from "Open VS Code Settings" to "Open Settings", which stays accurate on forks.
 - Tighten every settings description in `package.json` to one concise shape: what the setting controls, one behavior note, and the `0`/`Empty`/`Off = native` closing shorthand.
 

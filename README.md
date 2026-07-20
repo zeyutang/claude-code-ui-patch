@@ -10,6 +10,10 @@ Patch Claude Code VS Code extension UI to provide finegrained settings for vario
 | :------------------------------------------------: |
 | ![Chat navigation button](assets/img/composer.png) |
 
+|            Find Bar: Match and Match Block            |
+| :---------------------------------------------------: |
+| ![Find bar match](assets/img/findbar-match-block.png) |
+
 ## What This Extension Patches
 
 Settings live under the `claudeCodeUiPatch.*` namespace (prefix omitted below) and each defaults to Claude Code's native value. The tree shows every knob, what it targets, and what scales with what: an indented child follows its parent until you give it a value.
@@ -49,6 +53,8 @@ Plan Mode Markdown Preview
 
 Behavior
    ├── chatFindBar                     # working Cmd/Ctrl+F find bar in the chat, if On
+   │      ├── chatFindBar{Next,Previous}MatchKeys       # extra match chords, comma-separated
+   │      └── chatFindBar{Next,Previous}MatchBlockKeys  # block-skip chords atop Cmd/Ctrl+(Shift+)Enter
    ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
    ├── chatJumpToMessageButtons        # always-shown prev/next buttons: jump between turns, if On
    ├── chatScrollToBottomDot           # button above input box: click scrolls chat to newest, if On

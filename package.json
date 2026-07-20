@@ -148,7 +148,35 @@
         "claudeCodeUiPatch.chatFindBar": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Replace `Cmd`/`Ctrl`+`F` in Claude Code interface with a find bar. Matches show in the editor's find colors with a counter, and `Escape` closes. Next/previous wraps and follows your **Find Next** / **Find Previous** keybindings plus the platform defaults. Block-skip buttons jump between the blocks that hold matches, and a side ruler marks the active match's block (nothing auto-expands). Off = native."
+          "markdownDescription": "Replace `Cmd`/`Ctrl`+`F` in Claude Code interface with a find bar. Matches show in the editor's find colors with a counter, and `Escape` closes. Block-skip buttons jump between the blocks that hold matches, and a side ruler marks the active match's block (nothing auto-expands). Off = native."
+        },
+        "claudeCodeUiPatch.chatFindBarNextMatchKeys": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Extra key chords for the find bar's Next Match, comma-separated (e.g. `f6, cmd+j`). Empty = the defaults alone: `Enter`, `F3`, `Cmd`+`G` (macOS), plus your Find Next keybindings.",
+          "pattern": "^\\s*(?:[^\\s,]+(?:\\s*,\\s*[^\\s,]+)*\\s*,?\\s*)?$",
+          "patternErrorMessage": "Comma-separated single chords like `cmd+j, f6` (no spaces inside a chord)."
+        },
+        "claudeCodeUiPatch.chatFindBarPreviousMatchKeys": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Extra key chords for the find bar's Previous Match, comma-separated. Empty = the defaults alone: `Shift`+`Enter`, `Shift`+`F3`, `Cmd`+`Shift`+`G` (macOS), plus your Find Previous keybindings.",
+          "pattern": "^\\s*(?:[^\\s,]+(?:\\s*,\\s*[^\\s,]+)*\\s*,?\\s*)?$",
+          "patternErrorMessage": "Comma-separated single chords like `cmd+j, f6` (no spaces inside a chord)."
+        },
+        "claudeCodeUiPatch.chatFindBarNextMatchBlockKeys": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Extra key chords for the find bar's Next Match Block, comma-separated. Empty = the default alone: `Cmd`/`Ctrl`+`Enter`.",
+          "pattern": "^\\s*(?:[^\\s,]+(?:\\s*,\\s*[^\\s,]+)*\\s*,?\\s*)?$",
+          "patternErrorMessage": "Comma-separated single chords like `cmd+j, f6` (no spaces inside a chord)."
+        },
+        "claudeCodeUiPatch.chatFindBarPreviousMatchBlockKeys": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Extra key chords for the find bar's Previous Match Block, comma-separated. Empty = the default alone: `Cmd`/`Ctrl`+`Shift`+`Enter`.",
+          "pattern": "^\\s*(?:[^\\s,]+(?:\\s*,\\s*[^\\s,]+)*\\s*,?\\s*)?$",
+          "patternErrorMessage": "Comma-separated single chords like `cmd+j, f6` (no spaces inside a chord)."
         },
         "claudeCodeUiPatch.chatShowMoreAndLessAlign": {
           "type": "string",

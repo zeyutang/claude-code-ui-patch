@@ -1768,7 +1768,9 @@ function jumpMsgSet(c: string, on: boolean): string {
 //           user-message column's left gutter, tracked on scroll/resize/
 //           mutation) marks the block of the active match, so the eye finds
 //           the right block even when the highlight itself is not visible in
-//           place
+//           place; it spans only the block's visible slice of the scrollport,
+//           clamped under the pinned sticky header rather than painting over
+//           it while the block scrolls beneath
 //   rescan  a body MutationObserver (debounced, active only while the bar is
 //           open) recomputes matches when the chat re-renders or streams,
 //           without scrolling. Batches produced entirely by the bar/ruler are
@@ -2642,9 +2644,10 @@ function ccupFindBarWebview(): void {
     const isOpen = (): boolean => !!(bar && bar.hasAttribute("data-open"));
 
     // Ruler: a slim fixed bar on the left edge of the active match's block,
-    // clamped to the viewport and tracked on scroll/resize/mutation, so the
-    // right block stands out even when the match highlight itself is clipped
-    // (a folded IN/OUT row) or tiny (an unexpanded diff card).
+    // clamped to the block's visible slice of the scrollport and tracked on
+    // scroll/resize/mutation, so the right block stands out even when the
+    // match highlight itself is clipped (a folded IN/OUT row) or tiny (an
+    // unexpanded diff card).
     const rulerUpd = (): void => {
       rraf = 0;
       if (!ruler) return;
@@ -2662,8 +2665,35 @@ function ccupFindBarWebview(): void {
         return;
       }
       const vh = g.window.innerHeight || 0;
-      const top = Math.max(r.top, 4);
-      const bot = Math.min(r.bottom, vh - 4);
+      let top = Math.max(r.top, 4);
+      let bot = Math.min(r.bottom, vh - 4);
+      // A block's rect is layout, not visibility: partly scrolled out it
+      // keeps its full extent while the scroller edge clips it and the
+      // pinned sticky header covers it, so the fixed ruler would otherwise
+      // paint straight across the pinned header (and past the scroller onto
+      // the composer). Clamp the segment to the scroller box, then under
+      // every pinned header EXCEPT one that is the marked block itself,
+      // wraps it, or sits inside it (a whole-row block): that header is the
+      // block's own visible part, and the ruler should span it.
+      try {
+        const root = container();
+        if (root) {
+          const cr = root.getBoundingClientRect();
+          if (cr.top > top) top = cr.top;
+          if (cr.bottom < bot) bot = cr.bottom;
+          if (shClass) {
+            const hs = root.querySelectorAll("." + shClass);
+            for (let i = 0; i < hs.length; i++) {
+              const h = hs[i];
+              if (h === el || h.contains(el) || el.contains(h)) continue;
+              const hr = h.getBoundingClientRect();
+              if (hr.top <= cr.top + 4 && hr.bottom > top) top = hr.bottom;
+            }
+          }
+        }
+      } catch {
+        // no scroller geometry: the viewport clamps above still bound it
+      }
       if (bot - top < 8 || r.width <= 0) {
         ruler.style.display = "none";
         return;

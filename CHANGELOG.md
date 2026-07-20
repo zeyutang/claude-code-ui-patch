@@ -2,6 +2,10 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.3.2
+
+- Fix the find bar's block ruler painting over the pinned user-message header while scrolling; the ruler now spans only the visible part of its block.
+
 ## 1.3.1
 
 - Fix the scroll-to-bottom and previous/next message buttons painting over the input box's pop-up menus (the `@` file picker, the mode and model menus): the buttons now hide while any such menu is open.

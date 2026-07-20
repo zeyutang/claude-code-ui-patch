@@ -2,6 +2,10 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.3.1
+
+- Fix the scroll-to-bottom and previous/next message buttons painting over the input box's pop-up menus (the `@` file picker, the mode and model menus): the buttons now hide while any such menu is open.
+
 ## 1.3.0
 
 - Add `claudeCodeUiPatch.chatFindBar`, off by default: `Cmd`/`Ctrl`+`F` in the chat (tab or sidebar) opens a find bar that highlights matches with a "k of n" counter and, unlike the native search box, actually moves between them.

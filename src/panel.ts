@@ -1,5 +1,12 @@
 import * as vscode from "vscode";
-import { Patcher, Snapshot, Knob, SECTION_ORDER, STEP, MIN_PX } from "./patcher";
+import {
+  Patcher,
+  Snapshot,
+  Knob,
+  SECTION_ORDER,
+  STEP,
+  MIN_PX,
+} from "./patcher";
 
 // A webview panel that serves as the detailed control surface (opened by
 // clicking the status-bar item). The hover tooltip is a compact read-only
@@ -22,7 +29,11 @@ export class PatchPanel {
       "claudeCodeUiPatch.panel",
       "Claude Code UI Patch",
       vscode.ViewColumn.Active,
-      { enableScripts: true, localResourceRoots: [], retainContextWhenHidden: true }
+      {
+        enableScripts: true,
+        localResourceRoots: [],
+        retainContextWhenHidden: true,
+      },
     );
     this.sub = vscode.Disposable.from(
       patcher.onDidChange(() => this.update()),
@@ -30,7 +41,7 @@ export class PatchPanel {
         PatchPanel.current = undefined;
         this.sub.dispose();
       }),
-      this.panel.webview.onDidReceiveMessage((m) => this.onMessage(m))
+      this.panel.webview.onDidReceiveMessage((m) => this.onMessage(m)),
     );
     this.update();
   }
@@ -51,7 +62,10 @@ export class PatchPanel {
       this.shape = shape;
       this.panel.webview.html = this.html(snap);
     } else if (snap) {
-      void this.panel.webview.postMessage({ type: "sync", ...syncPayload(snap) });
+      void this.panel.webview.postMessage({
+        type: "sync",
+        ...syncPayload(snap),
+      });
     }
   }
 
@@ -87,7 +101,7 @@ export class PatchPanel {
       case "openSettings":
         void vscode.commands.executeCommand(
           "workbench.action.openSettings",
-          msg.key ?? "claudeCodeUiPatch"
+          msg.key ?? "claudeCodeUiPatch",
         );
         break;
     }
@@ -138,7 +152,7 @@ ${csp}
         (g, i) =>
           `${i > 0 ? '    <hr class="divider">\n' : ""}    <h2>${g.sec}</h2>\n${g.knobs
             .map((k) => this.knobHtml(k))
-            .join("\n")}`
+            .join("\n")}`,
       )
       .join("\n");
 
@@ -245,7 +259,11 @@ ${sections}
 // Structure signature: a full re-render happens only when this changes.
 function shapeOf(snap: Snapshot | undefined): string {
   if (!snap || !snap.available) return "none";
-  return [snap.supported, snap.version, snap.knobs.map((k) => k.id).join(",")].join("|");
+  return [
+    snap.supported,
+    snap.version,
+    snap.knobs.map((k) => k.id).join(","),
+  ].join("|");
 }
 
 // The per-knob "traffic light": green when the patch is in effect, yellow when a
@@ -253,7 +271,10 @@ function shapeOf(snap: Snapshot | undefined): string {
 // this Claude Code version (so it can't apply until a build restores it).
 function dotInfo(k: Knob): { cls: string; title: string } {
   if (k.lost)
-    return { cls: "dot-lost", title: "unavailable on this Claude Code version" };
+    return {
+      cls: "dot-lost",
+      title: "unavailable on this Claude Code version",
+    };
   if (k.native) return { cls: "dot-ok", title: "live" };
   return k.pendingReload
     ? { cls: "dot-warn", title: "reload window to take effect" }
@@ -272,7 +293,13 @@ function statusInner(snap: Snapshot): string {
 
 // Lightweight per-knob state + header status for in-place DOM updates.
 function syncPayload(snap: Snapshot): {
-  knobs: Array<{ id: string; px: string; on: boolean; dotClass: string; dotTitle: string }>;
+  knobs: Array<{
+    id: string;
+    px: string;
+    on: boolean;
+    dotClass: string;
+    dotTitle: string;
+  }>;
   status: string;
   reloadPending: boolean;
 } {

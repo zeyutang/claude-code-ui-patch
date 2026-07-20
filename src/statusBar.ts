@@ -12,7 +12,7 @@ export class StatusBar {
   constructor(private readonly patcher: Patcher) {
     this.item = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Right,
-      -1000000
+      -1000000,
     );
     this.item.name = "Claude Code UI Patch";
     this.item.command = "claudeCodeUiPatch.panel";
@@ -32,7 +32,7 @@ export class StatusBar {
     md.appendMarkdown(
       lines.length
         ? lines.join("\n")
-        : "**Claude Code UI Patch**\n\nClaude Code not detected."
+        : "**Claude Code UI Patch**\n\nClaude Code not detected.",
     );
     this.item.tooltip = md;
 

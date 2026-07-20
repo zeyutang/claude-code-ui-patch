@@ -49,7 +49,9 @@ function watchKeybindings(kbPath: string, patcher: Patcher): vscode.Disposable {
   }
 }
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+export async function activate(
+  context: vscode.ExtensionContext,
+): Promise<void> {
   // Move any pre-rename chatDiff* settings to chatDiffCard* before the Patcher
   // reads them, so a rebuild after the rename keeps the user's values.
   await migrateLegacyKeys();
@@ -68,8 +70,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ...patcher.register(),
     watchKeybindings(kbPath, patcher),
     vscode.commands.registerCommand("claudeCodeUiPatch.panel", () =>
-      PatchPanel.show(patcher)
-    )
+      PatchPanel.show(patcher),
+    ),
   );
 }
 

@@ -410,7 +410,8 @@ const ABS_LN_END = "/*ccup:absLnEnd*/";
 const absLnFrag = (tag: string, code: string): string =>
   `/*ccup:absLn:${tag}*/${code}${ABS_LN_END}`;
 // Any inline fragment, whatever its tag or body (older layouts strip too).
-const ABS_LN_FRAG_RE = /\/\*ccup:absLn:[-\w]+\*\/[\s\S]*?\/\*ccup:absLnEnd\*\//g;
+const ABS_LN_FRAG_RE =
+  /\/\*ccup:absLn:[-\w]+\*\/[\s\S]*?\/\*ccup:absLnEnd\*\//g;
 
 const ABS_LN_HELPER_MARKER = "/*ccup:absLnHelper*/";
 const ABS_LN_HELPER_LINE_RE = /\n?\/\*ccup:absLnHelper\*\/[^\n]*/g;
@@ -467,7 +468,8 @@ const ABS_LN_MODAL_FX_RE =
 
 // gm: the diff editor's left-hand-side option derive, which forces the original
 // editor's glyph margin on in side-by-side view.
-const ABS_LN_GM_RE = /(\.glyphMargin=this\._options\.renderSideBySide\.get\(\))/g;
+const ABS_LN_GM_RE =
+  /(\.glyphMargin=this\._options\.renderSideBySide\.get\(\))/g;
 
 // gap: the inline-view layout's original-editor slice width (cut at the end of
 // its line-number column).
@@ -482,9 +484,7 @@ function absLnExec(re: RegExp, c: string): RegExpExecArray | null {
 // Remove every trace of the enhancement (inline fragments + helper line),
 // restoring those spots to stock bytes.
 function absLnStrip(c: string): string {
-  return c
-    .replace(ABS_LN_FRAG_RE, "")
-    .replace(ABS_LN_HELPER_LINE_RE, "");
+  return c.replace(ABS_LN_FRAG_RE, "").replace(ABS_LN_HELPER_LINE_RE, "");
 }
 
 // Apply the full ON enhancement to a STRIPPED bundle: the six-fragment
@@ -492,8 +492,14 @@ function absLnStrip(c: string): string {
 // each independent and skipped silently when its anchor is gone.
 function absLnApply(c: string): string {
   let out = absLnThread(c);
-  out = out.replace(ABS_LN_GM_RE, (_w, head) => `${head}${absLnFrag("gm", "&&!1")}`);
-  out = out.replace(ABS_LN_GAP_RE, (_w, head) => `${head}${absLnFrag("gap", "+5")}`);
+  out = out.replace(
+    ABS_LN_GM_RE,
+    (_w, head) => `${head}${absLnFrag("gm", "&&!1")}`,
+  );
+  out = out.replace(
+    ABS_LN_GAP_RE,
+    (_w, head) => `${head}${absLnFrag("gap", "+5")}`,
+  );
   return out;
 }
 
@@ -519,24 +525,30 @@ function absLnThread(c: string): string {
     return c;
   }
   let out = c;
-  out = out.replace(ABS_LN_TUR_RE, (_w, head, blk, msg, _wrap, _find, _list, tail) => {
-    const stash =
-      `try{if(${msg}.tool_use_result&&typeof ${msg}.tool_use_result==="object")` +
-      `${blk}.ccupTur=${msg}.tool_use_result}catch(ccupE){}`;
-    return `${head}${absLnFrag("tur", stash)}${tail}`;
-  });
-  out = out.replace(ABS_LN_PROP_RE, (_w, head, _ctx, input, result, _jsx, _comp, tail) => {
-    const start =
-      ",ccupStart:(function(R,q){try{" +
-      'if(R&&!R.replaceAll&&typeof R.originalFile==="string"&&q){' +
-      "var ix=R.originalFile.indexOf(q);" +
-      'if(ix>=0)return R.originalFile.slice(0,ix).split("\\n").length}' +
-      "}catch(ccupE){}})" +
-      `(${result}&&${result}.ccupTur,` +
-      `(${result}&&${result}.ccupTur&&typeof ${result}.ccupTur.oldString==="string"` +
-      `?${result}.ccupTur.oldString:${input}.old_string)||"")`;
-    return `${head}${absLnFrag("prop", start)}${tail}`;
-  });
+  out = out.replace(
+    ABS_LN_TUR_RE,
+    (_w, head, blk, msg, _wrap, _find, _list, tail) => {
+      const stash =
+        `try{if(${msg}.tool_use_result&&typeof ${msg}.tool_use_result==="object")` +
+        `${blk}.ccupTur=${msg}.tool_use_result}catch(ccupE){}`;
+      return `${head}${absLnFrag("tur", stash)}${tail}`;
+    },
+  );
+  out = out.replace(
+    ABS_LN_PROP_RE,
+    (_w, head, _ctx, input, result, _jsx, _comp, tail) => {
+      const start =
+        ",ccupStart:(function(R,q){try{" +
+        'if(R&&!R.replaceAll&&typeof R.originalFile==="string"&&q){' +
+        "var ix=R.originalFile.indexOf(q);" +
+        'if(ix>=0)return R.originalFile.slice(0,ix).split("\\n").length}' +
+        "}catch(ccupE){}})" +
+        `(${result}&&${result}.ccupTur,` +
+        `(${result}&&${result}.ccupTur&&typeof ${result}.ccupTur.oldString==="string"` +
+        `?${result}.ccupTur.oldString:${input}.old_string)||"")`;
+      return `${head}${absLnFrag("prop", start)}${tail}`;
+    },
+  );
   out = out.replace(
     ABS_LN_ARG_RE,
     (_w, head, _comp, _o, _m, _l, _f, tail) =>
@@ -811,7 +823,9 @@ export function initMathAssets(extensionDir: string): void {
       .readFileSync(path.join(base, "katex.min.js"), "utf8")
       .replace(/\/\/# sourceMappingURL=[^\n]*/g, "")
       .trim();
-    const css = fs.readFileSync(path.join(base, "katex.min.css"), "utf8").trim();
+    const css = fs
+      .readFileSync(path.join(base, "katex.min.css"), "utf8")
+      .trim();
     const fontsDir = path.join(base, "fonts");
     const fontNames = fs
       .readdirSync(fontsDir)
@@ -1088,8 +1102,7 @@ function ccupMathHelperWebview(): void {
                   let nl = s.indexOf("\n", after);
                   if (nl < 0) nl = n;
                   const tail = s.slice(after, nl);
-                  const disp =
-                    /^[ \t>]*$/.test(head) && /^[ \t]*$/.test(tail);
+                  const disp = /^[ \t>]*$/.test(head) && /^[ \t]*$/.test(tail);
                   // Inside a blockquote the continuation lines carry "> "
                   // prefixes that are markdown syntax, not TeX: strip them.
                   const tex2 =
@@ -1265,7 +1278,9 @@ function mathApplyInline(c: string): string {
 }
 
 function mathPresent(c: string): boolean {
-  return mathMarksPresent(c) || (mathAssets !== undefined && mathAnchorsPresent(c));
+  return (
+    mathMarksPresent(c) || (mathAssets !== undefined && mathAnchorsPresent(c))
+  );
 }
 // true = ON in exactly this build's form (also when marked but unrebuildable,
 // so an orphaned patch still reads as ON and stays removable), false = OFF or
@@ -1421,7 +1436,8 @@ const HOVER_TIP_JS =
 const SCROLL_DOT_MARKER = "/*ccup:scrollDot*/";
 const SCROLL_DOT_LINE_RE = /\n?\/\*ccup:scrollDot\*\/[^\n]*/g;
 const SCROLL_DOT_INPUT_HASH_RE = /messageInput:"messageInput_([-\w]+)"/;
-const SCROLL_DOT_CHAT_HASH_RE = /messagesContainer:"messagesContainer_([-\w]+)"/;
+const SCROLL_DOT_CHAT_HASH_RE =
+  /messagesContainer:"messagesContainer_([-\w]+)"/;
 
 // The full marked line for this bundle, or undefined when a class-map anchor is
 // gone. Deterministic given the bundle content, so equality against the on-disk
@@ -1444,6 +1460,15 @@ function scrollDotBuild(c: string): string | undefined {
     ".ccup-scroll-btn[data-off]:hover{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}" +
     ".ccup-scroll-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-scroll-btn svg{display:block;width:20px;height:20px}" +
+    // The composer's own dropdowns (mention, mode, model, slash, add) all open
+    // above the box (.menuPopup_<hash>, bottom:100%, z-index <= 10) inside this
+    // same input container, which has no z-index of its own: it and the button
+    // flatten into the composer's z:20 context, where the button's z:21 paints
+    // THROUGH the popup. Hide the button while any popup is mounted rather than
+    // chase a z-index below every popup (one is z:auto, so that means negative).
+    // Matched by the stable menuPopup_ class-name substring, no per-build hash;
+    // scoped to this input so a popup in one chat view never blanks another's.
+    `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-scroll-btn[data-show]{opacity:0;pointer-events:none}` +
     HOVER_TIP_CSS;
   // Down arrow, drawn with currentColor strokes; single-quoted attributes so the
   // whole markup embeds in a double-quoted JS string below without escaping.
@@ -1601,6 +1626,11 @@ function jumpMsgBuild(c: string): string | undefined {
     ".ccup-nav-btn[data-off]:hover{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}" +
     ".ccup-nav-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-nav-btn svg{display:block;width:20px;height:20px}" +
+    // Hide both nav buttons while any composer dropdown is open: they mount in
+    // the input container (no stacking context of its own), so their z:21 would
+    // paint through the popups that open above the box. See scrollDotBuild for
+    // the full stacking rationale; matched by the menuPopup_ class substring.
+    `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-nav-btn[data-show]{opacity:0;pointer-events:none}` +
     HOVER_TIP_CSS;
   // Chevron up / down (no stem), distinct from the scroll button's stemmed arrow;
   // single-quoted attributes embed in the double-quoted JS strings below unescaped.
@@ -1863,7 +1893,13 @@ function defaultFindKeys(): FindKeys {
   const mac = process.platform === "darwin";
   const mod = (k: string): FindChord =>
     mac ? { k, m: 1, c: 0, s: 0, a: 0 } : { k, m: 0, c: 1, s: 0, a: 0 };
-  const plain = (k: string, s: number): FindChord => ({ k, m: 0, c: 0, s, a: 0 });
+  const plain = (k: string, s: number): FindChord => ({
+    k,
+    m: 0,
+    c: 0,
+    s,
+    a: 0,
+  });
   const next = [plain("enter", 0), plain("f3", 0)];
   const prev = [plain("enter", 1), plain("f3", 1)];
   if (mac) {
@@ -1927,7 +1963,9 @@ const FINDBAR_COMMANDS: Record<string, keyof FindKeys> = {
 };
 
 function chordEq(a: FindChord, b: FindChord): boolean {
-  return a.k === b.k && a.m === b.m && a.c === b.c && a.s === b.s && a.a === b.a;
+  return (
+    a.k === b.k && a.m === b.m && a.c === b.c && a.s === b.s && a.a === b.a
+  );
 }
 
 // Comma-separated chord specs from a claudeCodeUiPatch setting ("f6, cmd+j"),
@@ -2030,10 +2068,35 @@ function ccupFindBarWebview(): void {
     const MAXM = 20000;
     const TOP = 48; // px kept clear under the fixed bar when revealing
     const INLINE: Record<string, number> = {
-      A: 1, ABBR: 1, B: 1, BDI: 1, BDO: 1, CITE: 1, CODE: 1, DATA: 1, DEL: 1,
-      DFN: 1, EM: 1, FONT: 1, I: 1, INS: 1, KBD: 1, LABEL: 1, MARK: 1, Q: 1,
-      S: 1, SAMP: 1, SMALL: 1, SPAN: 1, STRONG: 1, SUB: 1, SUP: 1, TIME: 1,
-      U: 1, VAR: 1, WBR: 1,
+      A: 1,
+      ABBR: 1,
+      B: 1,
+      BDI: 1,
+      BDO: 1,
+      CITE: 1,
+      CODE: 1,
+      DATA: 1,
+      DEL: 1,
+      DFN: 1,
+      EM: 1,
+      FONT: 1,
+      I: 1,
+      INS: 1,
+      KBD: 1,
+      LABEL: 1,
+      MARK: 1,
+      Q: 1,
+      S: 1,
+      SAMP: 1,
+      SMALL: 1,
+      SPAN: 1,
+      STRONG: 1,
+      SUB: 1,
+      SUP: 1,
+      TIME: 1,
+      U: 1,
+      VAR: 1,
+      WBR: 1,
     };
 
     let bar: any = null;
@@ -2062,8 +2125,10 @@ function ccupFindBarWebview(): void {
     let umClass = "";
     let shClass = "";
     for (let i = 0; i < BLOCKS.length; i++) {
-      if (!umClass && BLOCKS[i].indexOf("userMessage_") === 0) umClass = BLOCKS[i];
-      if (!shClass && BLOCKS[i].indexOf("stickyHeader_") === 0) shClass = BLOCKS[i];
+      if (!umClass && BLOCKS[i].indexOf("userMessage_") === 0)
+        umClass = BLOCKS[i];
+      if (!shClass && BLOCKS[i].indexOf("stickyHeader_") === 0)
+        shClass = BLOCKS[i];
     }
 
     const container = (): any =>
@@ -2194,7 +2259,8 @@ function ccupFindBarWebview(): void {
       // sizer twin holds a fixed "9999 of 9999" (or the real worst case once
       // the total runs wider), so the bar keeps one width across queries and
       // navigation alike.
-      if (countText && countText.textContent !== txt) countText.textContent = txt;
+      if (countText && countText.textContent !== txt)
+        countText.textContent = txt;
       const sz = total.length > 4 ? total + " of " + total : "9999 of 9999";
       if (countSize && countSize.textContent !== sz) countSize.textContent = sz;
       if (bar) {
@@ -2419,14 +2485,18 @@ function ccupFindBarWebview(): void {
     const rescan = (): void => {
       if (!isOpen() || !input || !input.value) return;
       const prevRange = active >= 0 ? ranges[active] : null;
-      const prevStart = active >= 0 && starts[active] !== undefined ? starts[active] : -1;
+      const prevStart =
+        active >= 0 && starts[active] !== undefined ? starts[active] : -1;
       search(input.value);
       active = -1;
       if (ranges.length) {
         let found = -1;
         if (prevRange) {
           try {
-            if (prevRange.startContainer && prevRange.startContainer.isConnected) {
+            if (
+              prevRange.startContainer &&
+              prevRange.startContainer.isConnected
+            ) {
               for (let k = 0; k < ranges.length; k++) {
                 // 0 = START_TO_START: first new match at or after the old one
                 if (ranges[k].compareBoundaryPoints(0, prevRange) >= 0) {
@@ -2473,7 +2543,10 @@ function ccupFindBarWebview(): void {
       const br = btn.getBoundingClientRect();
       const tw = tip.offsetWidth;
       const vw = doc.documentElement.clientWidth || 0;
-      const x = Math.max(4, Math.min(br.left + br.width / 2 - tw / 2, vw - tw - 4));
+      const x = Math.max(
+        4,
+        Math.min(br.left + br.width / 2 - tw / 2, vw - tw - 4),
+      );
       tip.style.left = x + "px";
       tip.style.top = br.bottom + 6 + "px";
     };
@@ -3102,7 +3175,10 @@ const LEGACY_KEY_RENAMES: [string, string][] = [
   ["chatCodeFontSize", "chatCodeBlockFontSize"],
   ["chatCodeblockFontSize", "chatCodeBlockFontSize"],
   ["planPreviewCodeblockFontSize", "planPreviewCodeBlockFontSize"],
-  ["chatPermissionCodeMatchChatCodeblock", "chatPermissionCodeMatchChatCodeBlock"],
+  [
+    "chatPermissionCodeMatchChatCodeblock",
+    "chatPermissionCodeMatchChatCodeBlock",
+  ],
 ];
 
 export async function migrateLegacyKeys(): Promise<void> {

@@ -5,6 +5,10 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 ## 1.3.2
 
 - Fix the find bar's block ruler painting over the pinned user-message header while scrolling; the ruler now spans only the visible part of its block.
+- The scroll-to-bottom and previous/next message buttons now also sit above the top-right corner of the permission or question box while it replaces the input box, where they used to disappear.
+- With the scroll-to-bottom button on, an incoming permission request or question no longer scrolls the chat history to the bottom while you are reading it.
+  The scroll still happens when the view is already at the bottom.
+- Clicking the scroll-to-bottom button no longer moves focus (matching the jump buttons), so a permission box's keyboard shortcuts keep working after a click.
 
 ## 1.3.1
 

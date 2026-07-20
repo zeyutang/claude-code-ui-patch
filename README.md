@@ -56,8 +56,10 @@ Behavior
    │      ├── chatFindBar{Next,Previous}MatchKeys       # extra match chords, comma-separated
    │      └── chatFindBar{Next,Previous}MatchBlockKeys  # block-skip chords atop Cmd/Ctrl+(Shift+)Enter
    ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
-   ├── chatJumpToMessageButtons        # always-shown prev/next buttons: jump between turns, if On
-   ├── chatScrollToBottomDot           # button above input box: click scrolls chat to newest, if On
+   ├── chatJumpToMessageButtons        # prev/next above input/permission box: jump turns, if On
+   ├── chatScrollToBottomDot           # button above input/permission box: scroll to newest, if On
+   │                                   #   also stops a permission request from auto-scrolling the
+   │                                   #   history down unless the view is already at the bottom
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)

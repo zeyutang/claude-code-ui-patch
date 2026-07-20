@@ -1405,11 +1405,22 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
 // events, window resizes, and a body-wide MutationObserver (which also re-mounts
 // the button if a re-render drops it). data-show/data-off are toggled only on an
 // actual change and sit outside the observer's attribute filter, so the updater
-// never re-triggers itself. The two DOM surfaces are addressed via CSS-module hashes
-// read from the bundle's class maps at patch time (the input module via its
-// messageInput entry, whose module also owns .inputContainer_<hash>; the chat
-// module via messagesContainer); if either map is gone the point reports missing
-// and the bundle stays native. The whole body is wrapped in try/catch so a
+// never re-triggers itself. The updater mounts one button per host from the
+// shared hosts() collector, so while a permission/question popup replaces the
+// input box the button sits on that popup's wrapper instead (same offsets; see
+// btnHostsJs above). The button swallows mousedown (preventDefault +
+// stopPropagation) and stops click propagation, as the jump buttons always
+// have: on the popup this keeps focus (and the popup's number/Esc keyboard
+// handling) where it is instead of letting the click blur the popup, and on the
+// input box it stops the composer's click handler from stealing focus and
+// re-scrolling under the glide. The two required DOM surfaces are addressed via
+// CSS-module hashes read from the bundle's class maps at patch time (the input
+// module via its messageInput entry, whose module also owns
+// .inputContainer_<hash>; the chat module via messagesContainer); if either map
+// is gone the point reports missing and the bundle stays native. While ON, the
+// permission-popup auto-scroll guard (see PERM_YANK_MARKER above) also rewrites
+// the chat's "popup pending → scroll to bottom" effect to respect the
+// stick-to-bottom zone. The whole body is wrapped in try/catch so a
 // failure can never break the chat, and the /*ccup:scrollDot*/ marker makes the
 // ON state detectable; a marked line that no longer matches the current build
 // (an older patch version) reads as OFF, so the next apply rebuilds it in place
@@ -1433,6 +1444,92 @@ const HOVER_TIP_JS =
   `tipT=setTimeout(function(){tipT=0;try{showTip(b,t)}catch(e){}},250)});` +
   `b.addEventListener("mouseleave",hideTip)}`;
 
+// Shared button-host collector for the scroll-to-bottom and jump buttons. The
+// buttons normally anchor to the input box (.inputContainer_<hash>), but while
+// a permission request or AskUserQuestion popup is up the app hides that box
+// (display:none on its wrapper) and shows the request UI inside a sibling
+// wrapper (.permissionsContainer_<hash>, a plain centered block shared with the
+// auth/refusal dialogs), so the buttons vanish exactly when reading history is
+// most likely. hosts() therefore returns the input boxes plus, for each mounted
+// request card (.permissionRequestContainer_<hash>, the popup module's root,
+// which identifies the tool-permission/question wrapper among the dialogs
+// sharing the wrapper class), its closest() wrapper. The card itself cannot
+// host (overflow:hidden clips anything above its border), so the wrapper gets a
+// ccup-btn-host marker class making it position:relative, and the buttons'
+// top:-34px/right offsets land in the same spots as on the input box. The class
+// add is guarded by a contains() check so the body observers (class/style in
+// their filter) see at most one mutation per mount and settle; React never
+// rewrites the wrapper's static className, so the marker survives re-renders
+// and dies with the popup. Both permission hashes are read from the bundle's
+// class maps at patch time; if either is gone hosts() degrades to the input
+// boxes alone (the popups just lose the buttons) instead of failing the toggle.
+const PERM_WRAP_HASH_RE =
+  /permissionsContainer:"permissionsContainer_([-\w]+)"/;
+const PERM_REQ_HASH_RE =
+  /permissionRequestContainer:"permissionRequestContainer_([-\w]+)"/;
+const BTN_HOST_CSS = ".ccup-btn-host{position:relative}";
+function btnHostsJs(
+  input: string,
+  perm: string | undefined,
+  preq: string | undefined,
+): string {
+  const base = `var a=[].slice.call(document.querySelectorAll(".inputContainer_${input}"))`;
+  if (!perm || !preq) return `function hosts(){${base};return a}`;
+  return (
+    `function hosts(){${base},p=document.querySelectorAll(".permissionRequestContainer_${preq}");` +
+    `for(var i=0;i<p.length;i++){var w=p[i].closest(".permissionsContainer_${perm}");` +
+    `if(w){if(!w.classList.contains("ccup-btn-host"))w.classList.add("ccup-btn-host");` +
+    `if(a.indexOf(w)<0)a.push(w)}}return a}`
+  );
+}
+
+// Permission-popup auto-scroll guard (rides the scroll-to-bottom toggle): the
+// chat view's render effect scrolls the history to the bottom UNCONDITIONALLY
+// whenever a permission request or AskUserQuestion popup is pending (the
+// branch if(e.permissionRequests.value.length>0){PD(r,!0);return}), yanking
+// the view down while reading history (every other branch of that effect
+// defers to the stick-to-bottom flag, recomputed each render as "within 50px
+// of the bottom").
+// With the button ON the yank is pointless (the button is one click away), so
+// the branch gets the same stickiness condition inline: an arrow IIFE reads the
+// live scroll position off the container ref (introducing no bindings into the
+// minified scope) and lets the scroll through only when the view is already
+// within the native 50px stick zone (or the ref is unmounted, where the call is
+// a no-op anyway), keeping the at-bottom reveal native. All three minified
+// names (session, scroll helper, container ref) are captured and re-emitted, so
+// restore is byte-identical; the marker makes the guarded state detectable. The
+// edit is best-effort: on a drifted bundle where the branch is gone the toggle
+// still applies (buttons only), and permYankGuardOk treats "no native site"
+// as satisfied so the state machinery never loops on it.
+const PERM_YANK_MARKER = "/*ccup:permYankGuard*/";
+const PERM_YANK_NATIVE_RE =
+  /if\((\w+)\.permissionRequests\.value\.length>0\)\{(\w+)\((\w+),!0\);return\}/;
+const PERM_YANK_GUARDED_RE =
+  /if\((\w+)\.permissionRequests\.value\.length>0\)\{\/\*ccup:permYankGuard\*\/if\(\(\(n\)=>!n\|\|n\.scrollHeight-n\.scrollTop-n\.clientHeight<50\)\((\w+)\.current\)\)(\w+)\(\2,!0\);return\}/;
+function permYankGuardedText(e: string, fn: string, ref: string): string {
+  return (
+    `if(${e}.permissionRequests.value.length>0){${PERM_YANK_MARKER}` +
+    `if(((n)=>!n||n.scrollHeight-n.scrollTop-n.clientHeight<50)(${ref}.current))` +
+    `${fn}(${ref},!0);return}`
+  );
+}
+// Strip any guard back to the native branch, then re-apply when on.
+function permYankGuardSet(c: string, on: boolean): string {
+  const off = c.replace(
+    PERM_YANK_GUARDED_RE,
+    (_m, e, ref, fn) =>
+      `if(${e}.permissionRequests.value.length>0){${fn}(${ref},!0);return}`,
+  );
+  if (!on) return off;
+  return off.replace(PERM_YANK_NATIVE_RE, (_m, e, fn, ref) =>
+    permYankGuardedText(e, fn, ref),
+  );
+}
+// The guard's ON-state health: guarded, or nothing left to guard (drift).
+function permYankGuardOk(c: string): boolean {
+  return PERM_YANK_GUARDED_RE.test(c) || !PERM_YANK_NATIVE_RE.test(c);
+}
+
 const SCROLL_DOT_MARKER = "/*ccup:scrollDot*/";
 const SCROLL_DOT_LINE_RE = /\n?\/\*ccup:scrollDot\*\/[^\n]*/g;
 const SCROLL_DOT_INPUT_HASH_RE = /messageInput:"messageInput_([-\w]+)"/;
@@ -1446,6 +1543,8 @@ function scrollDotBuild(c: string): string | undefined {
   const input = c.match(SCROLL_DOT_INPUT_HASH_RE)?.[1];
   const chat = c.match(SCROLL_DOT_CHAT_HASH_RE)?.[1];
   if (!input || !chat) return undefined;
+  const perm = c.match(PERM_WRAP_HASH_RE)?.[1];
+  const preq = c.match(PERM_REQ_HASH_RE)?.[1];
   // The button floats just above the box's top-right corner, outside its border.
   // box-sizing:border-box keeps the 26px footprint matching the send button's
   // despite the 1px border; it stays hidden (opacity 0, no pointer events, nudged
@@ -1469,6 +1568,7 @@ function scrollDotBuild(c: string): string | undefined {
     // Matched by the stable menuPopup_ class-name substring, no per-build hash;
     // scoped to this input so a popup in one chat view never blanks another's.
     `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-scroll-btn[data-show]{opacity:0;pointer-events:none}` +
+    (perm && preq ? BTN_HOST_CSS : "") +
     HOVER_TIP_CSS;
   // Down arrow, drawn with currentColor strokes; single-quoted attributes so the
   // whole markup embeds in a double-quoted JS string below without escaping.
@@ -1481,6 +1581,7 @@ function scrollDotBuild(c: string): string | undefined {
     `var ARROW="${arrow}",raf=0,gen=0;` +
     HOVER_TIP_JS +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
+    btnHostsJs(input, perm, preq) +
     // Fixed 100ms ease-out glide to the bottom; target re-read per frame.
     `function go(){var t=sc();if(!t)return;` +
     `if(matchMedia("(prefers-reduced-motion:reduce)").matches){t.scrollTop=t.scrollHeight;return}` +
@@ -1491,11 +1592,12 @@ function scrollDotBuild(c: string): string | undefined {
     `else t.scrollTop=t.scrollHeight}` +
     `requestAnimationFrame(stp)}` +
     // can = something below to scroll to; shown always, dimmed inert otherwise.
-    `function upd(){raf=0;var s=sc(),can=!!s&&s.scrollHeight-s.scrollTop-s.clientHeight>8,boxes=document.querySelectorAll(".inputContainer_${input}");` +
+    `function upd(){raf=0;var s=sc(),can=!!s&&s.scrollHeight-s.scrollTop-s.clientHeight>8,boxes=hosts();` +
     `for(var i=0;i<boxes.length;i++){var box=boxes[i],d=box.querySelector(".ccup-scroll-btn");` +
     `if(!d){d=document.createElement("button");d.type="button";d.className="ccup-scroll-btn";` +
     `d.setAttribute("aria-label","Scroll to Bottom");d.innerHTML=ARROW;` +
-    `d.addEventListener("click",function(){hideTip();if(!this.hasAttribute("data-off"))go()});att(d,"Scroll to Bottom");box.appendChild(d)}` +
+    `d.addEventListener("mousedown",function(e){e.preventDefault();e.stopPropagation();hideTip()});` +
+    `d.addEventListener("click",function(e){e.stopPropagation();hideTip();if(!this.hasAttribute("data-off"))go()});att(d,"Scroll to Bottom");box.appendChild(d)}` +
     `if(!d.hasAttribute("data-show"))d.setAttribute("data-show","");` +
     `var off=d.hasAttribute("data-off");if(can&&off)d.removeAttribute("data-off");else if(!can&&!off)d.setAttribute("data-off","")}}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
@@ -1509,21 +1611,24 @@ function scrollDotBuild(c: string): string | undefined {
 function scrollDotPresent(c: string): boolean {
   return c.includes(SCROLL_DOT_MARKER) || scrollDotBuild(c) !== undefined;
 }
-// true = ON (marked line present and matching this build; also when present but
-// unrebuildable, so an orphaned line still reads as ON and stays removable),
-// false = OFF or stale, undefined = anchors gone and nothing to remove.
+// true = ON (marked line present and matching this build AND the popup
+// auto-scroll guard healthy; also when present but unrebuildable, so an
+// orphaned line still reads as ON and stays removable), false = OFF or stale
+// (including a missing guard, so upgrades re-apply it), undefined = anchors
+// gone and nothing to remove.
 function scrollDotCurrentOn(c: string): boolean | undefined {
   const cur = cssMarkedLine(c, SCROLL_DOT_MARKER);
   const want = scrollDotBuild(c);
-  if (cur !== undefined) return want === undefined || cur === want;
+  if (cur !== undefined)
+    return (want === undefined || cur === want) && permYankGuardOk(c);
   return want === undefined ? undefined : false;
 }
 function scrollDotSet(c: string, on: boolean): string {
-  const stripped = c.replace(SCROLL_DOT_LINE_RE, "");
+  const stripped = permYankGuardSet(c.replace(SCROLL_DOT_LINE_RE, ""), false);
   if (!on) return stripped;
   const line = scrollDotBuild(stripped);
   if (line === undefined) return c; // anchors gone: leave the file as it is
-  return `${stripped}\n${line}`;
+  return `${permYankGuardSet(stripped, true)}\n${line}`;
 }
 
 // Jump-to-previous/next-message buttons (ON): a companion to the
@@ -1585,7 +1690,11 @@ function scrollDotSet(c: string, on: boolean): string {
 // measured once (same neutralize-and-restore) and cached by element identity,
 // costing no per-frame reflow. Mounting, re-mount on re-render, and the
 // rAF-coalesced updater (capture-phase scroll, resize, body MutationObserver)
-// mirror the scroll-to-bottom button; data-show/data-off sit outside the
+// mirror the scroll-to-bottom button, including the shared hosts() collector,
+// so while a permission/question popup replaces the input box the pair sits on
+// that popup's wrapper at the same offsets (see btnHostsJs above), where the
+// mousedown swallow also keeps focus, and with it the popup's keyboard
+// handling, on the popup; data-show/data-off sit outside the
 // observer's class/style attribute filter, and the observer callback drops the
 // records our own measurements produce (style writes on sticky headers, from
 // the click-time pass and the census probe alike), so the updater never
@@ -1609,6 +1718,8 @@ function jumpMsgBuild(c: string): string | undefined {
   const chat = c.match(JUMP_MSG_CHAT_HASH_RE)?.[1];
   const sticky = c.match(JUMP_MSG_STICKY_HASH_RE)?.[1];
   if (!input || !chat || !sticky) return undefined;
+  const perm = c.match(PERM_WRAP_HASH_RE)?.[1];
+  const preq = c.match(PERM_REQ_HASH_RE)?.[1];
   // Two 26px squares matching the scroll-to-bottom button, above the input's
   // top-right corner: left of the scroll button's right:5px slot when its marker
   // is in the bundle, slid into its place otherwise (30px pitch either way);
@@ -1631,6 +1742,7 @@ function jumpMsgBuild(c: string): string | undefined {
     // paint through the popups that open above the box. See scrollDotBuild for
     // the full stacking rationale; matched by the menuPopup_ class substring.
     `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-nav-btn[data-show]{opacity:0;pointer-events:none}` +
+    (perm && preq ? BTN_HOST_CSS : "") +
     HOVER_TIP_CSS;
   // Chevron up / down (no stem), distinct from the scroll button's stemmed arrow;
   // single-quoted attributes embed in the double-quoted JS strings below unescaped.
@@ -1645,6 +1757,7 @@ function jumpMsgBuild(c: string): string | undefined {
     `var UP="${up}",DN="${dn}",raf=0,gen=0,n0el=null,n0=0;` +
     HOVER_TIP_JS +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
+    btnHostsJs(input, perm, preq) +
     `function hh(t){return t.querySelectorAll(".stickyHeader_${sticky}")}` +
     // Natural (unstuck) header positions: neutralize sticky, read all, restore.
     `function nat(t){var h=hh(t),a=[],i;` +
@@ -1677,7 +1790,7 @@ function jumpMsgBuild(c: string): string | undefined {
     // A lone pile header is turn 1's; prev is valid while the view sits below its
     // start. That natural position is fixed per element, so measure once and cache.
     `if(!canP&&pile===1){if(n0el!==m){n0el=m;m.style.position="static";n0=m.offsetTop;m.style.position=""}canP=n0<cur-4}` +
-    `var boxes=document.querySelectorAll(".inputContainer_${input}");` +
+    `var boxes=hosts();` +
     `for(var j=0;j<boxes.length;j++){var box=boxes[j],p=box.querySelector(".ccup-nav-prev"),n=box.querySelector(".ccup-nav-next");` +
     `if(!p){p=mk("ccup-nav-prev",UP,"Previous Message",-1);box.appendChild(p)}` +
     `if(!n){n=mk("ccup-nav-next",DN,"Next Message",1);box.appendChild(n)}` +

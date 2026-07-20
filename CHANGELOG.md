@@ -4,55 +4,36 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 
 ## 1.2.2
 
-- Add `claudeCodeUiPatch.chatFindBar`: a working in-chat find on `Cmd`/`Ctrl`+`F`, off by default.
-  VS Code's native webview find widget can only highlight in the Claude Code chat.
-  Its next/previous (`Enter`, `Shift`+`Enter`, and the widget's arrows all funnel into one "continue session" call) restarts the browser find session instead of advancing, so "next" re-lands on the first match and "previous" sticks on the last (reported upstream as anthropics/claude-code#72005 and #37182; the follow-up-find behavior itself is electron#34490, closed unfixed).
-  None of that machinery is reachable from an extension, so the toggle instead intercepts the find chord inside the chat document (ahead of VS Code's key forwarder, keeping the native widget closed) and runs find in the page.
-  Matches highlight through the CSS Custom Highlight API in the editor's own findMatch theme colors, with a "k of n" counter.
-  Next/previous wrap around and scroll off-screen matches into view, matches may span inline markup (bold, inline code, links), hidden text (collapsed "Show more" content) is skipped, a mutation observer keeps results current while the chat streams, and `Escape` closes.
-  Navigation honors your keybindings for Find Next / Find Previous (`editor.action.nextMatchFindAction` / `editor.action.previousMatchFindAction`) on top of the platform defaults (`Enter`/`Shift`+`Enter`, `F3`/`Shift`+`F3`, plus `Cmd`+`G`/`Cmd`+`Shift`+`G` on macOS), and the open chord honors rebinds of `editor.action.webvieweditor.showFind`.
-  Chords are baked at patch time; editing `keybindings.json` re-applies automatically and lights the reload cue.
-  Single chords only (a `Cmd+K Cmd+G` sequence cannot be captured in a webview).
-  Block-skip buttons (double chevrons) jump between the blocks that hold matches, entering each at its first match: a diff card, an IN/OUT row, a tool card, one markdown chunk of an agent response, or a user message.
-  A slim ruler in the match-highlight color, pinned to the user-message column, marks the block of the active match, because the bar deliberately never auto-expands a folded IN/OUT row or a diff card, where a match may not be legible in place.
-  The sidebar chat, which natively has no find widget at all (microsoft/vscode#173643), gets the same bar.
+- Add `claudeCodeUiPatch.chatFindBar`, off by default: `Cmd`/`Ctrl`+`F` in the chat (tab or sidebar) opens a find bar that highlights matches with a "k of n" counter and, unlike the native search box, actually moves between them.
+  Next/previous follow your Find Next / Find Previous keybindings (single chords); `Escape` closes.
+  Block-skip buttons jump between the blocks that hold matches, and a ruler beside the transcript marks the current block; nothing auto-expands.
 - Rename the settings link in the panel and the status-bar tooltip from "Open VS Code Settings" to "Open Settings", which stays accurate on forks.
-- Tighten every settings description in `package.json` to one unified, concise shape: what the setting controls, at most one behavior note, and the closing default shorthand (`0` follows ..., `Empty = native`, `Off = native`).
-  Mechanism detail lives in the README and this changelog instead.
+- Tighten every settings description in `package.json` to one concise shape: what the setting controls, one behavior note, and the `0`/`Empty`/`Off = native` closing shorthand.
 
 ## 1.2.1
 
-- Resolve the Claude Code install through the extensions API (`vscode.extensions.getExtension`) instead of scanning hardcoded per-product directories (`~/.vscode`, `~/.vscode-insiders`, `~/.vscode-oss`).
-  The patcher now targets exactly the copy the current window loaded, so it works unchanged on VS Code forks (VSCodium, code-server, Cursor, ...), on remote hosts, in portable installs, and under custom `--extensions-dir` locations, and it can no longer patch a copy belonging to a different product that happens to carry a newer version.
-  The parent directory of the resolved install (or of this extension, when Claude Code is not loaded in the extension host) is still scanned, so a newer, not-yet-loaded sibling laid down by an auto-update keeps winning the version pick.
-- Skip install folders listed in the extensions root's `.obsolete` file (pending deletion after an uninstall, update, or downgrade), so a doomed leftover can never be selected as the patch target.
+- The patcher now locates Claude Code through the extensions API, so it works unchanged on VS Code forks (VSCodium, Cursor, code-server, ...), remote hosts, portable installs, and custom `--extensions-dir` locations, always targeting the copy the current window loads.
+- Install folders pending deletion (leftovers of an uninstall, update, or downgrade) are never selected as the patch target.
 
 ## 1.2.0
 
 - Add `claudeCodeUiPatch.chatMathRendering`: render TeX math in agent chat messages with a bundled KaTeX (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`), off by default.
-  Math is detected in the raw markdown before the parser runs and carried through it as an opaque inline-code payload, so `_`, `*`, and `|` inside math never turn into emphasis or break tables, and the rendered element is created inside React's own tree, so streaming re-renders reconcile cleanly.
-  Fenced code blocks and inline code are left untouched, and the `$` heuristics follow Pandoc (an opener followed by whitespace, or a closer preceded by whitespace or followed by a digit, stays literal), so `$5 and $10` is not math.
-  `$$…$$` renders as display math when it sits alone on its line(s), inline otherwise (blockquote `>` prefixes are understood either way); `\[…\]` is always display.
-  Invalid TeX renders KaTeX's red error span showing the raw source instead of breaking the message.
-  The KaTeX script, stylesheet, and `woff2` fonts ride the ordinary patch machinery: applied to the chat webview when the toggle is on, fully removed when it turns off, on Factory Reset, and re-applied after a Claude Code update.
+  Code blocks and inline code are left untouched, and currency like `$5 and $10` stays literal; `$$…$$` alone on its line(s) renders as display math, inline otherwise.
+  Invalid TeX shows KaTeX's red error span with the raw source instead of breaking the message.
 - Add `claudeCodeUiPatch.chatMathFontSizeEm`: math size in `em`, relative to the surrounding chat text, defaulting to `1.0` (match the text); KaTeX's own document-oriented default is `1.21`.
 - Add `claudeCodeUiPatch.chatInputHistoryFontSize`: text size in px for your sent messages in the chat history, `0` (follow the native `chat.fontSize`) by default.
-  It shows in the configuration panel and the status-bar summary as "user message history", right below "agent response", with the same ▼/▲ controls.
-  The "Show more"/"Show less" buttons inside the bubble are em-sized, so they scale with it exactly as they do under `chat.fontSize`; attachment chips and slash-command echoes keep the native size.
+  It shows in the panel and the status-bar summary as "user message history"; attachment chips and slash-command echoes keep the native size.
 - Add `claudeCodeUiPatch.chatInputHistoryFontFamily`: font family for the text of your sent messages in the chat history, empty (native) by default.
-  The rule scopes to the user-message text wrapper alone, so the bubble's chrome keeps the native font: attachment chips, the "Show more"/"Show less" buttons, and slash-command echoes (deliberately monospace) are untouched, as are the live input box, the agent transcript, and other chat extensions.
-  Composes with `chatHistoryFontFamily` in either order, each targeting its own surface directly.
-- Fix a state-detection quirk where `chatDiffCardLineNumbers` reported drift whenever the scroll-to-bottom button or the jump buttons were also on (the check compared whole-file bytes, which those toggles' end-of-file lines reorder on every apply), causing a needless re-apply pass at each activation.
+  Attachment chips, the "Show more"/"Show less" buttons, slash-command echoes, the input box, and the agent transcript keep their native fonts.
+- Fix `claudeCodeUiPatch.chatDiffCardLineNumbers` re-applying needlessly at every activation whenever the scroll-to-bottom button or the jump buttons were also on.
 
 ## 1.1.13
 
 - `claudeCodeUiPatch.chatDiffCardLineNumbers` now numbers diff-card lines by their true position in the edited file whenever the edit's location is known, instead of always restarting at 1.
-  The starting line is derived from the live Edit result's metadata (the unique match of the replaced text in the pre-edit file); both panes share it, since the text above an edit is untouched, and then each side counts through its own before/after state.
-  The expand modal inherits the same numbering, and each card stays anchored to the file as it stood at that edit, so accumulated edits that shift later lines never renumber earlier cards.
-  Cards replayed from history (Claude Code re-emits it without the metadata, e.g. after the reload that applies this setting), failed edits, and `replace_all` edits keep the 1-based fallback.
-- The line-number gutter is now as narrow as the shown digits require, one digit for a short snippet and widening only as needed (absolute numbers included), replacing the fixed two-digit minimum.
-- Reclaim the diff card's dead left strip in the side-by-side view: Monaco force-reserves the original pane's glyph margin (about a line-height of width) for revert arrows a read-only card never shows, and the patch now disables it.
-- Add ~5px of breathing room at the inline (narrow) view's number junction, where the original pane's digits used to butt directly against the modified pane's digits.
+  Cards replayed from history, failed edits, and `replace_all` edits keep the 1-based fallback; the expand modal shows the same numbers.
+- The line-number gutter is now as narrow as the shown digits require, replacing the fixed two-digit minimum.
+- Remove the diff card's dead left strip in the side-by-side view.
+- Add ~5px of breathing room where the two panes' line numbers meet in the inline (narrow) view.
 
 ## 1.1.12
 
@@ -67,35 +48,34 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 
 ## 1.1.9
 
-- Add `claudeCodeUiPatch.chatScrollToBottomDot`: a small button just above the chat input box's top-right corner (outside its contour) that shows whenever the conversation is scrolled away from the very bottom; hovering names it ("Go to the bottom of the conversation") and clicking glides back to the latest message in a fixed 100ms, however long the history (instant under reduced motion).
-  The button mirrors the send button's rounded-square shape with a downward arrow, in the input's own neutral surface and text color, and hides again once the view reaches the bottom.
+- Add `claudeCodeUiPatch.chatScrollToBottomDot`: a small button above the chat input box's top-right corner that shows whenever the conversation is scrolled away from the bottom; clicking glides back to the latest message (instant under reduced motion).
 
 ## 1.1.7
 
-- Surface partial patch loss in the panel: a setting changed from its native value whose patch target is gone on the installed Claude Code version now renders as a lost knob with a red dot, under a Claude clay status banner, instead of the panel reading "All settings applied".
-  Lost knobs keep live controls, so the preference is retained and re-applies if a later Claude Code build restores the anchor; a missing point still at its native value stays hidden.
+- The panel now surfaces partial patch loss: a setting changed from its native value whose patch target is gone on the installed Claude Code version renders as a lost knob with a red dot, instead of the panel reading "All settings applied".
+  Lost knobs keep live controls, so the preference re-applies if a later Claude Code build restores support.
 - Reword the post-update reload notification.
 
 ## 1.1.6
 
 - Add reload notification after `claude-code` update
-- Add `claudeCodeUiPatch.planPreviewCommentInputCtrlEnterToSend`: in the Plan Mode preview's comment box, send on `Cmd`/`Ctrl`+`Enter` and let plain `Enter` insert a newline (`Shift`+`Enter` also inserts a newline; the **Add Comment** button and `Escape` are unchanged). Off keeps the native behavior, where `Enter` sends and `Shift`+`Enter` inserts a newline.
-- Fix `claudeCodeUiPatch.planPreviewFontFamily`: the floating **Add Comment** button that appears when you select text in the Plan Mode preview no longer picks up the reading font. It is a native VS Code button but inherited the preview's `<body>` font, so a proportional reading font rendered it in that face; it is now pinned back to the UI font. The rest of the preview (prose, the review banner, and the comment popup's own controls) keeps the reading font as before.
+- Add `claudeCodeUiPatch.planPreviewCommentInputCtrlEnterToSend`: in the Plan Mode preview's comment box, send on `Cmd`/`Ctrl`+`Enter` and let plain `Enter` insert a newline. Off = native (`Enter` sends, `Shift`+`Enter` newlines).
+- Fix `claudeCodeUiPatch.planPreviewFontFamily`: the floating **Add Comment** button no longer picks up the reading font; the rest of the preview keeps it.
 
 ## 1.1.5
 
-- Add `claudeCodeUiPatch.chatInputMaxLines`: how many lines the chat input box grows to before it scrolls, folding two fixes into one number. Natively the box stops growing at a fixed 200px (so the line count depends on `chat.fontSize`), and once it scrolls, typing at the end reveals only the caret's line, leaving the last line flush on the box edge with its bottom padding hidden. Setting `N` caps the box at exactly `N` lines at any chat font size (clamped to 70% of the window height so a large `N` cannot swallow a short window) and adds `scroll-padding`, so the caret always keeps the box's own padding visible below the last line. `0` keeps both native behaviors.
+- Add `claudeCodeUiPatch.chatInputMaxLines`: how many lines the chat input box grows to before it scrolls (clamped to 70% of the window height), keeping the box's bottom padding in view while typing at the end.
+  `0` = native (a fixed 200px cap).
 
 ## 1.1.4
 
-- Add `claudeCodeUiPatch.codeFontFamily`: one font family for code **only**, applied to every code surface at once: fenced blocks and inline code in the chat panel and the Plan Mode preview, plus the permission command block. Prose text, interface chrome, and diff cards stay native. Empty follows the native monospace font. This is scoped to win over the code re-styling that `chatHistoryFontFamily` applies, so a chat reading font and a dedicated code font can be set together.
-- Normalize the code-block setting keys to `CodeBlock` casing
-  (`chatCodeBlockFontSize`, `planPreviewCodeBlockFontSize`,
-  `chatPermissionCodeMatchChatCodeBlock`); existing values migrate automatically.
+- Add `claudeCodeUiPatch.codeFontFamily`: one font family for code only, covering chat fenced and inline code, the Plan Mode preview, and the permission command block; prose, chrome, and diff cards stay native.
+  Composes with `chatHistoryFontFamily`, so a reading font and a code font can be set together.
+- Normalize the code-block setting keys to `CodeBlock` casing (`chatCodeBlockFontSize`, `planPreviewCodeBlockFontSize`, `chatPermissionCodeMatchChatCodeBlock`); existing values migrate automatically.
 
 ## 1.1.3
 
-- Add `claudeCodeUiPatch.chatPermissionCodeNoWrap`: stop the permission command block from wrapping. It switches the block to `white-space: pre` with horizontal scroll, so every visual row is exactly one logical line and a long command scrolls sideways instead of wrapping ambiguously onto the next row. Line numbers and syntax highlighting aren't offered for this block, because the command renders as a single editable text node with no per-line structure to anchor them to.
+- Add `claudeCodeUiPatch.chatPermissionCodeNoWrap`: stop the permission command block from wrapping; each visual row is one logical line and a long command scrolls sideways.
 
 ## 1.1.2
 
@@ -105,7 +85,7 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 
 ## 1.1.1
 
-- Fix `claudeCodeUiPatch.chatShowMoreAndLessAlign`: pinning the "Show more" button no longer enlarges the message box vertically when it appears on hover. It keeps its native absolute positioning (only the horizontal anchor is forced) instead of being dropped into normal flow, which had added the button's height to the box.
+- Fix `claudeCodeUiPatch.chatShowMoreAndLessAlign`: pinning the "Show more" button no longer enlarges the message box vertically when it appears on hover.
 
 ## 1.1.0
 

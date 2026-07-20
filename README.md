@@ -48,6 +48,7 @@ Plan Mode Markdown Preview
           └── planPreviewCommentBadgeFontSize    # comment badge (14px circle, keep <= 12)
 
 Behavior
+   ├── chatFindBar                     # working Cmd/Ctrl+F find bar in the chat, if On
    ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
    ├── chatJumpToMessageButtons        # always-shown prev/next buttons: jump between turns, if On
    ├── chatScrollToBottomDot           # button above input box: click scrolls chat to newest, if On
@@ -90,3 +91,4 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   Your own sent messages are styled by `chatInputHistoryFontSize` / `chatInputHistoryFontFamily`.
 - **`chatMathRendering` bundles KaTeX into the chat webview** (MIT code, SIL OFL 1.1 fonts; licenses ship in `assets/katex/`) and removes it fully when the toggle turns off.
   Rendering covers the chat only: the Plan Mode preview's content-security policy allows no font loading.
+- **`chatFindBar` replaces native `Cmd`/`Ctrl`+`F` widget inside the chat webview** (tab and sidebar alike).

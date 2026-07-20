@@ -51,24 +51,24 @@
           "default": 0,
           "minimum": 0,
           "maximum": 48,
-          "markdownDescription": "Chat font size in px, private to Claude Code so other chat panels are unaffected. `0` follows `#chat.fontSize#`."
+          "markdownDescription": "Agent message text size in px, private to Claude Code (other chat extensions stay native). `0` follows `#chat.fontSize#`."
         },
         "claudeCodeUiPatch.chatHistoryFontFamily": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Font family for the chat history only; the interface and input box stay native. Empty = native."
+          "markdownDescription": "Font family for agent messages; the interface and input box stay native. Empty = native."
         },
         "claudeCodeUiPatch.chatInputHistoryFontSize": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "maximum": 48,
-          "markdownDescription": "Text size in px for your sent messages in the chat history only (the user-input text); attachment chips, slash-command echoes, the agent transcript, and the input box stay native. `0` follows `#chat.fontSize#`."
+          "markdownDescription": "Text size in px for your sent messages in the chat history; attachment chips, slash-command echoes, and the input box stay native. `0` follows `#chat.fontSize#`."
         },
         "claudeCodeUiPatch.chatInputHistoryFontFamily": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Font family for your sent messages in the chat history only (the user-input text); attachment chips, slash-command echoes, the agent transcript, and the input box stay native. Empty = native."
+          "markdownDescription": "Font family for your sent messages in the chat history; attachment chips, slash-command echoes, and the input box stay native. Empty = native."
         },
         "claudeCodeUiPatch.chatCodeBlockFontSize": {
           "type": "number",
@@ -87,14 +87,14 @@
         "claudeCodeUiPatch.codeFontFamily": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Font family for code **only**, applied to every code surface at once: fenced blocks and inline code in the chat panel and in the Plan Mode preview, plus the permission command block. Prose text, interface chrome, and diff cards stay native. Empty = native monospace. Quote a family with spaces and add a fallback, e.g. `\"Fira Code, JetBrains Mono\"`."
+          "markdownDescription": "Font family for code only: fenced and inline code in the chat and the Plan Mode preview, plus the permission command block. Prose, chrome, and diff cards stay native. Empty = native monospace; quote families with spaces, e.g. `\"Fira Code, JetBrains Mono\"`."
         },
         "claudeCodeUiPatch.chatInputMaxLines": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "maximum": 40,
-          "markdownDescription": "Chat input box growth cap, in lines: the box grows to this many lines before it scrolls (clamped to 70% of the window height), and typing at the end always keeps the box's bottom padding in view, so the last line never sits flush on the edge. `0` = native: a fixed 200px cap, whose line count depends on `#chat.fontSize#`, and the bottom padding can scroll out of view."
+          "markdownDescription": "Chat input box growth cap in lines before it scrolls, clamped to 70% of the window height; the caret reveal keeps the bottom padding in view. `0` = native (a fixed 200px cap)."
         },
         "claudeCodeUiPatch.chatDiffCardFontSize": {
           "type": "number",
@@ -106,7 +106,7 @@
         "claudeCodeUiPatch.chatDiffCardLineNumbers": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show line numbers in the diff card, with real `+`/`-` gutter signs. Lines are numbered by their true position in the edited file when the edit's location is known (live edits); cards replayed from history, failed edits, and `replace_all` edits number from 1. The gutter is as narrow as the shown digits require."
+          "markdownDescription": "Show line numbers in the diff card, with real `+`/`-` gutter signs. Live edits number lines by their true position in the file; replayed, failed, and `replace_all` edits number from 1."
         },
         "claudeCodeUiPatch.chatDiffCardThemeSync": {
           "type": "boolean",
@@ -116,14 +116,14 @@
         "claudeCodeUiPatch.chatMathRendering": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Render TeX math in agent chat messages with a bundled KaTeX (`$...$`, `$$...$$`, `\\(...\\)`, `\\[...\\]`). Math is detected in the raw markdown before the parser runs, so underscores and asterisks inside math never turn into emphasis, and math inside code blocks or inline code is left alone. `$$...$$` renders as display math when it sits alone on its line(s), inline otherwise; a `$...$` opener followed by whitespace or a closer next to whitespace/digits stays literal, so `$5 and $10` is untouched. Off = native (raw TeX source shown)."
+          "markdownDescription": "Render TeX math in agent messages with a bundled KaTeX (`$...$`, `$$...$$`, `\\(...\\)`, `\\[...\\]`). Code blocks and inline code are left alone, and currency like `$5 and $10` stays literal. `$$...$$` alone on its line(s) is display math, inline otherwise. Off = native (raw TeX shown)."
         },
         "claudeCodeUiPatch.chatMathFontSizeEm": {
           "type": "number",
           "default": 1,
           "minimum": 0.5,
           "maximum": 3,
-          "markdownDescription": "Math size in `em`, relative to the surrounding chat text (applies while `#claudeCodeUiPatch.chatMathRendering#` is on). KaTeX's own default is `1.21`, sized for documents; `1.0` matches the surrounding text."
+          "markdownDescription": "Math size in `em` of the chat text, while `#claudeCodeUiPatch.chatMathRendering#` is on. `1.0` matches the text; KaTeX's stock is `1.21`."
         },
         "claudeCodeUiPatch.chatPermissionCodeMatchChatCodeBlock": {
           "type": "boolean",
@@ -133,17 +133,22 @@
         "claudeCodeUiPatch.chatPermissionCodeNoWrap": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Stop the permission command block from wrapping: switch it to `white-space: pre` with horizontal scroll, so each visual row is exactly one logical line. A long command then scrolls sideways instead of wrapping ambiguously onto the next row. (Line numbers / syntax highlighting aren't available here: the command is a single editable text node with no per-line structure.)"
+          "markdownDescription": "Stop the permission command block from wrapping: each visual row is one logical line, and a long command scrolls sideways."
         },
         "claudeCodeUiPatch.chatScrollToBottomDot": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show a small always-visible button just above the chat input box's top-right corner (outside its contour); clicking scrolls back to the latest message, and it dims when the view is already at the bottom. The button mirrors the send button's rounded-square shape with a downward arrow, in the input's own neutral surface and text color. With `#claudeCodeUiPatch.chatJumpToMessageButtons#` also on, the jump buttons line up on its left."
+          "markdownDescription": "Show a button above the chat input box's top-right corner that scrolls to the latest message; it dims when already at the bottom. With `#claudeCodeUiPatch.chatJumpToMessageButtons#` on, the jump buttons line up on its left."
         },
         "claudeCodeUiPatch.chatJumpToMessageButtons": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show two always-visible buttons above the chat input box's top-right corner (a chevron-up \"previous\" and a chevron-down \"next\"). Each user message pins to the top as a sticky header while its responses scroll under it; **previous** jumps up so the turn's header sits exactly where pinning holds it (from the bottom, that is the newest user message), and **next** jumps down to the following turn, with the same 100ms glide as the scroll-to-bottom button (instant under reduced motion). A direction with nowhere to go dims. Same rounded-square shape and hover as the scroll-to-bottom button; with `#claudeCodeUiPatch.chatScrollToBottomDot#` also on, the pair lines up on its left, and otherwise slides into its slot."
+          "markdownDescription": "Show previous/next buttons above the chat input box's top-right corner that jump between turns (each user message pins to the top as a sticky header). A direction with nowhere to go dims. With `#claudeCodeUiPatch.chatScrollToBottomDot#` on, the pair lines up on its left."
+        },
+        "claudeCodeUiPatch.chatFindBar": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Replace `Cmd`/`Ctrl`+`F` in the chat with a find bar whose navigation works (the native widget highlights but cannot advance between matches). Matches show in the editor's find colors with a counter, and `Escape` closes. Next/previous wraps and follows your **Find Next** / **Find Previous** keybindings plus the platform defaults, single chords only. The sidebar chat gets the same bar. Off = native."
         },
         "claudeCodeUiPatch.chatShowMoreAndLessAlign": {
           "type": "string",
@@ -158,7 +163,7 @@
             "Pin to the right"
           ],
           "default": "",
-          "markdownDescription": "Pin the chat message \"Show more\" and \"Show less\" buttons to a side. Empty = native (drifting) position; `left` or `right` places them deterministically."
+          "markdownDescription": "Pin the chat message \"Show more\"/\"Show less\" buttons to a side. Empty = native (drifting) position."
         },
         "claudeCodeUiPatch.effortSyncFix": {
           "type": "boolean",

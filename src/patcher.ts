@@ -48,6 +48,7 @@ const KNOB_ORDER: string[] = [
   "effortSyncFix",
   "scrollDot", // scroll-to-bottom dot
   "jumpMsg", // jump to previous/next message
+  "findBar", // in-chat find bar (Cmd/Ctrl+F)
   "text", // plan agent response
   "planCodeInline", // plan inline code
   "code", // plan code block
@@ -1649,6 +1650,747 @@ function jumpMsgSet(c: string, on: boolean): string {
   return `${stripped}\n${line}`;
 }
 
+// ---------------------------------------------------------------------------
+// In-chat find bar (ON): a working Cmd/Ctrl+F for the chat webview. The native
+// webview find widget (the chat editor tab sets enableFindWidget) can only
+// HIGHLIGHT: typing starts a fresh Chromium find-in-page session each
+// keystroke, but the navigation calls (Enter / Shift+Enter / the widget's
+// arrows, all funneling into one findInFrame "continue session" request)
+// restart instead of advancing, so "next" re-lands on the first match and
+// "previous" lands on the last and sticks (upstream: claude-code#72005 and
+// #37182 report exactly this; electron#34490/#45875 document the follow-up
+// findInPage class, closed unfixed). That machinery lives in VS Code core and
+// the browser process, with no extension-reachable surface, so instead of
+// repairing it we intercept the find chord INSIDE the chat document (a
+// capture-phase keydown on the content window fires before VS Code's
+// bubble-phase key forwarder, so stopImmediatePropagation keeps the native
+// widget from ever opening) and run find in the page, where navigation is just
+// state we own. The sidebar chat view, which has no native find at all
+// (vscode#173643, open), gets the same bar for free: both surfaces load this
+// bundle.
+//
+// The engine (ccupFindBarWebview, injected via toString like the math helper):
+//   bar     a fixed top-right widget (input, "k of n" counter, prev/next/close
+//           buttons) styled from the editorWidget/input theme variables, so it
+//           reads native in either theme; created lazily on first open
+//   scan    a TreeWalker over the transcript container (.messagesContainer_
+//           <hash>, baked at patch time like the scroll-dot button) collects
+//           visible text nodes into one haystack with per-node offsets;
+//           consecutive nodes under one nearest non-inline ancestor
+//           concatenate seamlessly, so a match may span inline markup
+//           (bold/code/links), while block boundaries insert "\n", which a
+//           single-line query can never match across; hidden text is skipped
+//           via checkVisibility (collapsed "Show more" content stays
+//           unsearchable, matching native find's visible-only semantics)
+//   paint   matches become Ranges under two CSS Custom Highlights (all
+//           matches + the active one, the active at higher priority), colored
+//           by the editor findMatch theme tokens in the appended CSS line; no
+//           DOM mutation, so React re-renders never fight the highlights
+//   nav     next/previous wrap around, move the active highlight, and scroll
+//           the transcript scroller just enough to center an off-screen match
+//   rescan  a body MutationObserver (debounced, active only while the bar is
+//           open) recomputes matches when the chat re-renders or streams,
+//           keeping the active match by its haystack offset, without scrolling
+//
+// Keys are resolved on the HOST at patch time and baked into a small cfg line
+// (window.__ccupFindCfg) separate from the engine block, so a keybinding edit
+// re-bakes one line: the open chord follows editor.action.webvieweditor
+// .showFind (default Cmd/Ctrl+F), and next/previous follow the user's
+// editor.action.nextMatchFindAction / previousMatchFindAction, i.e. the
+// platform defaults (Enter / Shift+Enter, F3 / Shift+F3, plus Cmd+G /
+// Cmd+Shift+G on macOS) minus their `-command` removals in keybindings.json
+// plus their own bindings there. The keybindings.json path is derived from
+// globalStorageUri at activation (initFindKeys), so VS Code forks and portable
+// installs resolve without a per-product path table; an fs watcher re-applies
+// on edits. when-clauses are ignored deliberately (the bar emulates the
+// user's keystroke preference, not the native contexts), only single chords
+// are honored (a "cmd+k cmd+g" sequence cannot be captured in one keydown),
+// and Escape-to-close is fixed. Chord matching compares KeyboardEvent.key
+// case-insensitively with exact modifier equality, so e.g. plain Enter and
+// Shift+Enter never shadow each other.
+//
+// Current-state checks are per marker (the cfg line by line equality, the
+// engine block by block equality), never whole-file, so other EOF-appended
+// toggle lines can sit in any order around ours; set() strips both pieces and
+// re-appends cfg-then-engine, keeping the cfg assignment ahead of the engine
+// that reads it. Everything injected is try/catch-wrapped and guarded on the
+// Highlight API so it can never break the chat.
+// ---------------------------------------------------------------------------
+const FINDBAR_CFG_MARKER = "/*ccup:findBarCfg*/";
+const FINDBAR_CFG_LINE_RE = /\n?\/\*ccup:findBarCfg\*\/[^\n]*/g;
+const FINDBAR_START = "/*ccup:findBarStart*/";
+const FINDBAR_BLOCK_RE =
+  /\n?\/\*ccup:findBarStart\*\/[\s\S]*?\/\*ccup:findBarEnd\*\//g;
+const FINDBAR_CSS_MARKER = "/*ccup:findBarCss*/";
+const FINDBAR_CHAT_HASH_RE = /messagesContainer:"messagesContainer_([-\w]+)"/;
+const FINDBAR_INPUT_HASH_RE = /messageInput:"messageInput_([-\w]+)"/;
+const FINDBAR_CSS_ANCHOR_RE = /\.messagesContainer_[-\w]+/;
+
+interface FindChord {
+  k: string; // KeyboardEvent.key, lowercased
+  m: number; // metaKey (1/0)
+  c: number; // ctrlKey
+  s: number; // shiftKey
+  a: number; // altKey
+}
+interface FindKeys {
+  open: FindChord[];
+  next: FindChord[];
+  prev: FindChord[];
+}
+
+// User keybindings.json location, supplied at activation (extension.ts derives
+// it from globalStorageUri: <userData>/User/globalStorage/<id> -> two levels up
+// is the User dir on every product and in portable mode). undefined => the
+// platform defaults apply unmodified.
+let findKeysFile: string | undefined;
+export function initFindKeys(keybindingsJsonPath: string): void {
+  findKeysFile = keybindingsJsonPath;
+}
+export function findKeysPath(): string | undefined {
+  return findKeysFile;
+}
+
+// One chord spec ("shift+cmd+g") -> a FindChord, or undefined for anything the
+// bar cannot capture (multi-chord sequences, empty keys). Keybinding key names
+// and KeyboardEvent.key coincide for letters, digits, f-keys, and punctuation
+// once lowercased; the named keys are mapped explicitly. (Two accepted
+// approximations: keybindings are US-layout keyCode based while e.key is
+// layout-aware, and shift+digit produces the shifted symbol in e.key.)
+function parseChord(spec: string): FindChord | undefined {
+  const s = spec.trim().toLowerCase();
+  if (!s || /\s/.test(s)) return undefined;
+  const named: Record<string, string> = {
+    escape: "escape",
+    enter: "enter",
+    tab: "tab",
+    space: " ",
+    up: "arrowup",
+    down: "arrowdown",
+    left: "arrowleft",
+    right: "arrowright",
+    pageup: "pageup",
+    pagedown: "pagedown",
+    home: "home",
+    end: "end",
+    backspace: "backspace",
+    delete: "delete",
+  };
+  let m = 0;
+  let c = 0;
+  let sh = 0;
+  let a = 0;
+  let key = "";
+  for (const part of s.split("+")) {
+    if (part === "cmd" || part === "meta" || part === "win") m = 1;
+    else if (part === "ctrl") c = 1;
+    else if (part === "shift") sh = 1;
+    else if (part === "alt" || part === "opt" || part === "option") a = 1;
+    else key = part;
+  }
+  if (!key) return undefined;
+  return { k: named[key] ?? key, m, c, s: sh, a };
+}
+
+// The stock bindings: open mirrors editor.action.webvieweditor.showFind
+// (Cmd/Ctrl+F), next/previous mirror the editor find actions (Enter and F3,
+// shifted for previous, plus Cmd+G / Cmd+Shift+G on macOS).
+function defaultFindKeys(): FindKeys {
+  const mac = process.platform === "darwin";
+  const mod = (k: string): FindChord =>
+    mac ? { k, m: 1, c: 0, s: 0, a: 0 } : { k, m: 0, c: 1, s: 0, a: 0 };
+  const plain = (k: string, s: number): FindChord => ({ k, m: 0, c: 0, s, a: 0 });
+  const next = [plain("enter", 0), plain("f3", 0)];
+  const prev = [plain("enter", 1), plain("f3", 1)];
+  if (mac) {
+    next.push(mod("g"));
+    prev.push({ ...mod("g"), s: 1 });
+  }
+  return { open: [mod("f")], next, prev };
+}
+
+// Strip // and /* */ comments and trailing commas from a JSONC source, string
+// contents (escapes included) preserved; the caller falls back to defaults on
+// any parse failure.
+function stripJsonc(src: string): string {
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  let inStr = false;
+  let esc = false;
+  while (i < n) {
+    const ch = src[i];
+    if (inStr) {
+      out += ch;
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "/") {
+      const nl = src.indexOf("\n", i);
+      i = nl < 0 ? n : nl;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "*") {
+      const e = src.indexOf("*/", i + 2);
+      i = e < 0 ? n : e + 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
+
+const FINDBAR_COMMANDS: Record<string, keyof FindKeys> = {
+  "editor.action.webvieweditor.showFind": "open",
+  "editor.action.nextMatchFindAction": "next",
+  "editor.action.previousMatchFindAction": "prev",
+};
+
+function chordEq(a: FindChord, b: FindChord): boolean {
+  return a.k === b.k && a.m === b.m && a.c === b.c && a.s === b.s && a.a === b.a;
+}
+
+// The effective chords: platform defaults, minus the user's `-command`
+// removals, plus their own bindings for the three commands (see the block
+// comment above for the deliberate limits). Each list is capped defensively.
+function readFindKeys(): FindKeys {
+  const keys = defaultFindKeys();
+  if (!findKeysFile) return keys;
+  let rules: unknown;
+  try {
+    rules = JSON.parse(stripJsonc(fs.readFileSync(findKeysFile, "utf8")));
+  } catch {
+    return keys;
+  }
+  if (!Array.isArray(rules)) return keys;
+  for (const r of rules) {
+    if (!r || typeof r !== "object") continue;
+    const cmd = (r as Record<string, unknown>).command;
+    const keySpec = (r as Record<string, unknown>).key;
+    if (typeof cmd !== "string" || typeof keySpec !== "string") continue;
+    const neg = cmd.startsWith("-");
+    const slot = FINDBAR_COMMANDS[neg ? cmd.slice(1) : cmd];
+    if (!slot) continue;
+    const ch = parseChord(keySpec);
+    if (!ch) continue;
+    if (neg) keys[slot] = keys[slot].filter((x) => !chordEq(x, ch));
+    else if (!keys[slot].some((x) => chordEq(x, ch)) && keys[slot].length < 8) {
+      keys[slot].push(ch);
+    }
+  }
+  return keys;
+}
+
+// Runs inside the chat webview, injected verbatim via toString(): the same
+// constraints as ccupMathHelperWebview (fully self-contained, DOM reached
+// through the any-typed globalThis since the project compiles without the DOM
+// lib, and never the literal end-of-block marker in the body). Reads the cfg
+// assignment the set() step appends ahead of this block.
+function ccupFindBarWebview(): void {
+  const g = globalThis as Record<string, any>;
+  try {
+    if (g.__ccupFindBar) return;
+    const cfg = g.__ccupFindCfg;
+    const doc = g.document;
+    if (
+      !cfg ||
+      !doc ||
+      !g.CSS ||
+      !g.CSS.highlights ||
+      typeof g.Highlight !== "function"
+    ) {
+      return;
+    }
+    g.__ccupFindBar = 1;
+
+    const MAXM = 5000; // match cap: bounds Range building on huge chats
+    const TOP = 48; // px kept clear under the fixed bar when revealing
+    const INLINE: Record<string, number> = {
+      A: 1, ABBR: 1, B: 1, BDI: 1, BDO: 1, CITE: 1, CODE: 1, DATA: 1, DEL: 1,
+      DFN: 1, EM: 1, FONT: 1, I: 1, INS: 1, KBD: 1, LABEL: 1, MARK: 1, Q: 1,
+      S: 1, SAMP: 1, SMALL: 1, SPAN: 1, STRONG: 1, SUB: 1, SUP: 1, TIME: 1,
+      U: 1, VAR: 1, WBR: 1,
+    };
+
+    let bar: any = null;
+    let input: any = null;
+    let count: any = null;
+    let prevB: any = null;
+    let nextB: any = null;
+    let ranges: any[] = [];
+    let starts: number[] = []; // haystack offset per match, for rescan continuity
+    let active = -1;
+    let lastFocus: any = null;
+    let scanT: any = 0;
+    let mutT: any = 0;
+
+    const container = (): any =>
+      doc.querySelector(".messagesContainer_" + cfg.chat);
+
+    // Nearest non-inline ancestor (cached): the unit whose change marks a
+    // block boundary in the haystack.
+    const blockCache = new WeakMap();
+    const blockOf = (el: any): any => {
+      const hit = blockCache.get(el);
+      if (hit) return hit;
+      let e = el;
+      while (e && e.nodeType === 1 && INLINE[e.tagName]) e = e.parentElement;
+      const b = e || el;
+      blockCache.set(el, b);
+      return b;
+    };
+
+    // Visible text nodes of the transcript, concatenated with per-node
+    // offsets; "\n" separates blocks (a single-line query can't cross it).
+    const collect = (): any => {
+      const nodes: any[] = [];
+      const offs: number[] = [];
+      let hay = "";
+      const root = container();
+      if (!root) return { nodes, offs, hay };
+      const vis = new Map();
+      const visible = (el: any): boolean => {
+        let v = vis.get(el);
+        if (v === undefined) {
+          const t = el.tagName;
+          v = t !== "SCRIPT" && t !== "STYLE" && t !== "NOSCRIPT";
+          if (v && el.checkVisibility) {
+            try {
+              v = el.checkVisibility();
+            } catch {
+              v = true;
+            }
+          }
+          vis.set(el, v);
+        }
+        return v;
+      };
+      const walker = doc.createTreeWalker(root, 4); // SHOW_TEXT
+      let prevBlock: any = null;
+      for (let nd = walker.nextNode(); nd; nd = walker.nextNode()) {
+        const p = nd.parentElement;
+        if (!p || !visible(p)) continue;
+        const t = nd.nodeValue;
+        if (!t) continue;
+        const b = blockOf(p);
+        if (nodes.length && b !== prevBlock) hay += "\n";
+        prevBlock = b;
+        offs.push(hay.length);
+        nodes.push(nd);
+        hay += t;
+      }
+      return { nodes, offs, hay };
+    };
+
+    // Case-insensitive, non-overlapping substring matches -> Ranges.
+    const search = (q: string): void => {
+      ranges = [];
+      starts = [];
+      if (!q) return;
+      const col = collect();
+      const nodes = col.nodes;
+      const offs = col.offs;
+      if (!nodes.length) return;
+      const H = col.hay.toLowerCase();
+      const Q = q.toLowerCase();
+      const L = Q.length;
+      const nodeAt = (pos: number): number => {
+        let lo = 0;
+        let hi = nodes.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (offs[mid] <= pos) lo = mid;
+          else hi = mid - 1;
+        }
+        return lo;
+      };
+      let i = H.indexOf(Q);
+      while (i >= 0 && ranges.length < MAXM) {
+        const a = nodeAt(i);
+        const b = nodeAt(i + L - 1);
+        try {
+          const r = doc.createRange();
+          r.setStart(nodes[a], i - offs[a]);
+          r.setEnd(nodes[b], i + L - offs[b]);
+          ranges.push(r);
+          starts.push(i);
+        } catch {
+          // a node changed under us mid-scan: skip this match
+        }
+        i = H.indexOf(Q, i + L);
+      }
+    };
+
+    const paint = (): void => {
+      try {
+        const all = new g.Highlight();
+        all.priority = 1;
+        for (let k = 0; k < ranges.length; k++) all.add(ranges[k]);
+        g.CSS.highlights.set("ccup-find", all);
+        const act = new g.Highlight();
+        act.priority = 2;
+        if (active >= 0 && ranges[active]) act.add(ranges[active]);
+        g.CSS.highlights.set("ccup-find-active", act);
+      } catch {
+        // Highlight registry unavailable: matches still navigate by scroll
+      }
+    };
+
+    const status = (): void => {
+      if (!count) return;
+      const q = input ? input.value : "";
+      count.textContent = !q
+        ? ""
+        : ranges.length
+          ? active + 1 + " of " + (ranges.length >= MAXM ? MAXM + "+" : ranges.length)
+          : "No results";
+      if (bar) {
+        if (q && !ranges.length) bar.setAttribute("data-none", "");
+        else bar.removeAttribute("data-none");
+      }
+      const dis = !ranges.length;
+      if (prevB) prevB.disabled = dis;
+      if (nextB) nextB.disabled = dis;
+    };
+
+    // Scroll the transcript scroller just enough to center an off-view match.
+    const reveal = (): void => {
+      if (active < 0 || !ranges[active]) return;
+      try {
+        const r = ranges[active].getBoundingClientRect();
+        const vh = g.window.innerHeight || 0;
+        if (r.top >= TOP && r.bottom <= vh - 16) return;
+        let sc = container();
+        if (!sc || sc.scrollHeight <= sc.clientHeight + 1) {
+          let e = ranges[active].startContainer.parentElement;
+          while (e && e.scrollHeight <= e.clientHeight + 1) e = e.parentElement;
+          sc = e;
+        }
+        if (sc) sc.scrollTop += r.top - vh / 2;
+      } catch {
+        // rect on a dead range: the next rescan rebuilds it
+      }
+    };
+
+    const nav = (dir: number): void => {
+      if (!ranges.length) return;
+      const base = active < 0 ? (dir > 0 ? -1 : 0) : active;
+      active = (base + dir + ranges.length) % ranges.length;
+      paint();
+      status();
+      reveal();
+    };
+
+    // Query changed: rescan and land on the first match in or below the
+    // current view (wrapping to the first overall), like a fresh native find.
+    const update = (): void => {
+      search(input ? input.value : "");
+      active = -1;
+      if (ranges.length) {
+        active = 0;
+        for (let k = 0; k < ranges.length; k++) {
+          let r;
+          try {
+            r = ranges[k].getBoundingClientRect();
+          } catch {
+            continue;
+          }
+          if (r.bottom >= TOP) {
+            active = k;
+            break;
+          }
+        }
+      }
+      paint();
+      status();
+      if (active >= 0) reveal();
+    };
+
+    // Transcript re-rendered while open: recompute, keep the active match by
+    // its haystack offset, and never scroll (background changes must not yank).
+    const rescan = (): void => {
+      if (!isOpen() || !input || !input.value) return;
+      const prevStart = active >= 0 && starts[active] !== undefined ? starts[active] : -1;
+      search(input.value);
+      active = -1;
+      if (ranges.length) {
+        active = ranges.length - 1;
+        for (let k = 0; k < starts.length; k++) {
+          if (starts[k] >= prevStart) {
+            active = k;
+            break;
+          }
+        }
+      }
+      paint();
+      status();
+    };
+
+    const CHEV_UP =
+      "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M18 15l-6-6-6 6'/></svg>";
+    const CHEV_DN =
+      "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>";
+    const CROSS =
+      "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M18 6L6 18'/><path d='M6 6l12 12'/></svg>";
+
+    // Buttons swallow mousedown so the input keeps focus (house pattern).
+    const mkBtn = (svg: string, title: string, fn: any): any => {
+      const b = doc.createElement("button");
+      b.type = "button";
+      b.title = title;
+      b.setAttribute("aria-label", title);
+      b.innerHTML = svg;
+      b.addEventListener("mousedown", (e: any) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      b.addEventListener("click", (e: any) => {
+        e.stopPropagation();
+        fn();
+      });
+      return b;
+    };
+
+    const build = (): void => {
+      if (bar) return;
+      bar = doc.createElement("div");
+      bar.className = "ccup-find-bar";
+      bar.setAttribute("role", "search");
+      bar.addEventListener("mousedown", (e: any) => {
+        e.stopPropagation();
+      });
+      input = doc.createElement("input");
+      input.type = "text";
+      input.placeholder = "Find";
+      input.setAttribute("aria-label", "Find in chat");
+      input.addEventListener("input", () => {
+        if (scanT) g.clearTimeout(scanT);
+        scanT = g.setTimeout(() => {
+          scanT = 0;
+          update();
+        }, 90);
+      });
+      count = doc.createElement("span");
+      count.className = "ccup-find-count";
+      count.setAttribute("aria-live", "polite");
+      prevB = mkBtn(CHEV_UP, "Previous match", () => nav(-1));
+      nextB = mkBtn(CHEV_DN, "Next match", () => nav(1));
+      const closeB = mkBtn(CROSS, "Close (Escape)", () => closeBar());
+      bar.appendChild(input);
+      bar.appendChild(count);
+      bar.appendChild(prevB);
+      bar.appendChild(nextB);
+      bar.appendChild(closeB);
+      doc.body.appendChild(bar);
+    };
+
+    const isOpen = (): boolean => !!(bar && bar.hasAttribute("data-open"));
+
+    const openBar = (): void => {
+      build();
+      if (!isOpen()) {
+        lastFocus = doc.activeElement;
+        bar.setAttribute("data-open", "");
+      }
+      let sel = "";
+      try {
+        sel = String(g.window.getSelection() || "");
+      } catch {
+        sel = "";
+      }
+      if (sel && sel.indexOf("\n") < 0 && sel.length <= 200) input.value = sel;
+      input.focus();
+      input.select();
+      update();
+    };
+
+    const closeBar = (): void => {
+      if (!isOpen()) return;
+      bar.removeAttribute("data-open");
+      try {
+        g.CSS.highlights.delete("ccup-find");
+        g.CSS.highlights.delete("ccup-find-active");
+      } catch {
+        // registry gone: nothing to clear
+      }
+      ranges = [];
+      starts = [];
+      active = -1;
+      const lf = lastFocus;
+      lastFocus = null;
+      try {
+        if (lf && lf.isConnected && lf !== bar && !bar.contains(lf)) lf.focus();
+        else if (cfg.input) {
+          const mi = doc.querySelector(".messageInput_" + cfg.input);
+          if (mi) mi.focus();
+        }
+      } catch {
+        // focus restore is best effort
+      }
+    };
+
+    const chordHit = (e: any, list: any): boolean => {
+      if (!list) return false;
+      const k = String(e.key || "").toLowerCase();
+      for (let i = 0; i < list.length; i++) {
+        const c = list[i];
+        if (
+          c &&
+          c.k === k &&
+          !!e.metaKey === !!c.m &&
+          !!e.ctrlKey === !!c.c &&
+          !!e.altKey === !!c.a &&
+          !!e.shiftKey === !!c.s
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // Capture phase: fires ahead of VS Code's bubble-phase key forwarder, so a
+    // swallowed chord never reaches the workbench (the native widget stays
+    // closed). Navigation chords act only while focus is in the bar, so Enter
+    // in the composer still sends messages; everything else falls through
+    // untouched (typing, and the forwarded copy/paste round-trip).
+    g.window.addEventListener(
+      "keydown",
+      (e: any) => {
+        try {
+          if (e.isComposing) return;
+          if (chordHit(e, cfg.open)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            openBar();
+            return;
+          }
+          if (!isOpen() || !bar.contains(doc.activeElement)) return;
+          if (String(e.key || "").toLowerCase() === "escape") {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            closeBar();
+            return;
+          }
+          if (chordHit(e, cfg.prev)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            nav(-1);
+            return;
+          }
+          if (chordHit(e, cfg.next)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            nav(1);
+          }
+        } catch {
+          // never break the chat's key handling
+        }
+      },
+      true,
+    );
+
+    try {
+      new g.MutationObserver(() => {
+        if (!isOpen() || mutT) return;
+        mutT = g.setTimeout(() => {
+          mutT = 0;
+          rescan();
+        }, 180);
+      }).observe(doc.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    } catch {
+      // without the observer the bar still works; matches just go stale
+    }
+  } catch {
+    // never break the webview
+  }
+}
+
+// The cfg line: baked class-map hashes plus the resolved chords. Rebuilt from
+// bundle + keybindings state, so equality against the on-disk line doubles as
+// the staleness check (a keybinding edit re-applies through the reconcile).
+function findBarCfgBuild(c: string): string | undefined {
+  const chat = c.match(FINDBAR_CHAT_HASH_RE)?.[1];
+  if (!chat) return undefined;
+  const input = c.match(FINDBAR_INPUT_HASH_RE)?.[1] ?? "";
+  const k = readFindKeys();
+  const cfg = { chat, input, open: k.open, next: k.next, prev: k.prev };
+  return `${FINDBAR_CFG_MARKER}window.__ccupFindCfg=${JSON.stringify(cfg)};`;
+}
+
+function findBarHelperBlock(): string {
+  return `${FINDBAR_START};(${ccupFindBarWebview.toString()})();/*ccup:findBarEnd*/`;
+}
+
+function findBarMarksPresent(c: string): boolean {
+  return c.includes(FINDBAR_CFG_MARKER) || c.includes(FINDBAR_START);
+}
+function findBarPresent(c: string): boolean {
+  return findBarMarksPresent(c) || FINDBAR_CHAT_HASH_RE.test(c);
+}
+// true = ON in exactly this build+keybindings form (also when marked but
+// unrebuildable, so an orphaned patch stays removable), false = OFF or stale,
+// undefined = no marks and no anchor. Per-marker comparisons, never
+// whole-file, so other toggles' EOF lines order freely around ours.
+function findBarCurrentOn(c: string): boolean | undefined {
+  if (!findBarMarksPresent(c)) {
+    return FINDBAR_CHAT_HASH_RE.test(c) ? false : undefined;
+  }
+  const wantCfg = findBarCfgBuild(c);
+  if (wantCfg === undefined) return true;
+  if (cssMarkedLine(c, FINDBAR_CFG_MARKER) !== wantCfg) return false;
+  FINDBAR_BLOCK_RE.lastIndex = 0;
+  const h = FINDBAR_BLOCK_RE.exec(c)?.[0]?.replace(/^\n/, "");
+  return h === findBarHelperBlock();
+}
+function findBarSet(c: string, on: boolean): string {
+  if (on && findBarCurrentOn(c) === true) return c; // stable: no EOF reshuffle
+  const stripped = c
+    .replace(FINDBAR_BLOCK_RE, "")
+    .replace(FINDBAR_CFG_LINE_RE, "");
+  if (!on) return stripped;
+  const cfgLine = findBarCfgBuild(stripped);
+  if (cfgLine === undefined) return c; // anchor gone: leave the file as it is
+  return `${stripped}\n${cfgLine}\n${findBarHelperBlock()}`;
+}
+
+// The appended stylesheet line: the two highlight pseudo-styles on the editor
+// findMatch theme tokens (the same yellow/orange the native find paints), and
+// the bar itself on the editorWidget/input tokens with the chat's own --app-*
+// variables as first choice, so it reads native in either surface and theme.
+function findBarCssBuild(css: string): string | undefined {
+  if (!FINDBAR_CSS_ANCHOR_RE.test(css)) return undefined;
+  const ghost = "var(--app-ghost-button-hover-background,rgba(128,128,128,.2))";
+  return (
+    FINDBAR_CSS_MARKER +
+    "::highlight(ccup-find){background-color:var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.33))}" +
+    "::highlight(ccup-find-active){background-color:var(--vscode-editor-findMatchBackground,rgba(237,148,30,.8));color:var(--vscode-editor-foreground,inherit)}" +
+    ".ccup-find-bar{position:fixed;top:8px;right:16px;z-index:1200;display:none;align-items:center;gap:4px;max-width:calc(100vw - 20px);padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--app-input-border,#454545));border-radius:6px;background:var(--vscode-editorWidget-background,var(--app-input-background,#252526));color:var(--vscode-editorWidget-foreground,var(--app-primary-foreground,#cccccc));box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36));font-size:12px}" +
+    ".ccup-find-bar[data-open]{display:flex}" +
+    ".ccup-find-bar input{flex:1 1 auto;width:200px;min-width:60px;box-sizing:border-box;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));background:var(--app-input-background,var(--vscode-input-background,#3c3c3c));color:var(--app-input-foreground,var(--vscode-input-foreground,#cccccc));border-radius:4px;padding:3px 6px;font-size:12px;font-family:inherit;outline:none}" +
+    ".ccup-find-bar input:focus{border-color:var(--app-input-active-border,var(--vscode-focusBorder,#007fd4))}" +
+    ".ccup-find-bar .ccup-find-count{min-width:56px;text-align:center;opacity:.85;white-space:nowrap}" +
+    ".ccup-find-bar[data-none] .ccup-find-count{color:var(--vscode-errorForeground,#f48771);opacity:1}" +
+    ".ccup-find-bar button{display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin:0;padding:0;border:none;border-radius:4px;background:transparent;color:inherit;cursor:pointer}" +
+    `.ccup-find-bar button:hover{background:${ghost}}` +
+    ".ccup-find-bar button[disabled]{opacity:.4;cursor:default;background:transparent}" +
+    ".ccup-find-bar svg{display:block;width:16px;height:16px}"
+  );
+}
+
 // The chat message "Show more" (.expandButton_<hash>) and "Show less"
 // (.collapseButton_<hash>) buttons live in the expandable-content module. "Show
 // more" is position:absolute (bottom:0;right:0) anchored to the fit-content
@@ -1801,6 +2543,20 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: jumpMsgPresent,
     fnCurrentOn: jumpMsgCurrentOn,
     fnSet: jumpMsgSet,
+  },
+  {
+    id: "findBar",
+    section: "Chat Panel or Tab",
+    label: "find in chat (Cmd/Ctrl+F)",
+    key: "chatFindBar",
+    defaultOn: false,
+    file: "webview/index.js",
+    fnPresent: findBarPresent,
+    fnCurrentOn: findBarCurrentOn,
+    fnSet: findBarSet,
+    cssFile: "webview/index.css",
+    cssMarker: FINDBAR_CSS_MARKER,
+    cssBuild: findBarCssBuild,
   },
   {
     id: "commentCtrlEnter",
@@ -3443,6 +4199,14 @@ export class Patcher {
       );
     }
     this.refresh();
+  }
+
+  // Re-run the reconcile outside a configuration change. Used by the
+  // keybindings.json watcher: the find bar bakes resolved chords into its cfg
+  // line, so an edit there re-derives the line (and lights the reload cue)
+  // without any claudeCodeUiPatch.* setting having changed.
+  reapply(): void {
+    void this.autoApply();
   }
 
   // Toast shown after the activation-time re-apply, prompting the reload the

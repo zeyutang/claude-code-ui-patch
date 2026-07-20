@@ -4,7 +4,19 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 
 ## 1.2.2
 
+- Add `claudeCodeUiPatch.chatFindBar`: a working in-chat find on `Cmd`/`Ctrl`+`F`, off by default.
+  VS Code's native webview find widget can only highlight in the Claude Code chat.
+  Its next/previous (`Enter`, `Shift`+`Enter`, and the widget's arrows all funnel into one "continue session" call) restarts the browser find session instead of advancing, so "next" re-lands on the first match and "previous" sticks on the last (reported upstream as anthropics/claude-code#72005 and #37182; the follow-up-find behavior itself is electron#34490, closed unfixed).
+  None of that machinery is reachable from an extension, so the toggle instead intercepts the find chord inside the chat document (ahead of VS Code's key forwarder, keeping the native widget closed) and runs find in the page.
+  Matches highlight through the CSS Custom Highlight API in the editor's own findMatch theme colors, with a "k of n" counter.
+  Next/previous wrap around and scroll off-screen matches into view, matches may span inline markup (bold, inline code, links), hidden text (collapsed "Show more" content) is skipped, a mutation observer keeps results current while the chat streams, and `Escape` closes.
+  Navigation honors your keybindings for Find Next / Find Previous (`editor.action.nextMatchFindAction` / `editor.action.previousMatchFindAction`) on top of the platform defaults (`Enter`/`Shift`+`Enter`, `F3`/`Shift`+`F3`, plus `Cmd`+`G`/`Cmd`+`Shift`+`G` on macOS), and the open chord honors rebinds of `editor.action.webvieweditor.showFind`.
+  Chords are baked at patch time; editing `keybindings.json` re-applies automatically and lights the reload cue.
+  Single chords only (a `Cmd+K Cmd+G` sequence cannot be captured in a webview).
+  The sidebar chat, which natively has no find widget at all (microsoft/vscode#173643), gets the same bar.
 - Rename the settings link in the panel and the status-bar tooltip from "Open VS Code Settings" to "Open Settings", which stays accurate on forks.
+- Tighten every settings description in `package.json` to one unified, concise shape: what the setting controls, at most one behavior note, and the closing default shorthand (`0` follows ..., `Empty = native`, `Off = native`).
+  Mechanism detail lives in the README and this changelog instead.
 
 ## 1.2.1
 

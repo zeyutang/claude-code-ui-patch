@@ -1483,6 +1483,21 @@ function btnHostsJs(
   );
 }
 
+// Un-dim rule shared by the scroll-to-bottom and jump buttons. While a
+// non-question permission request is pending, the chat view natively dims the
+// whole transcript to 0.4 (.dimmed_<chat> > :not(.highlightedMessage_<chat>){
+// opacity:.4}) to draw the eye to the dialog. The buttons exist precisely to
+// read and navigate history during that state, so whenever either is ON we
+// append a rule restoring full opacity. It wins by specificity (messagesContainer
+// + dimmed, three classes vs the native two) and carries !important as a
+// belt-and-suspenders, and it only bites while .dimmed is present, so it is inert
+// in normal chat and reverts to the native dim the instant the popup closes.
+// dimmed and highlightedMessage co-locate with messagesContainer in the one chat
+// CSS module, so they share its hash; if a future build splits them the rule
+// simply stops matching and the native dim returns unchanged.
+const undimCss = (chat: string): string =>
+  `.messagesContainer_${chat}.dimmed_${chat}>:not(.highlightedMessage_${chat}){opacity:1 !important}`;
+
 // Permission-popup auto-scroll guard (rides the scroll-to-bottom toggle): the
 // chat view's render effect scrolls the history to the bottom UNCONDITIONALLY
 // whenever a permission request or AskUserQuestion popup is pending (the
@@ -1569,6 +1584,7 @@ function scrollDotBuild(c: string): string | undefined {
     // scoped to this input so a popup in one chat view never blanks another's.
     `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-scroll-btn[data-show]{opacity:0;pointer-events:none}` +
     (perm && preq ? BTN_HOST_CSS : "") +
+    undimCss(chat) +
     HOVER_TIP_CSS;
   // Down arrow, drawn with currentColor strokes; single-quoted attributes so the
   // whole markup embeds in a double-quoted JS string below without escaping.
@@ -1666,7 +1682,13 @@ function scrollDotSet(c: string, on: boolean): string {
 // natural position more than 4px above scrollTop (the epsilon absorbs sub-pixel
 // drift): from the bottom that pins the newest turn's header, and further clicks
 // step a turn up. "Next" glides to the least natural position more than 4px
-// below. The glide is the scroll-to-bottom button's fixed 100ms ease-out rAF
+// below; with no header below it falls back to the very bottom, the
+// conversation's live edge (the input box, or the permission/question popup
+// while one is pending). Inside the newest turn's response every user header
+// sits at/above the scrollport top, and under a pending popup that is the
+// common reading state (the pending turn is the assistant's, so no user turn
+// can be below) — without the fallback "next" would strand there dimmed with
+// content plainly below. The glide is the scroll-to-bottom button's fixed 100ms ease-out rAF
 // animation (instant under prefers-reduced-motion), clamped to the scrollable
 // range, with a per-click generation token cancelling a superseded animation.
 // Both buttons swallow mousedown (preventDefault + stopPropagation) and click
@@ -1679,7 +1701,9 @@ function scrollDotSet(c: string, on: boolean): string {
 // the shape stable. The dimming census mostly needs no natural positions: raw
 // offsetTops classify headers as below the scrollport top (> scrollTop+4px;
 // never pinned, so trustworthy) or in the pile at/above it. "Next" lights on any
-// header below. "Previous" lights on a pile of two or more (the pile's newest
+// header below, and otherwise on a view above the bottom zone (more than 8px of
+// scroll left, the scroll button's own threshold), matching its bottom
+// fallback; it dims only at the bottom. "Previous" lights on a pile of two or more (the pile's newest
 // turn plus at least one earlier, whose start sits at least a header height
 // higher, clearing the epsilon), and on a lone pile header exactly when the view
 // sits more than 4px below its start, so jumping to the top of the current turn
@@ -1743,6 +1767,7 @@ function jumpMsgBuild(c: string): string | undefined {
     // the full stacking rationale; matched by the menuPopup_ class substring.
     `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-nav-btn[data-show]{opacity:0;pointer-events:none}` +
     (perm && preq ? BTN_HOST_CSS : "") +
+    undimCss(chat) +
     HOVER_TIP_CSS;
   // Chevron up / down (no stem), distinct from the scroll button's stemmed arrow;
   // single-quoted attributes embed in the double-quoted JS strings below unescaped.
@@ -1771,11 +1796,13 @@ function jumpMsgBuild(c: string): string | undefined {
     `var g=++gen,f=t.scrollTop,t0;function stp(now){if(g!==gen)return;if(t0===void 0)t0=now;` +
     `var k=Math.min(1,(now-t0)/100),e=1-(1-k)*(1-k);t.scrollTop=f+(top-f)*e;if(k<1)requestAnimationFrame(stp)}` +
     `requestAnimationFrame(stp)}` +
-    // Nearest natural position >4px above (dir<0) or below (dir>0) the current top.
+    // Nearest natural position >4px above (dir<0) or below (dir>0) the current
+    // top; with none below, next falls back to the bottom (see the census note).
     `function jump(dir){var t=sc();if(!t)return;var a=nat(t),cur=t.scrollTop,best=null,i,o;` +
     `for(i=0;i<a.length;i++){o=a[i];if(dir<0){if(o<cur-4&&(best===null||o>best))best=o}` +
     `else if(o>cur+4&&(best===null||o<best))best=o}` +
-    `if(best!==null)go(best)}` +
+    `if(best!==null)go(best);` +
+    `else if(dir>0&&t.scrollHeight-t.scrollTop-t.clientHeight>8)go(t.scrollHeight-t.clientHeight)}` +
     // Buttons swallow mousedown/click so the composer never steals focus or scrolls.
     `function mk(cls,svg,t,dir){var b=document.createElement("button");b.type="button";b.className="ccup-nav-btn "+cls;` +
     `b.setAttribute("aria-label",t);b.innerHTML=svg;att(b,t);` +
@@ -1784,9 +1811,10 @@ function jumpMsgBuild(c: string): string | undefined {
     // Toggle data-show/data-off only on an actual change (outside the observer filter).
     `function ss(el,show,off){var s=el.hasAttribute("data-show");if(show&&!s)el.setAttribute("data-show","");else if(!show&&s)el.removeAttribute("data-show");var o=el.hasAttribute("data-off");if(off&&!o)el.setAttribute("data-off","");else if(!off&&o)el.removeAttribute("data-off")}` +
     // Census on raw offsetTops: pile = pinned at/above the top, below = trustworthy.
-    `function upd(){raf=0;var t=sc(),below=0,pile=0,m=null;` +
-    `if(t){var h=hh(t),cur=t.scrollTop;for(var i=0;i<h.length;i++){if(h[i].offsetTop>cur+4)below++;else{pile++;m=h[i]}}}` +
-    `var canP=pile>1,canN=below>0;` +
+    `function upd(){raf=0;var t=sc(),below=0,pile=0,m=null,dist=0;` +
+    `if(t){var h=hh(t),cur=t.scrollTop;dist=t.scrollHeight-cur-t.clientHeight;` +
+    `for(var i=0;i<h.length;i++){if(h[i].offsetTop>cur+4)below++;else{pile++;m=h[i]}}}` +
+    `var canP=pile>1,canN=below>0||dist>8;` +
     // A lone pile header is turn 1's; prev is valid while the view sits below its
     // start. That natural position is fixed per element, so measure once and cache.
     `if(!canP&&pile===1){if(n0el!==m){n0el=m;m.style.position="static";n0=m.offsetTop;m.style.position=""}canP=n0<cur-4}` +

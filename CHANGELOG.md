@@ -2,6 +2,12 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.3.3
+
+- With the scroll-to-bottom or previous/next buttons on, the chat history is no longer dimmed to 40% while a permission or question box is up, so it stays readable while you navigate; the native dim returns when both are off.
+- The next-message button now glides to the bottom when no later user message exists below, dimming only at the bottom.
+  It used to dim anywhere inside the latest turn, exactly where reading history under a pending permission box leaves you.
+
 ## 1.3.2
 
 - Fix the find bar's block ruler painting over the pinned user-message header while scrolling; the ruler now spans only the visible part of its block.

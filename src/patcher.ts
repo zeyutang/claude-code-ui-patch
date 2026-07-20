@@ -1687,7 +1687,10 @@ function jumpMsgSet(c: string, on: boolean): string {
 //           by the editor findMatch theme tokens in the appended CSS line; no
 //           DOM mutation, so React re-renders never fight the highlights
 //   nav     next/previous wrap around, move the active highlight, and scroll
-//           the transcript scroller just enough to center an off-screen match
+//           the active match into the band between the pinned sticky header
+//           (whose height varies with the pinned message) and the composer
+//           box, with a bounded re-measure pass because sticky pinning and
+//           Monaco's virtualization re-layout mid-scroll
 //   blocks  a second button pair skips between the BLOCKS that hold matches,
 //           because a match can be legible only after manual action the bar
 //           deliberately never takes (no auto-expand, no focus steal): inside
@@ -2085,14 +2088,19 @@ function ccupFindBarWebview(): void {
     const status = (): void => {
       if (!count) return;
       const q = input ? input.value : "";
+      const total = ranges.length >= MAXM ? MAXM + "+" : String(ranges.length);
       const txt = !q
         ? ""
         : ranges.length
-          ? active + 1 + " of " + (ranges.length >= MAXM ? MAXM + "+" : ranges.length)
+          ? active + 1 + " of " + total
           : "No results";
       // Write only on change: textContent assignment always emits a mutation,
       // which the body observer must never see as chat activity.
       if (count.textContent !== txt) count.textContent = txt;
+      // Reserve the worst case "n of n" width up front (tabular digits in the
+      // stylesheet do the rest), so navigating never resizes the bar.
+      const wantW = !q ? "3ch" : ranges.length ? total.length * 2 + 4 + "ch" : "10ch";
+      if (count.style.minWidth !== wantW) count.style.minWidth = wantW;
       if (bar) {
         if (q && !ranges.length) bar.setAttribute("data-none", "");
         else bar.removeAttribute("data-none");
@@ -2104,20 +2112,73 @@ function ccupFindBarWebview(): void {
       if (blockNextB) blockNextB.disabled = dis;
     };
 
-    // Scroll the transcript scroller just enough to center an off-view match.
-    const reveal = (): void => {
+    // The band a match must land in to read comfortably: below the find bar
+    // AND whatever sticky header is currently pinned (its height varies with
+    // the pinned message), above the composer box. Degenerates to the plain
+    // viewport when the band would collapse (tiny panel, odd layout).
+    const safeBand = (): number[] => {
+      const vh = g.window.innerHeight || 0;
+      let topS = TOP;
+      let botS = vh - 16;
+      try {
+        const root = container();
+        if (root && shClass) {
+          const rt = root.getBoundingClientRect().top;
+          const hs = root.querySelectorAll("." + shClass);
+          for (let i = 0; i < hs.length; i++) {
+            const hr = hs[i].getBoundingClientRect();
+            if (hr.top <= rt + 4 && hr.bottom + 6 > topS) topS = hr.bottom + 6;
+          }
+        }
+      } catch {
+        // no sticky info: the find-bar clearance alone bounds the top
+      }
+      try {
+        if (cfg.input) {
+          const mi = doc.querySelector(".messageInput_" + cfg.input);
+          if (mi) {
+            const ir = mi.getBoundingClientRect();
+            if (ir.top > topS + 60) botS = Math.min(botS, ir.top - 10);
+          }
+        }
+      } catch {
+        // no composer info: the viewport bottom bounds the band
+      }
+      if (botS - topS < 60) {
+        topS = TOP;
+        botS = vh - 16;
+      }
+      return [topS, botS];
+    };
+
+    // Scroll the transcript scroller so the active match sits inside the safe
+    // band. Sticky pinning and Monaco's virtualized diff lines re-layout
+    // DURING the scroll (a different header pins, lines mount), so a bounded
+    // correction pass re-measures on the next frames until the match settles.
+    const reveal = (tries?: number): void => {
       if (active < 0 || !ranges[active]) return;
       try {
         const r = ranges[active].getBoundingClientRect();
-        const vh = g.window.innerHeight || 0;
-        if (r.top >= TOP && r.bottom <= vh - 16) return;
+        const band = safeBand();
+        if (r.top >= band[0] && r.bottom <= band[1]) return;
         let sc = container();
         if (!sc || sc.scrollHeight <= sc.clientHeight + 1) {
           let e = ranges[active].startContainer.parentElement;
           while (e && e.scrollHeight <= e.clientHeight + 1) e = e.parentElement;
           sc = e;
         }
-        if (sc) sc.scrollTop += r.top - vh / 2;
+        if (!sc) return;
+        sc.scrollTop += r.top - (band[0] + (band[1] - band[0]) / 2);
+        const t = typeof tries === "number" ? tries : 0;
+        if (t < 2) {
+          g.requestAnimationFrame(() => {
+            try {
+              reveal(t + 1);
+            } catch {
+              // settled enough: the band check above ends the pass
+            }
+          });
+        }
       } catch {
         // rect on a dead range: the next rescan rebuilds it
       }
@@ -2273,6 +2334,33 @@ function ccupFindBarWebview(): void {
     const CHEVS_DN =
       "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M7 6l5 5 5-5'/><path d='M7 13l5 5 5-5'/></svg>";
 
+    // Tooltip text: the button's action plus its first resolved chord, e.g.
+    // "Next match (Enter)"; block skipping has buttons only, so no suffix.
+    const KEYNAME: Record<string, string> = {
+      " ": "Space",
+      arrowup: "Up",
+      arrowdown: "Down",
+      arrowleft: "Left",
+      arrowright: "Right",
+    };
+    const withKey = (base: string, list: any): string => {
+      try {
+        const c = list && list[0];
+        if (!c) return base;
+        const parts: string[] = [];
+        if (c.c) parts.push("Ctrl");
+        if (c.a) parts.push(cfg.mac ? "Option" : "Alt");
+        if (c.s) parts.push("Shift");
+        if (c.m) parts.push(cfg.mac ? "Cmd" : "Win");
+        let k = String(c.k || "");
+        k = KEYNAME[k] || (k.length === 1 ? k.toUpperCase() : k.charAt(0).toUpperCase() + k.slice(1));
+        parts.push(k);
+        return base + " (" + parts.join("+") + ")";
+      } catch {
+        return base;
+      }
+    };
+
     // Buttons swallow mousedown so the input keeps focus (house pattern).
     const mkBtn = (svg: string, title: string, fn: any): any => {
       const b = doc.createElement("button");
@@ -2313,8 +2401,8 @@ function ccupFindBarWebview(): void {
       count = doc.createElement("span");
       count.className = "ccup-find-count";
       count.setAttribute("aria-live", "polite");
-      prevB = mkBtn(CHEV_UP, "Previous match", () => nav(-1));
-      nextB = mkBtn(CHEV_DN, "Next match", () => nav(1));
+      prevB = mkBtn(CHEV_UP, withKey("Previous match", cfg.prev), () => nav(-1));
+      nextB = mkBtn(CHEV_DN, withKey("Next match", cfg.next), () => nav(1));
       blockPrevB = mkBtn(CHEVS_UP, "Previous block", () => navBlock(-1));
       blockPrevB.classList.add("ccup-find-sep");
       blockNextB = mkBtn(CHEVS_DN, "Next block", () => navBlock(1));
@@ -2559,7 +2647,15 @@ function findBarCfgBuild(c: string): string | undefined {
   push(c.match(/userMessage:"(userMessage_[-\w]+)"/)?.[1]);
   push(c.match(/stickyHeader:"(stickyHeader_[-\w]+)"/)?.[1]);
   const k = readFindKeys();
-  const cfg = { chat, input, blocks, open: k.open, next: k.next, prev: k.prev };
+  const cfg = {
+    chat,
+    input,
+    blocks,
+    mac: process.platform === "darwin" ? 1 : 0,
+    open: k.open,
+    next: k.next,
+    prev: k.prev,
+  };
   return `${FINDBAR_CFG_MARKER}window.__ccupFindCfg=${JSON.stringify(cfg)};`;
 }
 
@@ -2612,9 +2708,9 @@ function findBarCssBuild(css: string): string | undefined {
     "::highlight(ccup-find-active){background-color:var(--vscode-editor-findMatchBackground,rgba(237,148,30,.8));color:var(--vscode-editor-foreground,inherit)}" +
     ".ccup-find-bar{position:fixed;top:8px;right:16px;z-index:1200;display:none;align-items:center;gap:4px;max-width:calc(100vw - 20px);padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--app-input-border,#454545));border-radius:6px;background:var(--vscode-editorWidget-background,var(--app-input-background,#252526));color:var(--vscode-editorWidget-foreground,var(--app-primary-foreground,#cccccc));box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36));font-size:12px}" +
     ".ccup-find-bar[data-open]{display:flex}" +
-    ".ccup-find-bar input{flex:1 1 auto;width:200px;min-width:60px;box-sizing:border-box;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));background:var(--app-input-background,var(--vscode-input-background,#3c3c3c));color:var(--app-input-foreground,var(--vscode-input-foreground,#cccccc));border-radius:4px;padding:3px 6px;font-size:12px;font-family:inherit;outline:none}" +
+    ".ccup-find-bar input{flex:1 1 auto;width:200px;min-width:60px;box-sizing:border-box;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));background:var(--app-input-background,var(--vscode-input-background,#3c3c3c));color:var(--app-input-foreground,var(--vscode-input-foreground,#cccccc));border-radius:4px;padding:3px 6px;font-size:var(--vscode-chat-font-size,13px);font-family:inherit;outline:none}" +
     ".ccup-find-bar input:focus{border-color:var(--app-input-active-border,var(--vscode-focusBorder,#007fd4))}" +
-    ".ccup-find-bar .ccup-find-count{min-width:56px;text-align:center;opacity:.85;white-space:nowrap}" +
+    ".ccup-find-bar .ccup-find-count{text-align:center;opacity:.85;white-space:nowrap;font-variant-numeric:tabular-nums}" +
     ".ccup-find-bar[data-none] .ccup-find-count{color:var(--vscode-errorForeground,#f48771);opacity:1}" +
     ".ccup-find-bar button{display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin:0;padding:0;border:none;border-radius:4px;background:transparent;color:inherit;cursor:pointer}" +
     `.ccup-find-bar button:hover{background:${ghost}}` +

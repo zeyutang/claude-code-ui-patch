@@ -29,6 +29,7 @@ chat.fontSize & chat.fontFamily        # native VS Code settings, shared by ever
 Chat Panel and Tab                     # chat history only, private to Claude Code
    ├── chatHistoryFontSize             # agent message text, 0 -> follows chat.fontSize
    ├── chatHistoryFontFamily           # agent message font, empty -> native UI font
+   ├── chatHistoryParagraphSpacing     # gap between agent paragraphs, 1.0 = native
    ├── chatInputHistoryFontSize        # sent user message text, 0 -> follows chat.fontSize
    ├── chatInputHistoryFontFamily      # sent user message font, empty -> native chat font
    ├── chatCodeBlockFontSize           # fenced code blocks

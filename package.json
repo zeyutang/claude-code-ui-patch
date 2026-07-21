@@ -58,6 +58,13 @@
           "default": "",
           "markdownDescription": "Font family for agent messages; the interface and input box stay native. Empty = native."
         },
+        "claudeCodeUiPatch.chatHistoryParagraphSpacing": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 5,
+          "markdownDescription": "Multiplier on the gap between agent-message paragraphs (scales the native `em` margins, so it tracks `#claudeCodeUiPatch.chatHistoryFontSize#`). `1` = native, `1.2` = 20% looser, `0` = no gap."
+        },
         "claudeCodeUiPatch.chatInputHistoryFontSize": {
           "type": "number",
           "default": 0,

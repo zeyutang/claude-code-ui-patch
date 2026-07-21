@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.3.4
+
+- Add `claudeCodeUiPatch.chatHistoryParagraphSpacing`, a multiplier on the gap between agent-message paragraphs (default `1` = native).
+  It scales the native `em` margins, so the spacing still tracks `chatHistoryFontSize`; `1.2` is 20% looser and `0` closes the gap.
+
 ## 1.3.3
 
 - With the scroll-to-bottom or previous/next buttons on, the chat history is no longer dimmed to 40% while a permission or question box is up, so it stays readable while you navigate; the native dim returns when both are off.

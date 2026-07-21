@@ -3500,7 +3500,7 @@ interface InjectPoint {
   section: Section;
   label: string;
   key: string; // settings sub-key under the claudeCodeUiPatch namespace
-  kind: "size" | "family" | "rows" | "align";
+  kind: "size" | "family" | "rows" | "align" | "scale";
   file: string;
   showInPanel: boolean; // size shows as a knob; strings/rows are settings-only
   max: number; // upper clamp for a size knob (unused otherwise)
@@ -3545,6 +3545,29 @@ function chatContentSelector(c: string): string | undefined {
   const md = c.match(CHAT_MD_HASH_RE)?.[1];
   return md ? `.root_${md}` : undefined;
 }
+
+// chatHistoryParagraphSpacing: scale the vertical gaps between agent-message
+// paragraphs. The native rule is
+// `.root_<hash> p{white-space:pre-wrap;margin-top:.1em;margin-bottom:.2em}`, so
+// the gap is already em-relative (it tracks chatHistoryFontSize) and asymmetric.
+// We multiply BOTH margins by the setting, preserving their ratio. The base ems
+// are read from the native rule at apply time and baked into a calc(base*mult)
+// with !important, so: a native change to the base values is followed
+// faithfully, the rule stays em-relative, and the multiplier reads back out of
+// the calc factor (per-marker, not whole-file, so EOF line order never matters).
+// Because our p rule carries !important it would beat the native
+// `.root_<hash>>:first-child{margin-top:0}` (important over non-important) and
+// re-open a gap above the first block, so we re-assert that reset with
+// !important on the same line (0 needs no scaling). 1 = native (no rule).
+// Settings-only, like the family points.
+const CHAT_PARA_MARKER = "/*cc-ui-patch:chatParaSpacing*/";
+// The native paragraph rule (captures: 1=module hash, 2=top em, 3=bottom em).
+// Requires white-space:pre-wrap so our own appended rule can never re-match.
+const CHAT_PARA_BASE_RE =
+  /\.root_([-\w]+) p\{white-space:pre-wrap;margin-top:(\d*\.?\d+)em;margin-bottom:(\d*\.?\d+)em\}/;
+// The multiplier baked into our appended rule (recovered from the calc factor).
+const CHAT_PARA_MULT_RE =
+  /\/\*cc-ui-patch:chatParaSpacing\*\/[^\n]*?margin-top:calc\(\d*\.?\d+em \* (\d*\.?\d+)\)/;
 
 // chatInputHistoryFontSize / chatInputHistoryFontFamily: size and font for the
 // TEXT of sent user messages in the chat history (.expandableContainer_<hash>,
@@ -3807,6 +3830,38 @@ const INJECT_POINTS: InjectPoint[] = [
       );
     },
     remove: (c) => cssRemoveLine(c, CHAT_FAMILY_MARKER),
+  },
+  {
+    id: "chatParaSpacing",
+    section: "Chat Panel or Tab",
+    label: "agent paragraph spacing",
+    key: "chatHistoryParagraphSpacing",
+    kind: "scale",
+    file: "webview/index.css",
+    showInPanel: false,
+    max: 0,
+    defaultRaw: 1,
+    effective: (raw) => {
+      if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+      const m = Math.round(Math.min(5, Math.max(0, raw)) * 100) / 100;
+      return m === 1 ? undefined : m; // 1x = native, no rule
+    },
+    present: (c) => CHAT_PARA_BASE_RE.test(c),
+    current: (c) => {
+      const m = c.match(CHAT_PARA_MULT_RE);
+      return m ? Number(m[1]) : undefined;
+    },
+    apply: (c, v) => {
+      const m = c.match(CHAT_PARA_BASE_RE);
+      if (!m) return c; // native paragraph rule gone: leave native
+      return cssApplyLine(
+        c,
+        CHAT_PARA_MARKER,
+        `${CHAT_PARA_MARKER}.root_${m[1]} p{margin-top:calc(${m[2]}em * ${v}) !important;margin-bottom:calc(${m[3]}em * ${v}) !important}` +
+          `.root_${m[1]}>:first-child{margin-top:0 !important}`,
+      );
+    },
+    remove: (c) => cssRemoveLine(c, CHAT_PARA_MARKER),
   },
   {
     id: "chatInputHistorySize",

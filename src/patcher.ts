@@ -1674,8 +1674,19 @@ function scrollDotSet(c: string, on: boolean): string {
 // scrollport top in one pile (painted in document order, so the latest pinned
 // header is the visible one) and all of them read ~scrollTop. A click therefore
 // measures natural positions by neutralizing the pile for one synchronous pass:
-// set inline position:static on every header, read offsetTop (headers offset
-// from .messagesContainer_<hash>, the position:relative offsetParent), restore.
+// set inline position:static on every header, read its offset, restore. Each
+// read sums offsetTop up the offsetParent chain to the container instead of
+// trusting one hop: normally the chain IS one hop (.messagesContainer_<hash> is
+// the position:relative offsetParent, and the turn wrappers between it and the
+// headers are borderless and unpadded, so the sum equals the plain offsetTop),
+// but while a permission/question popup is pending the pending turn's wrapper
+// carries .highlightedMessage_<chat> (position:relative z-index:10, the native
+// dim's opt-out), hijacking the newest header's offsetParent, and a bare
+// offsetTop would read that header's slot within its own turn (~0): "next"
+// would lose the newest stop (its bottom fallback then fires from anywhere in
+// the tail) and "previous" would gain a phantom ~0 stop below the first
+// header's real slot (a 20px stickyMode spacer precedes it) and creep past the
+// first message. The walk keeps every read container-relative in every state.
 // No paint happens between the writes and the restore (a forced layout at most),
 // so nothing flickers, and static occupies the same flow slot, so scrollHeight
 // and the scroll position are unchanged. "Previous" glides to the greatest
@@ -1699,8 +1710,10 @@ function scrollDotSet(c: string, on: boolean): string {
 // bottom it doubles as "jump back to the newest user message"; only an exhausted
 // direction dims and goes inert (data-off) rather than being removed, keeping
 // the shape stable. The dimming census mostly needs no natural positions: raw
-// offsetTops classify headers as below the scrollport top (> scrollTop+4px;
-// never pinned, so trustworthy) or in the pile at/above it. "Next" lights on any
+// (sticky-shifted) offsetTops, summed through the same offsetParent walk so a
+// highlighted turn cannot fold its header into the pile, classify headers as
+// below the scrollport top (> scrollTop+4px; never pinned, so trustworthy) or
+// in the pile at/above it. "Next" lights on any
 // header below, and otherwise on a view above the bottom zone (more than 8px of
 // scroll left, the scroll button's own threshold), matching its bottom
 // fallback; it dims only at the bottom. "Previous" lights on a pile of two or more (the pile's newest
@@ -1784,10 +1797,13 @@ function jumpMsgBuild(c: string): string | undefined {
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
     btnHostsJs(input, perm, preq) +
     `function hh(t){return t.querySelectorAll(".stickyHeader_${sticky}")}` +
+    // Header offset within container t: offsetTop summed up the offsetParent
+    // chain (one hop normally; two while .highlightedMessage wraps its turn).
+    `function ot(e,t){var y=0,n=e;while(n&&n!==t){y+=n.offsetTop;n=n.offsetParent}return y}` +
     // Natural (unstuck) header positions: neutralize sticky, read all, restore.
     `function nat(t){var h=hh(t),a=[],i;` +
     `for(i=0;i<h.length;i++)h[i].style.position="static";` +
-    `for(i=0;i<h.length;i++)a.push(h[i].offsetTop);` +
+    `for(i=0;i<h.length;i++)a.push(ot(h[i],t));` +
     `for(i=0;i<h.length;i++)h[i].style.position="";` +
     `return a}` +
     // Fixed 100ms ease-out glide to a clamped scrollTop; instant under reduced motion.
@@ -1810,14 +1826,15 @@ function jumpMsgBuild(c: string): string | undefined {
     `b.addEventListener("click",function(e){e.stopPropagation();if(!b.hasAttribute("data-off"))jump(dir)});return b}` +
     // Toggle data-show/data-off only on an actual change (outside the observer filter).
     `function ss(el,show,off){var s=el.hasAttribute("data-show");if(show&&!s)el.setAttribute("data-show","");else if(!show&&s)el.removeAttribute("data-show");var o=el.hasAttribute("data-off");if(off&&!o)el.setAttribute("data-off","");else if(!off&&o)el.removeAttribute("data-off")}` +
-    // Census on raw offsetTops: pile = pinned at/above the top, below = trustworthy.
+    // Census on raw (sticky-shifted) offsets through the same offsetParent
+    // walk: pile = pinned at/above the top, below = trustworthy.
     `function upd(){raf=0;var t=sc(),below=0,pile=0,m=null,dist=0;` +
     `if(t){var h=hh(t),cur=t.scrollTop;dist=t.scrollHeight-cur-t.clientHeight;` +
-    `for(var i=0;i<h.length;i++){if(h[i].offsetTop>cur+4)below++;else{pile++;m=h[i]}}}` +
+    `for(var i=0;i<h.length;i++){if(ot(h[i],t)>cur+4)below++;else{pile++;m=h[i]}}}` +
     `var canP=pile>1,canN=below>0||dist>8;` +
     // A lone pile header is turn 1's; prev is valid while the view sits below its
     // start. That natural position is fixed per element, so measure once and cache.
-    `if(!canP&&pile===1){if(n0el!==m){n0el=m;m.style.position="static";n0=m.offsetTop;m.style.position=""}canP=n0<cur-4}` +
+    `if(!canP&&pile===1){if(n0el!==m){n0el=m;m.style.position="static";n0=ot(m,t);m.style.position=""}canP=n0<cur-4}` +
     `var boxes=hosts();` +
     `for(var j=0;j<boxes.length;j++){var box=boxes[j],p=box.querySelector(".ccup-nav-prev"),n=box.querySelector(".ccup-nav-next");` +
     `if(!p){p=mk("ccup-nav-prev",UP,"Previous Message",-1);box.appendChild(p)}` +

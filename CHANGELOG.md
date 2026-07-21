@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.3.5
+
+- Fix the previous/next message buttons while a permission or question box is up.
+  They misplaced the newest user message, so next jumped straight to the bottom instead of stopping at it, previous skipped over it scrolling up, and previous crept past the first message instead of dimming there.
+
 ## 1.3.4
 
 - Add `claudeCodeUiPatch.chatHistoryParagraphSpacing`, a multiplier on the gap between agent-message paragraphs (default `1` = native).

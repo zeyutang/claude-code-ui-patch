@@ -1,5 +1,10 @@
 # Claude Code UI Patch
 
+[![VS Marketplace](https://badgen.net/vs-marketplace/v/zeyutang.claude-code-ui-patch?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=zeyutang.claude-code-ui-patch)
+[![VS Marketplace downloads](https://badgen.net/vs-marketplace/d/zeyutang.claude-code-ui-patch)](https://marketplace.visualstudio.com/items?itemName=zeyutang.claude-code-ui-patch)
+[![Open VSX](https://img.shields.io/open-vsx/v/zeyutang/claude-code-ui-patch?label=Open%20VSX)](https://open-vsx.org/extension/zeyutang/claude-code-ui-patch)
+[![Open VSX downloads](https://img.shields.io/open-vsx/dt/zeyutang/claude-code-ui-patch)](https://open-vsx.org/extension/zeyutang/claude-code-ui-patch)
+
 Patch Claude Code VS Code extension UI to provide finegrained settings for various UI details (font sizes, code blocks, diff cards, and more).
 
 |              Configuration Panel               |              Status Bar Summary               |

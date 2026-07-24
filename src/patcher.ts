@@ -48,6 +48,7 @@ const KNOB_ORDER: string[] = [
   "effortSyncFix",
   "scrollDot", // scroll-to-bottom dot
   "jumpMsg", // jump to previous/next message
+  "histKeys", // input history recall on Cmd/Ctrl+Up/Down
   "findBar", // in-chat find bar (Cmd/Ctrl+F)
   "text", // plan agent response
   "planCodeInline", // plan inline code
@@ -676,6 +677,122 @@ function effortSyncSet(c: string, on: boolean): string {
     (_w, v: string) =>
       `if(${v}&&!this.effortLevel.value)this.effortLevel.value=${v};`,
   );
+}
+
+// Input-history recall keys (ON): natively, ArrowUp in the chat input recalls
+// the previous sent message once the caret sits at the input's very start, and
+// ArrowDown the next once it sits at the very end, so holding Up through a
+// multi-line draft overshoots the first line straight into history. When ON
+// the recall pair moves to Cmd/Ctrl+Up/Down, fired from ANY caret position in
+// one press, and plain Up/Down only ever move the caret. Two coupled edits in
+// webview/index.js, toggled together:
+//   - the composer keydown: both cycleMessage(+-1) branches gain a modifier
+//     requirement (marker-tagged), baked at patch time like the find-bar
+//     chords: metaKey (Cmd) on macOS, where Ctrl+Up/Down belongs to Mission
+//     Control / App Expose, and ctrlKey elsewhere, where the Win/Super key
+//     belongs to the OS. The popup gates (!R&&!un: slash/at-mention menus)
+//     are kept.
+//   - the history hook's caret gates (caret-at-start for -1, caret-at-end for
+//     +1) are parked behind &&!1, so the chord recalls directly instead of
+//     needing a native caret jump to the edge first. The dead gate bodies stay
+//     in place byte-for-byte, keeping the restore a pure condition strip.
+// When cycling has nowhere to go (no history, oldest reached, or not in
+// history for Down) cycleMessage returns false, no preventDefault fires, and
+// the chord falls through to the browser default (caret to start/end).
+// All variable names are captured and rebuilt via backreferences, so the
+// anchors survive re-minification renames across Claude Code versions; the ON
+// anchor accepts either modifier property, so on/off detection does not
+// depend on the platform that baked it.
+const HIST_KEYS_MARKER = "/*ccup-histKeys*/";
+const HIST_KEYS_MOD = process.platform === "darwin" ? "metaKey" : "ctrlKey";
+const HK_ID = "[a-zA-Z_$][\\w$]*";
+// Composer keydown pair; captures (1)=event, (2)=popup gates, (3)=hook handle.
+const HIST_KEYS_KEY_OFF_RE = new RegExp(
+  `if\\((${HK_ID})\\.key==="ArrowUp"&&(!${HK_ID}&&!${HK_ID})\\)\\{if\\((${HK_ID})\\.cycleMessage\\(-1\\)\\)\\{\\1\\.preventDefault\\(\\);return\\}\\}` +
+    `if\\(\\1\\.key==="ArrowDown"&&\\2\\)\\{if\\(\\3\\.cycleMessage\\(1\\)\\)\\{\\1\\.preventDefault\\(\\);return\\}\\}`,
+);
+const HIST_KEYS_KEY_ON_RE = new RegExp(
+  `if\\((${HK_ID})\\.key==="ArrowUp"&&\\/\\*ccup-histKeys\\*\\/\\1\\.(?:metaKey|ctrlKey)&&(!${HK_ID}&&!${HK_ID})\\)\\{if\\((${HK_ID})\\.cycleMessage\\(-1\\)\\)\\{\\1\\.preventDefault\\(\\);return\\}\\}` +
+    `if\\(\\1\\.key==="ArrowDown"&&\\1\\.(?:metaKey|ctrlKey)&&\\2\\)\\{if\\(\\3\\.cycleMessage\\(1\\)\\)\\{\\1\\.preventDefault\\(\\);return\\}\\}`,
+);
+// Caret gates in the history hook; captures (1)=direction, (2)=offset,
+// (3)=range, (4)=input ref, (5)=text.
+const HIST_KEYS_GATE_OFF_RE = new RegExp(
+  `if\\((${HK_ID})===-1\\)\\{if\\((${HK_ID})!==0\\)return!1;` +
+    `if\\((${HK_ID})\\.startContainer!==\\((${HK_ID})\\.current\\.firstChild\\|\\|\\4\\.current\\)\\)return!1\\}` +
+    `if\\(\\1===1\\)\\{if\\(!\\(\\3\\.endContainer===\\(\\4\\.current\\.firstChild\\|\\|\\4\\.current\\)&&\\2===(${HK_ID})\\.length\\)\\)return!1\\}`,
+);
+const HIST_KEYS_GATE_ON_RE = new RegExp(
+  `if\\((${HK_ID})===-1&&!1\\/\\*ccup-histKeys\\*\\/\\)\\{if\\((${HK_ID})!==0\\)return!1;` +
+    `if\\((${HK_ID})\\.startContainer!==\\((${HK_ID})\\.current\\.firstChild\\|\\|\\4\\.current\\)\\)return!1\\}` +
+    `if\\(\\1===1&&!1\\)\\{if\\(!\\(\\3\\.endContainer===\\(\\4\\.current\\.firstChild\\|\\|\\4\\.current\\)&&\\2===(${HK_ID})\\.length\\)\\)return!1\\}`,
+);
+
+function histKeysKeyStr(e: string, g: string, h: string, on: boolean): string {
+  const up = on ? `${HIST_KEYS_MARKER}${e}.${HIST_KEYS_MOD}&&` : "";
+  const down = on ? `${e}.${HIST_KEYS_MOD}&&` : "";
+  return (
+    `if(${e}.key==="ArrowUp"&&${up}${g}){if(${h}.cycleMessage(-1)){${e}.preventDefault();return}}` +
+    `if(${e}.key==="ArrowDown"&&${down}${g}){if(${h}.cycleMessage(1)){${e}.preventDefault();return}}`
+  );
+}
+function histKeysGateStr(
+  d: string,
+  f: string,
+  r: string,
+  n: string,
+  p: string,
+  on: boolean,
+): string {
+  const up = on ? `&&!1${HIST_KEYS_MARKER}` : "";
+  const down = on ? "&&!1" : "";
+  return (
+    `if(${d}===-1${up}){if(${f}!==0)return!1;if(${r}.startContainer!==(${n}.current.firstChild||${n}.current))return!1}` +
+    `if(${d}===1${down}){if(!(${r}.endContainer===(${n}.current.firstChild||${n}.current)&&${f}===${p}.length))return!1}`
+  );
+}
+
+// Both anchors must be found (in either polarity): a build that reshapes one
+// reports missing, and fnSet is never reached to half-apply.
+function histKeysPresent(c: string): boolean {
+  return (
+    (HIST_KEYS_KEY_OFF_RE.test(c) || HIST_KEYS_KEY_ON_RE.test(c)) &&
+    (HIST_KEYS_GATE_OFF_RE.test(c) || HIST_KEYS_GATE_ON_RE.test(c))
+  );
+}
+// true only when BOTH edits are ON. fnSet writes the pair in one pass so a
+// mixed state is not produced; if one ever appeared it reports false and a
+// want=ON reconcile renormalizes it (strip, then re-apply both).
+function histKeysCurrentOn(c: string): boolean | undefined {
+  const key = HIST_KEYS_KEY_ON_RE.test(c)
+    ? true
+    : HIST_KEYS_KEY_OFF_RE.test(c)
+      ? false
+      : undefined;
+  const gate = HIST_KEYS_GATE_ON_RE.test(c)
+    ? true
+    : HIST_KEYS_GATE_OFF_RE.test(c)
+      ? false
+      : undefined;
+  if (key === undefined || gate === undefined) return undefined;
+  return key && gate;
+}
+function histKeysSet(c: string, on: boolean): string {
+  let out = c
+    .replace(HIST_KEYS_KEY_ON_RE, (_w, e, g, h) =>
+      histKeysKeyStr(e, g, h, false),
+    )
+    .replace(HIST_KEYS_GATE_ON_RE, (_w, d, f, r, n, p) =>
+      histKeysGateStr(d, f, r, n, p, false),
+    );
+  if (!on) return out;
+  return out
+    .replace(HIST_KEYS_KEY_OFF_RE, (_w, e, g, h) =>
+      histKeysKeyStr(e, g, h, true),
+    )
+    .replace(HIST_KEYS_GATE_OFF_RE, (_w, d, f, r, n, p) =>
+      histKeysGateStr(d, f, r, n, p, true),
+    );
 }
 
 // Permission-code size match (ON): the permission "Allow this command?" dialog
@@ -3310,6 +3427,17 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: jumpMsgPresent,
     fnCurrentOn: jumpMsgCurrentOn,
     fnSet: jumpMsgSet,
+  },
+  {
+    id: "histKeys",
+    section: "Chat Panel or Tab",
+    label: "input Cmd/Ctrl + Up/Down to recall",
+    key: "chatInputCtrlUpDownToHistory",
+    defaultOn: false,
+    file: "webview/index.js",
+    fnPresent: histKeysPresent,
+    fnCurrentOn: histKeysCurrentOn,
+    fnSet: histKeysSet,
   },
   {
     id: "findBar",

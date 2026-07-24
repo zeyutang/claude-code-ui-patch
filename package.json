@@ -152,6 +152,11 @@
           "default": false,
           "markdownDescription": "Show previous/next buttons above the chat input box's top-right corner that jump between turns (each user message pins to the top as a sticky header). A direction with nowhere to go dims, and the pair sits on the permission/question box when one replaces the input box. With `#claudeCodeUiPatch.chatScrollToBottomDot#` on, the pair lines up on its left."
         },
+        "claudeCodeUiPatch.chatInputCtrlUpDownToHistory": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Recall previous/next sent messages with `Cmd`/`Ctrl`+`Up`/`Down` from anywhere in the chat input, and keep plain `Up`/`Down` moving the caret only. Off = native (plain `Up`/`Down` at the input's very start/end recalls)."
+        },
         "claudeCodeUiPatch.chatFindBar": {
           "type": "boolean",
           "default": false,

@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.3.6
+
+- Add `claudeCodeUiPatch.chatInputCtrlUpDownToHistory`, off by default: `Cmd`+`Up`/`Down` (macOS, leaving `Ctrl`+`Up`/`Down` to Mission Control) or `Ctrl`+`Up`/`Down` (Windows/Linux) recalls previous/next sent messages from anywhere in the chat input, and plain `Up`/`Down` only moves the caret.
+  Off = native: plain `Up`/`Down` recalls once the caret sits at the input's very start/end, which overshoots when holding `Up`/`Down` through a multi-line draft.
+
 ## 1.3.5
 
 - Fix the previous/next message buttons while a permission or question box is up.

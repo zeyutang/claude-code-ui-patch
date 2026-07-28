@@ -2,6 +2,14 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.3.7
+
+- The focused permission or question box now gets the same soft ring as the chat input box, tinted with its own border color; natively only the border color changes.
+  It has no setting: installing the patch is the opt-in, so a default install now patches Claude Code (and asks for its one reload) where it used to leave it untouched.
+- With the scroll-to-bottom or previous/next buttons on, a permission or question box dims the chat history to 40% again, and opening the find bar lifts the dim so you can read and navigate while you search.
+  A question box now dims like a permission box does; natively it leaves the history bright.
+- With the scroll-to-bottom button on, a permission or question box arriving while you sit at the bottom now scrolls the history down to the box's settled position instead of stopping short of it.
+
 ## 1.3.6
 
 - Add `claudeCodeUiPatch.chatInputCtrlUpDownToHistory`, off by default: `Cmd`+`Up`/`Down` (macOS, leaving `Ctrl`+`Up`/`Down` to Mission Control) or `Ctrl`+`Up`/`Down` (Windows/Linux) recalls previous/next sent messages from anywhere in the chat input, and plain `Up`/`Down` only moves the caret.

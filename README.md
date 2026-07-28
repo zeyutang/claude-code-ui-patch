@@ -7,13 +7,17 @@
 
 Patch Claude Code VS Code extension UI to provide finegrained settings for various UI details (font sizes, code blocks, diff cards, and more).
 
-|              Configuration Panel               |              Status Bar Summary               |
-| :--------------------------------------------: | :-------------------------------------------: |
-| ![Configuration panel](assets/img/webview.png) | ![Status bar summary](assets/img/tooltip.png) |
+|              Configuration Panel               |
+| :--------------------------------------------: |
+| ![Configuration panel](assets/img/webview.png) |
 
 |      Previous and Next Turn, Scroll to Bottom      |
 | :------------------------------------------------: |
 | ![Chat navigation button](assets/img/composer.png) |
+
+|              Find Bar               |              Status Bar Icon               |
+| :---------------------------------: | :----------------------------------------: |
+| ![Find bar](assets/img/findbar.png) | ![Status bar icon](assets/img/tooltip.png) |
 
 |            Find Bar: Match and Match Block            |
 | :---------------------------------------------------: |
@@ -21,7 +25,9 @@ Patch Claude Code VS Code extension UI to provide finegrained settings for vario
 
 ## What This Extension Patches
 
-Settings live under the `claudeCodeUiPatch.*` namespace (prefix omitted below) and each defaults to Claude Code's native value. The tree shows every knob, what it targets, and what scales with what: an indented child follows its parent until you give it a value.
+Settings live under the `claudeCodeUiPatch.*` namespace (prefix omitted below) and each defaults to Claude Code's native value.
+The tree shows every knob, what it targets, and what scales with what: an indented child follows its parent until you give it a value.
+The one exception is the "Always applied" group at the end, which has no setting: it fills in UI the native interface applies everywhere except one spot, so installing the patch is the opt-in and uninstalling it is the undo.
 
 ```text
 chat.fontSize & chat.fontFamily        # native VS Code settings, shared by every chat extension
@@ -65,13 +71,18 @@ Behavior
    ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
    ├── chatJumpToMessageButtons        # prev/next above input/permission box: jump turns, if On
    ├── chatScrollToBottomDot           # button above input/permission box: scroll to newest, if On
-   │                                   #   also stops a permission request from auto-scrolling the
-   │                                   #   history down to bottom as well as the auto-dimming
+   │                                   #   also auto-scrolls on a permission/question box only when
+   │                                   #   already at the bottom, then follows the box as it settles
+   │                                   #   (either button On: a question box dims the history like a
+   │                                   #   permission box, and an open find bar lifts the dim)
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)
    ├── effortSyncFix                   # push persisted effort level to a reloaded session if On
    └── planPreviewCommentInputCtrlEnterToSend  # Cmd/Ctrl+Enter sends, plain Enter newlines if On
+
+Always applied                         # no setting; installing this patch is the opt-in
+   └── permission focus ring           # focused permission/question box gets the input box's ring
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)

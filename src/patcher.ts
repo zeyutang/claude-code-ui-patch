@@ -859,6 +859,33 @@ function permNoWrapSet(c: string, on: boolean): string {
   );
 }
 
+// Permission focus ring (always on): the composer answers focus with a border
+// color change AND a soft halo (.inputContainer_<hash>:focus-within{...
+// box-shadow:0 0 0 3px color-mix(in srgb,var(--focus-ring-color)12%,transparent),
+// 0 1px 2px color-mix(in srgb,var(--focus-ring-color),transparent 80%)}), but
+// the permission/question card that replaces it natively sets the border color
+// alone, so the box that has the keyboard reads as flatter than the one it
+// stood in for. We append the composer's own two-layer shadow to the card,
+// driven by --app-input-active-border, the token the card's focused border
+// already uses (the composer's ring color is a different, permission-mode-aware
+// token, so reusing it would put an orange halo around a blue border). The card
+// is overflow:hidden, which clips children rather than its own shadow, and it
+// sits 16px inside the chat container, so the 3px ring has room to paint.
+// An always-on fix rather than a knob: native applies this treatment to every
+// other focused input, so the card's bare border is an oversight with no
+// behavior worth keeping as an option (see ALWAYS_POINTS).
+const PERM_RING_MARKER = "/*cc-ui-patch:permRing*/";
+const PERM_REQ_CSS_HASH_RE = /\.permissionRequestContainer_([-\w]+)\{/;
+
+function permRingBuild(c: string): string | undefined {
+  const hash = c.match(PERM_REQ_CSS_HASH_RE)?.[1];
+  if (!hash) return undefined; // anchor gone: leave native
+  const ring =
+    "0 0 0 3px color-mix(in srgb,var(--app-input-active-border) 12%,transparent)," +
+    "0 1px 2px color-mix(in srgb,var(--app-input-active-border),transparent 80%)";
+  return `${PERM_RING_MARKER}.permissionRequestContainer_${hash}:focus-within{box-shadow:${ring}}`;
+}
+
 // ---------------------------------------------------------------------------
 // Chat math rendering (ON): the chat webview renders agent markdown through
 // react-markdown with no math support, so TeX like $\mathcal{G}$ shows as raw
@@ -1600,20 +1627,48 @@ function btnHostsJs(
   );
 }
 
-// Un-dim rule shared by the scroll-to-bottom and jump buttons. While a
+// Popup dim control shared by the scroll-to-bottom and jump buttons. While a
 // non-question permission request is pending, the chat view natively dims the
 // whole transcript to 0.4 (.dimmed_<chat> > :not(.highlightedMessage_<chat>){
-// opacity:.4}) to draw the eye to the dialog. The buttons exist precisely to
-// read and navigate history during that state, so whenever either is ON we
-// append a rule restoring full opacity. It wins by specificity (messagesContainer
-// + dimmed, three classes vs the native two) and carries !important as a
-// belt-and-suspenders, and it only bites while .dimmed is present, so it is inert
-// in normal chat and reverts to the native dim the instant the popup closes.
-// dimmed and highlightedMessage co-locate with messagesContainer in the one chat
-// CSS module, so they share its hash; if a future build splits them the rule
-// simply stops matching and the native dim returns unchanged.
-const undimCss = (chat: string): string =>
-  `.messagesContainer_${chat}.dimmed_${chat}>:not(.highlightedMessage_${chat}){opacity:1 !important}`;
+// opacity:.4}) to draw the eye to the dialog, leaving the pending turn bright.
+// Whenever either button is ON we keep that dim and add two things, keyed on the
+// find bar, which marks the one state where the dim is actively in the way
+// (reading and navigating history under a pending box is exactly what the bar is
+// for):
+//   cover  dim for AskUserQuestion too. Native applies .dimmed only when
+//          toolName !== "AskUserQuestion", so a question box leaves the
+//          transcript at full brightness; this reinstates the same 0.4 /
+//          bright-pending-turn treatment for it. The popup card is matched
+//          through the messages container's FOLLOWING sibling (the absolutely
+//          positioned input wrapper the card mounts into), which keeps the
+//          :has() scan off the transcript subtree: a descendant-scoped :has()
+//          on a common ancestor would re-run on every streaming mutation.
+//   lift   while the bar is open, restore full opacity, over both the native dim
+//          and the rule above. Each lift is the dim selector it answers with a
+//          body:has() prefix, so it always wins on specificity, and it carries
+//          !important as a belt-and-suspenders; with no popup up neither matches,
+//          so both are inert in normal chat.
+// The bar is a direct child of <body> (see the find-bar engine), so the lifts
+// test it with the cheap child form; when the find-bar toggle is OFF the element
+// never exists and the dim simply always applies.
+// dimmed, highlightedMessage, and inputContainer co-locate with
+// messagesContainer in the one chat CSS module, so they share its hash; the
+// popup card carries its own. If a future build splits either the rules stop
+// matching and the native dim returns unchanged; a missing card hash drops the
+// question half alone (questions go back to native, permissions still dim).
+const FIND_BAR_OPEN = "body:has(>.ccup-find-bar[data-open])";
+function dimCss(chat: string, preq: string | undefined): string {
+  const rest = `>:not(.highlightedMessage_${chat})`;
+  const dimmed = `.messagesContainer_${chat}.dimmed_${chat}${rest}`;
+  const asked = preq
+    ? `.messagesContainer_${chat}:has(~ .inputContainer_${chat} .permissionRequestContainer_${preq})${rest}`
+    : undefined;
+  const cover = asked ? `${asked}{opacity:.4}` : "";
+  const lifts = [dimmed, ...(asked ? [asked] : [])]
+    .map((s) => `${FIND_BAR_OPEN} ${s}`)
+    .join(",");
+  return `${cover}${lifts}{opacity:1 !important}`;
+}
 
 // Permission-popup auto-scroll guard (rides the scroll-to-bottom toggle): the
 // chat view's render effect scrolls the history to the bottom UNCONDITIONALLY
@@ -1627,39 +1682,58 @@ const undimCss = (chat: string): string =>
 // live scroll position off the container ref (introducing no bindings into the
 // minified scope) and lets the scroll through only when the view is already
 // within the native 50px stick zone (or the ref is unmounted, where the call is
-// a no-op anyway), keeping the at-bottom reveal native. All three minified
-// names (session, scroll helper, container ref) are captured and re-emitted, so
-// restore is byte-identical; the marker makes the guarded state detectable. The
-// edit is best-effort: on a drifted bundle where the branch is gone the toggle
-// still applies (buttons only), and permYankGuardOk treats "no native site"
-// as satisfied so the state machinery never loops on it.
+// a no-op anyway), keeping the at-bottom reveal native.
+// When it does let the scroll through, the native helper is the wrong tool: it
+// smooth-scrolls to the scrollHeight measured RIGHT NOW, but the popup's arrival
+// has not finished changing that height. The composer/popup wrapper is
+// absolutely positioned and its height is mirrored into a spacer at the end of
+// the transcript by a ResizeObserver, so the taller popup only grows the spacer
+// a frame or two later, after this layout effect has run: the scroll lands on
+// the old bottom and the view is left short by the height delta, reading as "it
+// just stayed where it was". The call therefore prefers window.__ccupPermGlide,
+// the button's own glide with a settle pass (see scrollDotBuild), and keeps the
+// native helper as the fallback for a bundle whose injected line failed. Both
+// take (ref, smooth), so the site is a one-token widening of the callee.
+// All three minified names (session, scroll helper, container ref) are captured
+// and re-emitted, so restore is byte-identical; the marker makes the guarded
+// state detectable. The edit is best-effort: on a drifted bundle where the
+// branch is gone the toggle still applies (buttons only), and permYankGuardOk
+// treats "no native site" as satisfied so the state machinery never loops on it.
 const PERM_YANK_MARKER = "/*ccup:permYankGuard*/";
 const PERM_YANK_NATIVE_RE =
   /if\((\w+)\.permissionRequests\.value\.length>0\)\{(\w+)\((\w+),!0\);return\}/;
 const PERM_YANK_GUARDED_RE =
+  /if\((\w+)\.permissionRequests\.value\.length>0\)\{\/\*ccup:permYankGuard\*\/if\(\(\(n\)=>!n\|\|n\.scrollHeight-n\.scrollTop-n\.clientHeight<50\)\((\w+)\.current\)\)\(window\.__ccupPermGlide\|\|(\w+)\)\(\2,!0\);return\}/;
+// The 1.3.2-1.3.6 guard, which called the native helper directly. Stripping it
+// is what lets an in-place upgrade rebuild the branch instead of stranding the
+// old form (the native regex no longer matches an already-guarded branch).
+const PERM_YANK_LEGACY_RE =
   /if\((\w+)\.permissionRequests\.value\.length>0\)\{\/\*ccup:permYankGuard\*\/if\(\(\(n\)=>!n\|\|n\.scrollHeight-n\.scrollTop-n\.clientHeight<50\)\((\w+)\.current\)\)(\w+)\(\2,!0\);return\}/;
 function permYankGuardedText(e: string, fn: string, ref: string): string {
   return (
     `if(${e}.permissionRequests.value.length>0){${PERM_YANK_MARKER}` +
     `if(((n)=>!n||n.scrollHeight-n.scrollTop-n.clientHeight<50)(${ref}.current))` +
-    `${fn}(${ref},!0);return}`
+    `(window.__ccupPermGlide||${fn})(${ref},!0);return}`
   );
 }
-// Strip any guard back to the native branch, then re-apply when on.
+// Strip any guard (current or legacy) back to the native branch, then re-apply
+// when on.
 function permYankGuardSet(c: string, on: boolean): string {
-  const off = c.replace(
-    PERM_YANK_GUARDED_RE,
-    (_m, e, ref, fn) =>
-      `if(${e}.permissionRequests.value.length>0){${fn}(${ref},!0);return}`,
-  );
+  const native = (_m: string, e: string, ref: string, fn: string): string =>
+    `if(${e}.permissionRequests.value.length>0){${fn}(${ref},!0);return}`;
+  const off = c
+    .replace(PERM_YANK_GUARDED_RE, native)
+    .replace(PERM_YANK_LEGACY_RE, native);
   if (!on) return off;
   return off.replace(PERM_YANK_NATIVE_RE, (_m, e, fn, ref) =>
     permYankGuardedText(e, fn, ref),
   );
 }
-// The guard's ON-state health: guarded, or nothing left to guard (drift).
+// The guard's ON-state health: guarded in the current form, or nothing left to
+// guard (drift). A legacy guard reads as unhealthy so the next apply rebuilds it.
 function permYankGuardOk(c: string): boolean {
-  return PERM_YANK_GUARDED_RE.test(c) || !PERM_YANK_NATIVE_RE.test(c);
+  if (PERM_YANK_GUARDED_RE.test(c)) return true;
+  return !PERM_YANK_NATIVE_RE.test(c) && !PERM_YANK_LEGACY_RE.test(c);
 }
 
 const SCROLL_DOT_MARKER = "/*ccup:scrollDot*/";
@@ -1701,7 +1775,7 @@ function scrollDotBuild(c: string): string | undefined {
     // scoped to this input so a popup in one chat view never blanks another's.
     `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-scroll-btn[data-show]{opacity:0;pointer-events:none}` +
     (perm && preq ? BTN_HOST_CSS : "") +
-    undimCss(chat) +
+    dimCss(chat, preq) +
     HOVER_TIP_CSS;
   // Down arrow, drawn with currentColor strokes; single-quoted attributes so the
   // whole markup embeds in a double-quoted JS string below without escaping.
@@ -1713,17 +1787,42 @@ function scrollDotBuild(c: string): string | undefined {
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
     `var ARROW="${arrow}",raf=0,gen=0;` +
     HOVER_TIP_JS +
+    `function rm(){return matchMedia("(prefers-reduced-motion:reduce)").matches}` +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
     btnHostsJs(input, perm, preq) +
-    // Fixed 100ms ease-out glide to the bottom; target re-read per frame.
-    `function go(){var t=sc();if(!t)return;` +
-    `if(matchMedia("(prefers-reduced-motion:reduce)").matches){t.scrollTop=t.scrollHeight;return}` +
-    `var g=++gen,f=t.scrollTop,t0;` +
+    // Settle pass (permission/question arrival only): the glide above lands on
+    // the bottom as it stands now, but the popup's spacer grows a frame or two
+    // later, so for 600ms afterwards any newly opened gap is closed too. Each
+    // frame eases 35% of what is left, which reads as one continuous motion with
+    // the glide rather than a snap; a gap of a pixel or less is finished off
+    // outright, as is every step under reduced motion. It rides the same
+    // generation token as the glide, so a click or a user scroll ends it.
+    `function pin(t,g,r){var e=0;function stp(now){if(g!==gen)return;` +
+    `if(!e)e=now+600;if(now>e)return;` +
+    `var d=t.scrollHeight-t.scrollTop-t.clientHeight;` +
+    `if(d>0)t.scrollTop=d>1&&!r?t.scrollTop+d*.35:t.scrollHeight;` +
+    `requestAnimationFrame(stp)}requestAnimationFrame(stp)}` +
+    // Fixed 100ms ease-out glide to the bottom; target re-read per frame. t
+    // defaults to the sole messages container (button clicks); p adds the settle
+    // pass. Bumping gen first makes the token the single cancel channel.
+    `function go(t,p){if(!t)t=sc();if(!t)return;var g=++gen,r=rm();` +
+    `if(r){t.scrollTop=t.scrollHeight;if(p)pin(t,g,r);return}` +
+    `var f=t.scrollTop,t0;` +
     `function stp(now){if(g!==gen)return;if(t0===void 0)t0=now;` +
     `var k=Math.min(1,(now-t0)/100),e=1-(1-k)*(1-k);` +
     `if(k<1){t.scrollTop=f+(t.scrollHeight-t.clientHeight-f)*e;requestAnimationFrame(stp)}` +
-    `else t.scrollTop=t.scrollHeight}` +
+    `else{t.scrollTop=t.scrollHeight;if(p)pin(t,g,r)}}` +
     `requestAnimationFrame(stp)}` +
+    // A wheel or touch is the user taking over: void the generation token so an
+    // in-flight glide or settle pass stops instead of fighting them. Passive, so
+    // the listeners never delay the scroll they are watching for.
+    `function cxl(){gen++}` +
+    `document.addEventListener("wheel",cxl,{capture:!0,passive:!0});` +
+    `document.addEventListener("touchstart",cxl,{capture:!0,passive:!0});` +
+    // The permission/question arrival path, called from the guarded branch in
+    // the chat's scroll effect (see PERM_YANK_MARKER) with that effect's own
+    // container ref, which is authoritative when several chat views are mounted.
+    `window.__ccupPermGlide=function(r){try{go(r&&r.current,1)}catch(e){}};` +
     // can = something below to scroll to; shown always, dimmed inert otherwise.
     `function upd(){raf=0;var s=sc(),can=!!s&&s.scrollHeight-s.scrollTop-s.clientHeight>8,boxes=hosts();` +
     `for(var i=0;i<boxes.length;i++){var box=boxes[i],d=box.querySelector(".ccup-scroll-btn");` +
@@ -1897,7 +1996,7 @@ function jumpMsgBuild(c: string): string | undefined {
     // the full stacking rationale; matched by the menuPopup_ class substring.
     `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-nav-btn[data-show]{opacity:0;pointer-events:none}` +
     (perm && preq ? BTN_HOST_CSS : "") +
-    undimCss(chat) +
+    dimCss(chat, preq) +
     HOVER_TIP_CSS;
   // Chevron up / down (no stem), distinct from the scroll button's stemmed arrow;
   // single-quoted attributes embed in the double-quoted JS strings below unescaped.
@@ -3576,6 +3675,49 @@ function toggleByFile(): Map<string, TogglePoint[]> {
   return m;
 }
 
+// ---------------------------------------------------------------------------
+// Always-on fixes: edits the patch writes unconditionally, with no setting
+// behind them. Reserved for spots where the native UI simply omits something it
+// applies everywhere else, so there is no native behavior worth preserving as an
+// option and a knob would only be noise. They ride the same analyze / apply /
+// restore / reload-cue machinery as the toggles but read no configuration:
+// applying always writes the current line, restoring always strips it, and the
+// panel shows no row for them. Their one user-visible consequence is that an
+// install with every setting left at its default still patches the bundle (and
+// so still asks for the one reload), where before it would leave it untouched.
+// ---------------------------------------------------------------------------
+interface AlwaysPoint {
+  id: string;
+  label: string;
+  file: string; // path relative to the install dir
+  marker: string;
+  // The full marked line for this bundle, or undefined when the anchor is gone
+  // (a drifted build: this fix is skipped, everything else still applies).
+  // Deterministic given the file content, so equality against the on-disk line
+  // doubles as the staleness check across Claude Code versions.
+  build: (c: string) => string | undefined;
+}
+
+const ALWAYS_POINTS: AlwaysPoint[] = [
+  {
+    id: "permRing",
+    label: "permission focus ring",
+    file: "webview/index.css",
+    marker: PERM_RING_MARKER,
+    build: permRingBuild,
+  },
+];
+
+// The on-disk state of one always-on fix, for the reload-cue comparison:
+// its marked line, "off" when absent, undefined when the file is unreadable.
+function alwaysStateStr(
+  c: string | undefined,
+  a: AlwaysPoint,
+): string | undefined {
+  if (c === undefined) return undefined;
+  return cssMarkedLine(c, a.marker) ?? "off";
+}
+
 // Build the diff-card gutter-cleanup rule, scoped to the diff container whose
 // CSS-module hash is read from the stylesheet (undefined if the anchor is gone,
 // so a future build fails gracefully: line numbers still show, just not cleaned).
@@ -3605,7 +3747,12 @@ function diffLinesCssBuild(css: string): string | undefined {
 
 // Append (or replace) a single marker-tagged line in a CSS file, and its inverse.
 // String-based (not regex) so a marker containing /* */ needs no escaping.
+// A line that already reads exactly right is left where it sits: several marked
+// lines can share one stylesheet, and a strip-and-re-append would rotate their
+// order on every pass, so identical settings would keep producing different
+// bytes (and a spurious "changed" entry each time).
 function cssApplyLine(css: string, marker: string, line: string): string {
+  if (cssMarkedLine(css, marker) === line) return css;
   const stripped = cssRemoveLine(css, marker);
   return `${stripped}\n${line}`;
 }
@@ -4647,6 +4794,30 @@ export function analyzeToggles(
   });
 }
 
+// Always-on fixes have no setting to disagree with, so there is no "custom":
+// "current" = this bundle's line is in place, "stock" = it is absent or stale
+// (including a leftover line whose anchor is now gone, which apply strips),
+// "missing" = the file is unreadable.
+export type AlwaysStatus = "current" | "stock" | "missing";
+export interface AlwaysState {
+  id: string;
+  label: string;
+  status: AlwaysStatus;
+}
+
+export function analyzeAlways(ext: ClaudeExt): AlwaysState[] {
+  return ALWAYS_POINTS.map((a): AlwaysState => {
+    const base = { id: a.id, label: a.label };
+    const c = readFileSafe(ext, a.file);
+    if (c === undefined) return { ...base, status: "missing" };
+    const want = a.build(c);
+    const cur = cssMarkedLine(c, a.marker);
+    if (want === undefined)
+      return { ...base, status: cur === undefined ? "missing" : "stock" };
+    return { ...base, status: cur === want ? "current" : "stock" };
+  });
+}
+
 export type InjectStatus = "current" | "stock" | "custom" | "missing";
 export interface InjectState {
   id: string;
@@ -4793,6 +4964,19 @@ export function applyPatch(
         changed.push(`${t.label} css ${wantOn ? "applied" : "native"}`);
       }
     }
+    // No setting to consult: write the line this bundle wants, or strip a stale
+    // one whose anchor is gone. Skipping the equal case avoids re-appending an
+    // already-correct line, which would shuffle it past the other marked lines.
+    for (const a of ALWAYS_POINTS) {
+      if (a.file !== file) continue;
+      const want = a.build(out);
+      if (cssMarkedLine(out, a.marker) === want) continue;
+      out =
+        want === undefined
+          ? cssRemoveLine(out, a.marker)
+          : cssApplyLine(out, a.marker, want);
+      changed.push(`${a.label} ${want === undefined ? "native" : "applied"}`);
+    }
     if (out !== content) writeFileAtomic(abs, out);
   }
   // Math rendering ships webfont FILES alongside the bundle edits: keep them in
@@ -4811,6 +4995,7 @@ function allPatchedFiles(): Set<string> {
     if (t.cssFile) files.add(t.cssFile);
   }
   for (const ip of INJECT_POINTS) files.add(ip.file);
+  for (const a of ALWAYS_POINTS) files.add(a.file);
   return files;
 }
 
@@ -4864,6 +5049,14 @@ export function restorePatch(
         changed.push(`${t.label} css restored`);
       }
     }
+    for (const a of ALWAYS_POINTS) {
+      if (a.file !== file) continue;
+      const next = cssRemoveLine(out, a.marker);
+      if (next !== out) {
+        out = next;
+        changed.push(`${a.label} restored`);
+      }
+    }
     if (out !== content) writeFileAtomic(abs, out);
   }
   syncMathFonts(ext, false, changed);
@@ -4905,6 +5098,7 @@ export class Patcher {
   private states: PointState[] = [];
   private toggleStates: ToggleState[] = [];
   private injectStates: InjectState[] = [];
+  private alwaysStates: AlwaysState[] = [];
   private stockCapture: StockCapture = {};
   private pendingReload = new Set<string>(); // point IDs written but not reloaded
   private activationPx = new Map<string, string | undefined>(); // on-disk px at activation
@@ -4926,7 +5120,11 @@ export class Patcher {
       this.ext &&
       (this.states.some(drifted) ||
         this.toggleStates.some(drifted) ||
-        this.injectStates.some(drifted))
+        this.injectStates.some(drifted) ||
+        // Always-on fixes have no setting, so a fresh or updated bundle is
+        // "stock" here even when every knob is native: this is what makes them
+        // apply (and prompt the reload) without the user asking for anything.
+        this.alwaysStates.some(drifted))
     ) {
       void this.autoApply({
         updated:
@@ -5070,7 +5268,12 @@ export class Patcher {
     const allCurrent =
       presentSizes.every((s) => s.status === "current") &&
       presentToggles.every((s) => s.status === "current") &&
-      presentInjects.every((s) => s.status === "current");
+      presentInjects.every((s) => s.status === "current") &&
+      // No row of their own, but a missing always-on fix still leaves the
+      // bundle out of sync, so the panel should offer to apply.
+      this.alwaysStates.every(
+        (s) => s.status === "current" || s.status === "missing",
+      );
     return {
       available: true,
       supported: anyPresent,
@@ -5092,11 +5295,13 @@ export class Patcher {
       this.states = analyze(this.ext, readSizes(), this.stockCapture);
       this.toggleStates = analyzeToggles(this.ext, readToggles());
       this.injectStates = analyzeInjects(this.ext);
+      this.alwaysStates = analyzeAlways(this.ext);
       if (this.activationPx.size === 0) this.captureActivationPx();
     } else {
       this.states = [];
       this.toggleStates = [];
       this.injectStates = [];
+      this.alwaysStates = [];
     }
     this.emitter.fire();
   }
@@ -5120,6 +5325,9 @@ export class Patcher {
     }
     for (const ip of INJECT_POINTS) {
       this.activationPx.set(ip.id, injectStateStr(read(ip.file), ip));
+    }
+    for (const a of ALWAYS_POINTS) {
+      this.activationPx.set(a.id, alwaysStateStr(read(a.file), a));
     }
   }
 
@@ -5200,6 +5408,9 @@ export class Patcher {
     }
     for (const ip of INJECT_POINTS) {
       reconcile(ip.id, injectStateStr(read(ip.file), ip));
+    }
+    for (const a of ALWAYS_POINTS) {
+      reconcile(a.id, alwaysStateStr(read(a.file), a));
     }
   }
 

@@ -145,12 +145,12 @@
         "claudeCodeUiPatch.chatScrollToBottomDot": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show a button above the chat input box's top-right corner that scrolls to the latest message; it dims when already at the bottom, and sits on the permission/question box when one replaces the input box. While on, an incoming permission request scrolls the history to the bottom only if it is already there. With `#claudeCodeUiPatch.chatJumpToMessageButtons#` on, the jump buttons line up on its left."
+          "markdownDescription": "Show a button above the chat input box's top-right corner that scrolls to the latest message; it dims when already at the bottom, and sits on the permission/question box when one replaces the input box. While on, an incoming permission or question box scrolls the history to the bottom only if it is already there, and follows the box as it settles; the box dims the history unless the find bar is open. With `#claudeCodeUiPatch.chatJumpToMessageButtons#` on, the jump buttons line up on its left."
         },
         "claudeCodeUiPatch.chatJumpToMessageButtons": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show previous/next buttons above the chat input box's top-right corner that jump between turns (each user message pins to the top as a sticky header). A direction with nowhere to go dims, and the pair sits on the permission/question box when one replaces the input box. With `#claudeCodeUiPatch.chatScrollToBottomDot#` on, the pair lines up on its left."
+          "markdownDescription": "Show previous/next buttons above the chat input box's top-right corner that jump between turns (each user message pins to the top as a sticky header). A direction with nowhere to go dims, and the pair sits on the permission/question box when one replaces the input box, which dims the history unless the find bar is open. With `#claudeCodeUiPatch.chatScrollToBottomDot#` on, the pair lines up on its left."
         },
         "claudeCodeUiPatch.chatInputCtrlUpDownToHistory": {
           "type": "boolean",

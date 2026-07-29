@@ -2,6 +2,12 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.3.8
+
+- With diff card line numbers on, an Edit card now relabels its gutter with the file's real line numbers the moment the edit's result lands, instead of rebuilding the whole diff about a second later.
+  The rebuild re-tokenized both sides and recomputed the diff from scratch, so the numbers arrived with a visible redraw that stuttered the rest of the UI, typing included.
+- Diff card line numbers no longer hold a second copy of every tool result (whole files read, whole command outputs) for the life of the window, and no longer re-scan the edited file on every render of the card.
+
 ## 1.3.7
 
 - The focused permission or question box now gets the same soft ring as the chat input box, tinted with its own border color; natively only the border color changes.

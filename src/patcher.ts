@@ -341,20 +341,38 @@ const DIFF_CONTAINER_HASH_RE = /\.diffEditorContainer_([-\w]+)\{/g;
 //    webview's store then drops the field while pairing result blocks to their
 //    tool_use (setToolResult stores only the content block). Six marked inline
 //    insertions carry it through:
-//      tur   store loop: stash the message's tool_use_result on the stored
-//            block (block.ccupTur) so the card's result param can see it
-//      prop  Edit-card body: derive the 1-based start line as the line of
-//            oldString within originalFile (index of the unique match; the text
-//            above an edit is untouched, so the SAME number is correct for both
-//            panes) and pass it to the diff component as ccupStart
+//      tur   store loop: derive the 1-based start line right here, as the line
+//            of oldString within originalFile (index of the unique match; the
+//            text above an edit is untouched, so the SAME number is correct for
+//            both panes), and stash only that number on the stored block
+//            (block.ccupStart). Deriving at pairing time instead of in the card
+//            body keeps a file-sized indexOf plus newline count off every
+//            render, and leaves the result payload collectable: stashing the
+//            object itself pinned originalFile and structuredPatch for EVERY
+//            tool result of the session (a Read's whole file, a Bash's whole
+//            output) for as long as the window lived. oldString falls back to
+//            the paired tool_use's own input.old_string, the same text the CLI
+//            echoes back.
+//      prop  Edit-card body: pass the stashed number to the diff component as
+//            ccupStart
 //      arg   diff component: accept ccupStart in the props destructure
-//      card  models effect: after setModel, push the offset into Monaco via
-//            updateOptions (diff-level options persist in the option bag and
-//            re-derive onto both panes across renderSideBySide flips), also
-//            widening lineNumbersMinChars to the digits of the largest rendered
-//            number (Monaco's own width formula only counts the model's line
-//            count, which would clip e.g. "1403" on a 3-line snippet); ccupStart
-//            joins the effect deps so the late-arriving result re-applies it
+//      fx    diff component: a SEPARATE effect, declared right after the models
+//            effect so React still runs it second on mount, pushing the offset
+//            into Monaco via updateOptions (diff-level options persist in the
+//            option bag and re-derive onto both panes across renderSideBySide
+//            flips), also widening lineNumbersMinChars to the digits of the
+//            largest rendered number (Monaco's own width formula only counts the
+//            model's line count, which would clip e.g. "1403" on a 3-line
+//            snippet). It keys on [ccupStart, original, modified] rather than
+//            joining the models effect's own deps. Widening those deps was what
+//            an earlier build did, and it made the late-arriving result re-run
+//            the entire models effect: a language-probe model created and
+//            disposed, setValue on both models, then setModel, which re-tokenizes
+//            both sides and hands Monaco a fresh async worker diff. The gutter
+//            relabel came out as a full diff re-init about a second after the
+//            card first drew, and the burst of Monaco DOM churn stuttered
+//            whatever else was on the main thread. Its own effect updates the
+//            options and nothing else.
 //      mprop expand modal: forward ccupStart through the openModal call
 //      modal modal models effect: same updateOptions from the modal state
 //    plus one marked helper line appended at EOF (window.__ccupAbsLn) shared by
@@ -396,7 +414,9 @@ const DIFF_CONTAINER_HASH_RE = /\.diffEditorContainer_([-\w]+)\{/g;
 // (an older patch layout reads as off and upgrades in place on the next apply).
 // The anchors capture the build's minified identifiers and cross-check them
 // against each other (same component, same destructured names in the deps and
-// the modal call); if ANY anchor or cross-check fails, the enhancement is
+// the modal call, useEffect alias read from the editor-creation effect a short
+// hop above the models effect it is spliced after); if ANY anchor or
+// cross-check fails, the enhancement is
 // skipped as a block and ON degrades to the base swap alone, so a partial
 // application can never reference an identifier another edit failed to
 // introduce. Injected names are ccup-prefixed to dodge minified locals, and
@@ -449,12 +469,23 @@ const ABS_LN_ARG_RE =
 // card: the card's models effect, setModel followed by a FOUR-dep array (the
 // modal's twin has one dep, so the arity disambiguates; captures: 1=editor ref,
 // 2=setModel chunk, 3=models ref, 4..7=deps original/modified/language/
-// filePath). The editor ref is read through a lookbehind so the pattern proper
-// starts at a literal: a leading (\w+) has no fixed head for the regex engine
-// to skip-scan with and costs ~80ms per pass over the ~5MB bundle (~3ms this
-// way), which the toggle round-trip pays several times.
+// filePath). The fx fragment is spliced in after this effect's closing `])`.
+// The editor ref is read through a lookbehind so the pattern proper starts at a
+// literal: a leading (\w+) has no fixed head for the regex engine to skip-scan
+// with and costs ~80ms per pass over the ~5MB bundle (~3ms this way), which the
+// toggle round-trip pays several times.
 const ABS_LN_CARD_FX_RE =
   /(?<=(\w+))(\.current\.setModel\(\{original:(\w+)\.current\.original,modified:\3\.current\.modified\}\))\},\[(\w+),(\w+),(\w+),(\w+)\]\)/g;
+
+// use: the diff component's editor-creation effect, read only for the build's
+// useEffect alias, which the fx fragment needs to declare an effect of its own
+// (captures: 1=useEffect, 2=container ref). Same lookbehind trick as above so
+// the pattern proper starts at the literal `.createDiffEditor(`. This anchor
+// sits a couple of thousand bytes above the models effect in the same
+// component, which absLnThread checks by distance.
+const ABS_LN_USEEFFECT_RE =
+  /(?<=(\w+)\(\(\)=>\{if\(!(\w+)\.current\)return;let (\w+)=(\w+))\.createDiffEditor\(/g;
+const ABS_LN_USEEFFECT_MAX_GAP = 4000;
 
 // mprop: the card's expand click, openModal({original,modified,language,
 // filePath}) (captures: 2=openModal, 3=original, 4=modified).
@@ -511,9 +542,18 @@ function absLnThread(c: string): string {
   const mProp = absLnExec(ABS_LN_PROP_RE, c);
   const mArg = absLnExec(ABS_LN_ARG_RE, c);
   const mCardFx = absLnExec(ABS_LN_CARD_FX_RE, c);
+  const mUse = absLnExec(ABS_LN_USEEFFECT_RE, c);
   const mModalProp = absLnExec(ABS_LN_MODAL_PROP_RE, c);
   const mModalFx = absLnExec(ABS_LN_MODAL_FX_RE, c);
-  if (!mTur || !mProp || !mArg || !mCardFx || !mModalProp || !mModalFx) {
+  if (
+    !mTur ||
+    !mProp ||
+    !mArg ||
+    !mCardFx ||
+    !mUse ||
+    !mModalProp ||
+    !mModalFx
+  ) {
     return c;
   }
   if (
@@ -521,34 +561,39 @@ function absLnThread(c: string): string {
     mCardFx[4] !== mArg[3] || // effect deps are the destructured strings
     mCardFx[5] !== mArg[4] ||
     mModalProp[3] !== mArg[3] || // the modal receives those same strings
-    mModalProp[4] !== mArg[4]
+    mModalProp[4] !== mArg[4] ||
+    // the useEffect alias comes from this component's own create effect
+    mUse.index >= mCardFx.index ||
+    mCardFx.index - mUse.index > ABS_LN_USEEFFECT_MAX_GAP
   ) {
     return c;
   }
   let out = c;
   out = out.replace(
     ABS_LN_TUR_RE,
-    (_w, head, blk, msg, _wrap, _find, _list, tail) => {
+    (_w, head, blk, msg, wrap, _find, _list, tail) => {
       const stash =
-        `try{if(${msg}.tool_use_result&&typeof ${msg}.tool_use_result==="object")` +
-        `${blk}.ccupTur=${msg}.tool_use_result}catch(ccupE){}`;
+        `try{var ccupR=${msg}.tool_use_result;` +
+        'if(ccupR&&typeof ccupR==="object"&&!ccupR.replaceAll&&' +
+        'typeof ccupR.originalFile==="string"){' +
+        'var ccupQ=typeof ccupR.oldString==="string"&&ccupR.oldString?' +
+        `ccupR.oldString:(${wrap}&&${wrap}.content&&${wrap}.content.input&&` +
+        `${wrap}.content.input.old_string);` +
+        "if(ccupQ){var ccupX=ccupR.originalFile.indexOf(ccupQ);" +
+        "if(ccupX>=0){var ccupN=1,ccupP=0;" +
+        'while((ccupP=ccupR.originalFile.indexOf("\\n",ccupP))>=0&&ccupP<ccupX)' +
+        "{ccupN++;ccupP++}" +
+        `${blk}.ccupStart=ccupN}}}}catch(ccupE){}`;
       return `${head}${absLnFrag("tur", stash)}${tail}`;
     },
   );
   out = out.replace(
     ABS_LN_PROP_RE,
-    (_w, head, _ctx, input, result, _jsx, _comp, tail) => {
-      const start =
-        ",ccupStart:(function(R,q){try{" +
-        'if(R&&!R.replaceAll&&typeof R.originalFile==="string"&&q){' +
-        "var ix=R.originalFile.indexOf(q);" +
-        'if(ix>=0)return R.originalFile.slice(0,ix).split("\\n").length}' +
-        "}catch(ccupE){}})" +
-        `(${result}&&${result}.ccupTur,` +
-        `(${result}&&${result}.ccupTur&&typeof ${result}.ccupTur.oldString==="string"` +
-        `?${result}.ccupTur.oldString:${input}.old_string)||"")`;
-      return `${head}${absLnFrag("prop", start)}${tail}`;
-    },
+    (_w, head, _ctx, _input, result, _jsx, _comp, tail) =>
+      `${head}${absLnFrag(
+        "prop",
+        `,ccupStart:(${result}&&${result}.ccupStart)`,
+      )}${tail}`,
   );
   out = out.replace(
     ABS_LN_ARG_RE,
@@ -558,10 +603,12 @@ function absLnThread(c: string): string {
   out = out.replace(
     ABS_LN_CARD_FX_RE,
     (_w, ref, set, _models, d1, d2, d3, d4) =>
-      `${set}${absLnFrag(
-        "card",
-        `;window.__ccupAbsLn&&window.__ccupAbsLn(${ref}.current,ccupS,${d1},${d2})`,
-      )}},[${d1},${d2},${d3},${d4}${absLnFrag("dep", ",ccupS")}])`,
+      `${set}},[${d1},${d2},${d3},${d4}])${absLnFrag(
+        "fx",
+        `;${mUse[1]}(()=>{window.__ccupAbsLn&&` +
+          `window.__ccupAbsLn(${ref}.current,ccupS,${d1},${d2})},` +
+          `[ccupS,${d1},${d2}])`,
+      )}`,
   );
   out = out.replace(
     ABS_LN_MODAL_PROP_RE,

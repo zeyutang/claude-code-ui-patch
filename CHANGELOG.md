@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.3.9
+
+- With the scroll-to-bottom or previous/next buttons on, the chat input no longer stutters when something opens, filters, or closes inside it, such as the `@` file picker or the slash-command menu narrowing its list as you type.
+  The rule that dimmed history under a permission or question box was re-styling the whole transcript on each of those, which grew with the conversation: measured at 3ms over 40 messages and 10ms over 150.
+
 ## 1.3.8
 
 - With diff card line numbers on, an Edit card now relabels its gutter with the file's real line numbers the moment the edit's result lands, instead of rebuilding the whole diff about a second later.

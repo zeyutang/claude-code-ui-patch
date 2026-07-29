@@ -1654,6 +1654,12 @@ const HOVER_TIP_JS =
 // and dies with the popup. Both permission hashes are read from the bundle's
 // class maps at patch time; if either is gone hosts() degrades to the input
 // boxes alone (the popups just lose the buttons) instead of failing the toggle.
+// The same pass syncs the ccup-dim marker onto the messages container, since the
+// card query that drives it is already in hand here (see dimCss for what the
+// marker replaced and why). Unlike ccup-btn-host it has to come off again, the
+// container outliving the popup, so it is toggled both ways, each direction
+// guarded by a contains() check so the observers see one mutation per
+// transition. It reads the container through sc(), which both callers declare.
 const PERM_WRAP_HASH_RE =
   /permissionsContainer:"permissionsContainer_([-\w]+)"/;
 const PERM_REQ_HASH_RE =
@@ -1670,7 +1676,11 @@ function btnHostsJs(
     `function hosts(){${base},p=document.querySelectorAll(".permissionRequestContainer_${preq}");` +
     `for(var i=0;i<p.length;i++){var w=p[i].closest(".permissionsContainer_${perm}");` +
     `if(w){if(!w.classList.contains("ccup-btn-host"))w.classList.add("ccup-btn-host");` +
-    `if(a.indexOf(w)<0)a.push(w)}}return a}`
+    `if(a.indexOf(w)<0)a.push(w)}}` +
+    `var m=sc();if(m){var dm=m.classList.contains("${DIM_CLASS}");` +
+    `if(p.length&&!dm)m.classList.add("${DIM_CLASS}");` +
+    `else if(!p.length&&dm)m.classList.remove("${DIM_CLASS}")}` +
+    `return a}`
   );
 }
 
@@ -1685,30 +1695,43 @@ function btnHostsJs(
 //   cover  dim for AskUserQuestion too. Native applies .dimmed only when
 //          toolName !== "AskUserQuestion", so a question box leaves the
 //          transcript at full brightness; this reinstates the same 0.4 /
-//          bright-pending-turn treatment for it. The popup card is matched
-//          through the messages container's FOLLOWING sibling (the absolutely
-//          positioned input wrapper the card mounts into), which keeps the
-//          :has() scan off the transcript subtree: a descendant-scoped :has()
-//          on a common ancestor would re-run on every streaming mutation.
+//          bright-pending-turn treatment for it. A pending popup is marked by
+//          the ccup-dim class, which hosts() syncs onto the messages container
+//          in the rAF pass both buttons already run (see btnHostsJs).
 //   lift   while the bar is open, restore full opacity, over both the native dim
-//          and the rule above. Each lift is the dim selector it answers with a
-//          body:has() prefix, so it always wins on specificity, and it carries
-//          !important as a belt-and-suspenders; with no popup up neither matches,
-//          so both are inert in normal chat.
-// The bar is a direct child of <body> (see the find-bar engine), so the lifts
-// test it with the cheap child form; when the find-bar toggle is OFF the element
-// never exists and the dim simply always applies.
+//          and the rule above. Each lift is the dim selector it answers under a
+//          body.ccup-find-open prefix, which the bar's open/close paths set and
+//          clear, and it carries !important so it beats the native dim whatever
+//          the specificity works out to; with no popup up neither matches, so
+//          both are inert in normal chat.
+//
+// Both markers used to be :has() tests, the popup one reaching the card through
+// the messages container's FOLLOWING sibling (the input wrapper it mounts into)
+// and the bar one testing body for its child. Neither scans the transcript, but
+// that is not where the cost was. Because the :has() SUBJECT is an ancestor of
+// everything the rule paints, Blink re-runs the whole subject subtree's style
+// whenever a node is added or removed inside the scope it watches, and for the
+// popup rule that scope is the composer. A menu filtering its rows as you type,
+// a mention chip appearing, a file chip, clearing the box: each one cost a style
+// recalc of the entire transcript, measured at 3.2ms over 40 messages and 10ms
+// over 150 in headless Chrome, against 0ms for the class form. Plain typing
+// escapes it (character edits mutate text data, which Blink filters out), which
+// is why it read as an intermittent stutter rather than constant drag. Classes
+// invalidate only when they actually change, which is on popup and bar
+// transitions, so the same rules now cost nothing between them.
+//
 // dimmed, highlightedMessage, and inputContainer co-locate with
 // messagesContainer in the one chat CSS module, so they share its hash; the
 // popup card carries its own. If a future build splits either the rules stop
 // matching and the native dim returns unchanged; a missing card hash drops the
 // question half alone (questions go back to native, permissions still dim).
-const FIND_BAR_OPEN = "body:has(>.ccup-find-bar[data-open])";
+const FIND_BAR_OPEN = "body.ccup-find-open";
+const DIM_CLASS = "ccup-dim";
 function dimCss(chat: string, preq: string | undefined): string {
   const rest = `>:not(.highlightedMessage_${chat})`;
   const dimmed = `.messagesContainer_${chat}.dimmed_${chat}${rest}`;
   const asked = preq
-    ? `.messagesContainer_${chat}:has(~ .inputContainer_${chat} .permissionRequestContainer_${preq})${rest}`
+    ? `.messagesContainer_${chat}.${DIM_CLASS}${rest}`
     : undefined;
   const cover = asked ? `${asked}{opacity:.4}` : "";
   const lifts = [dimmed, ...(asked ? [asked] : [])]
@@ -3149,6 +3172,10 @@ function ccupFindBarWebview(): void {
       if (!isOpen()) {
         lastFocus = doc.activeElement;
         bar.setAttribute("data-open", "");
+        // Mirrored onto <body> for the button toggles' dim lift, which needs an
+        // "is the bar open" test that costs nothing between transitions (see
+        // dimCss). Harmless when those toggles are off: nothing reads the class.
+        doc.body.classList.add("ccup-find-open");
       }
       let sel = "";
       try {
@@ -3165,6 +3192,7 @@ function ccupFindBarWebview(): void {
     const closeBar = (): void => {
       if (!isOpen()) return;
       bar.removeAttribute("data-open");
+      doc.body.classList.remove("ccup-find-open");
       hideTip();
       try {
         g.CSS.highlights.delete("ccup-find");

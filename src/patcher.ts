@@ -363,16 +363,12 @@ const DIFF_CONTAINER_HASH_RE = /\.diffEditorContainer_([-\w]+)\{/g;
 //            flips), also widening lineNumbersMinChars to the digits of the
 //            largest rendered number (Monaco's own width formula only counts the
 //            model's line count, which would clip e.g. "1403" on a 3-line
-//            snippet). It keys on [ccupStart, original, modified] rather than
-//            joining the models effect's own deps. Widening those deps was what
-//            an earlier build did, and it made the late-arriving result re-run
-//            the entire models effect: a language-probe model created and
-//            disposed, setValue on both models, then setModel, which re-tokenizes
-//            both sides and hands Monaco a fresh async worker diff. The gutter
-//            relabel came out as a full diff re-init about a second after the
-//            card first drew, and the burst of Monaco DOM churn stuttered
-//            whatever else was on the main thread. Its own effect updates the
-//            options and nothing else.
+//            snippet). It must key on [ccupStart, original, modified] and not
+//            join the models effect's own deps: widening those makes the
+//            late-arriving result re-run that whole effect (language-probe model
+//            created and disposed, setValue on both models, setModel), which
+//            re-tokenizes both sides and asks Monaco for a fresh worker diff, so
+//            the relabel lands as a full diff re-init.
 //      mprop expand modal: forward ccupStart through the openModal call
 //      modal modal models effect: same updateOptions from the modal state
 //    plus one marked helper line appended at EOF (window.__ccupAbsLn) shared by
@@ -439,14 +435,23 @@ const ABS_LN_HELPER_LINE_RE = /\n?\/\*ccup:absLnHelper\*\/[^\n]*/g;
 // off = the 1-based file line of the snippet's first line (>0), else fall back
 // to the base options. a/b = the two model strings, whose longer line count
 // bounds the largest rendered number for the minChars width.
+//
+// The pair in force is remembered on the editor so a call that would change
+// nothing returns without touching Monaco, seeded with the pair createDiffEditor
+// already set up ("on" at minChars 1) so a card that never receives an offset
+// makes no options call at all. That memory is also what keeps the reset to
+// plain 1-based numbering working in the expand modal, whose one editor is
+// reused across cards.
 const ABS_LN_HELPER =
   ABS_LN_HELPER_MARKER +
-  "(function(){try{window.__ccupAbsLn=function(ed,off,a,b){try{var o;" +
+  "(function(){try{window.__ccupAbsLn=function(ed,off,a,b){try{var o,W=1;" +
   'if(typeof off==="number"&&isFinite(off)&&off>0){' +
-  'var L=Math.max(String(a==null?"":a).split("\\n").length,String(b==null?"":b).split("\\n").length),' +
-  "W=String(off+L-1).length;" +
-  "o={lineNumbers:function(n){return String(n+off-1)},lineNumbersMinChars:W>1?W:1}}" +
-  'else o={lineNumbers:"on",lineNumbersMinChars:1};' +
+  'var L=Math.max(String(a==null?"":a).split("\\n").length,String(b==null?"":b).split("\\n").length);' +
+  "W=String(off+L-1).length;if(W<1)W=1}else off=0;" +
+  "var P=ed.__ccupLn||{o:0,w:1};if(P.o===off&&P.w===W)return;" +
+  "ed.__ccupLn={o:off,w:W};" +
+  "o=off?{lineNumbers:function(n){return String(n+off-1)},lineNumbersMinChars:W}" +
+  ':{lineNumbers:"on",lineNumbersMinChars:1};' +
   "ed.updateOptions(o)}catch(e){}}}catch(e){}})();";
 
 // tur: the webview store's result-pairing loop, `for(let o of t.message.content)
@@ -1705,20 +1710,12 @@ function btnHostsJs(
 //          the specificity works out to; with no popup up neither matches, so
 //          both are inert in normal chat.
 //
-// Both markers used to be :has() tests, the popup one reaching the card through
-// the messages container's FOLLOWING sibling (the input wrapper it mounts into)
-// and the bar one testing body for its child. Neither scans the transcript, but
-// that is not where the cost was. Because the :has() SUBJECT is an ancestor of
-// everything the rule paints, Blink re-runs the whole subject subtree's style
-// whenever a node is added or removed inside the scope it watches, and for the
-// popup rule that scope is the composer. A menu filtering its rows as you type,
-// a mention chip appearing, a file chip, clearing the box: each one cost a style
-// recalc of the entire transcript, measured at 3.2ms over 40 messages and 10ms
-// over 150 in headless Chrome, against 0ms for the class form. Plain typing
-// escapes it (character edits mutate text data, which Blink filters out), which
-// is why it read as an intermittent stutter rather than constant drag. Classes
-// invalidate only when they actually change, which is on popup and bar
-// transitions, so the same rules now cost nothing between them.
+// Both markers must stay classes rather than the :has() tests they replaced.
+// When the :has() subject is an ancestor of everything the rule paints, Blink
+// re-runs the whole subject subtree's style on any node added or removed inside
+// the scope the test watches, and for the popup marker that scope was the
+// composer, so every menu row, mention chip and box clear re-styled the entire
+// transcript. A class invalidates only when it changes.
 //
 // dimmed, highlightedMessage, and inputContainer co-locate with
 // messagesContainer in the one chat CSS module, so they share its hash; the

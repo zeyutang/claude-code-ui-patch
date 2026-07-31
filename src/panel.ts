@@ -184,14 +184,18 @@ ${csp}
   <div class="version-line">Patching: <span class="version-value">Claude Code v${snap.version}</span></div>
   <div class="header-status">${statusInner(snap)}</div>
   <hr class="divider">
+  <div class="layout">
+    <div class="col col-controls">
 ${sections}
-${preview}  <hr class="divider">
-  <div class="actions">
-    <button class="btn btn-green${snap.needsReload ? "" : " quiet"}" data-cmd="discard" title="Revert to the values on disk at the last window reload">Restore Last Applied</button>
-    <button class="btn btn-red" data-cmd="restore" title="Reset every setting to Claude Code's native values">Factory Reset</button>
-  </div>
-  <a class="link" data-cmd="openSettings">&#9881; Open Settings</a>
-  <a class="link link-reload${snap.needsReload ? " link-reload-pending" : ""}" data-cmd="reload">&#8635; Reload Window</a>
+      <hr class="divider">
+      <div class="actions">
+        <button class="btn btn-green${snap.needsReload ? "" : " quiet"}" data-cmd="discard" title="Revert to the values on disk at the last window reload">Restore Last Applied</button>
+        <button class="btn btn-red" data-cmd="restore" title="Reset every setting to Claude Code's native values">Factory Reset</button>
+      </div>
+      <a class="link" data-cmd="openSettings">&#9881; Open Settings</a>
+      <a class="link link-reload${snap.needsReload ? " link-reload-pending" : ""}" data-cmd="reload">&#8635; Reload Window</a>
+    </div>
+${preview}  </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const pending = {}; // knob id -> last optimistic value we sent (ignore stale echoes until it matches)
@@ -206,9 +210,14 @@ ${preview}  <hr class="divider">
 
     // Live preview: style the sample DOM from the effective values. A null
     // family means native, so we clear the inline family and let the element's
-    // CSS rule (a --vscode-*-font-family var) take over.
+    // CSS rule (a --vscode-*-font-family var) take over. Rendered sizes are
+    // magnified by PV_SCALE for legibility (ratios preserved); captions read out
+    // the true configured px.
     const initialPreview = ${initialPreview};
-    function pvPx(n) { return (Math.round(n * 100) / 100) + 'px'; }
+    const PV_SCALE = 1.5;
+    function pvNum(n) { return Math.round(n * 100) / 100; }
+    function pvTrue(n) { return pvNum(n) + 'px'; }
+    function pvRender(n) { return pvNum(n * PV_SCALE) + 'px'; }
     function pvFam(f) { return f || ''; }
     function pvLabel(f) { return f ? f : 'native'; }
     function pvSetVal(key, text) {
@@ -217,13 +226,14 @@ ${preview}  <hr class="divider">
     }
     function pvStyle(sel, sizePx, family) {
       document.querySelectorAll(sel).forEach(function (el) {
-        if (sizePx != null) el.style.fontSize = pvPx(sizePx);
+        if (sizePx != null) el.style.fontSize = pvRender(sizePx);
         el.style.fontFamily = pvFam(family);
       });
     }
     function applyPreview(p) {
       if (!p) return;
       const c = p.chat, pl = p.plan;
+      // Chat surface.
       pvStyle('.pv-agent-text', c.agentSizePx, c.agentFamily);
       // Paragraph gaps are em-relative, so they track the agent size just like
       // the native rule; the first block keeps a zero top margin.
@@ -231,17 +241,23 @@ ${preview}  <hr class="divider">
         pp.style.marginTop = i === 0 ? '0' : ('calc(0.1em * ' + c.paraSpacing + ')');
         pp.style.marginBottom = 'calc(0.2em * ' + c.paraSpacing + ')';
       });
+      pvStyle('.pv-chat-inline-ctx', c.agentSizePx, c.agentFamily); // prose around the token
       pvStyle('.pv-chat-inline', c.codeInlineSizePx, c.codeFamily);
       pvStyle('.pv-chat-code', c.codeBlockSizePx, c.codeFamily);
       pvStyle('.pv-user-text', c.userSizePx, c.userFamily);
+      // Plan surface.
       pvStyle('.pv-plan-text', pl.textSizePx, pl.textFamily);
+      pvStyle('.pv-plan-inline-ctx', pl.textSizePx, pl.textFamily);
       pvStyle('.pv-plan-inline', pl.codeInlineSizePx, pl.codeFamily);
       pvStyle('.pv-plan-code', pl.codeBlockSizePx, pl.codeFamily);
-      pvSetVal('chatAgent', pvPx(c.agentSizePx) + ' · ' + pvLabel(c.agentFamily) + ' · spacing ' + c.paraSpacing + '×');
-      pvSetVal('chatCode', 'block ' + pvPx(c.codeBlockSizePx) + ' · inline ' + pvPx(c.codeInlineSizePx) + ' · ' + pvLabel(c.codeFamily));
-      pvSetVal('chatUser', pvPx(c.userSizePx) + ' · ' + pvLabel(c.userFamily));
-      pvSetVal('planText', pvPx(pl.textSizePx) + ' · ' + pvLabel(pl.textFamily));
-      pvSetVal('planCode', 'block ' + pvPx(pl.codeBlockSizePx) + ' · inline ' + pvPx(pl.codeInlineSizePx) + ' · ' + pvLabel(pl.codeFamily));
+      // Captions: true configured px (unscaled).
+      pvSetVal('chatAgent', pvTrue(c.agentSizePx) + ' · ' + pvLabel(c.agentFamily) + ' · spacing ' + c.paraSpacing + '×');
+      pvSetVal('chatInline', pvTrue(c.codeInlineSizePx) + ' · ' + pvLabel(c.codeFamily));
+      pvSetVal('chatCode', pvTrue(c.codeBlockSizePx) + ' · ' + pvLabel(c.codeFamily));
+      pvSetVal('chatUser', pvTrue(c.userSizePx) + ' · ' + pvLabel(c.userFamily));
+      pvSetVal('planAgent', pvTrue(pl.textSizePx) + ' · ' + pvLabel(pl.textFamily));
+      pvSetVal('planInline', pvTrue(pl.codeInlineSizePx) + ' · ' + pvLabel(pl.codeFamily));
+      pvSetVal('planCode', pvTrue(pl.codeBlockSizePx) + ' · ' + pvLabel(pl.codeFamily));
     }
     applyPreview(initialPreview);
 
@@ -374,35 +390,37 @@ function syncPayload(snap: Snapshot): {
   };
 }
 
-// Static sample markup for the live preview. The webview script sizes and fonts
-// it from the PreviewModel on first paint and on every sync; the values shown in
-// each caption are filled by the same script. Each surface is gated on whether
-// its knob section exists on this Claude Code version. Keep the code samples free
-// of backticks and "${" so they survive this template literal verbatim.
+// Static sample markup for the live-preview column. The webview script sizes and
+// fonts it from the PreviewModel on first paint and on every sync, and fills each
+// caption's value. Inline code and code blocks get separate examples, and the two
+// surfaces are grouped under headings that mirror the control sections; each is
+// gated on whether its knob section exists on this Claude Code version. Keep the
+// code samples free of backticks and "${" so they survive this template literal.
 function previewHtml(hasChat: boolean, hasPlan: boolean): string {
   const chat = hasChat
-    ? `    <div class="pv-block">
+    ? `      <h3>Chat Panel or Tab</h3>
       <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="chatAgent"></span></div>
-      <div class="pv-bubble"><div class="pv-agent-text"><p>Here is what changed: the parser now reads <code class="pv-inline pv-chat-inline">config.json</code> before the first pass.</p><p>Tell me if you want a different split.</p></div></div>
+      <div class="pv-bubble"><div class="pv-agent-text"><p>Here is what changed: the parser now reads the config before the first pass.</p><p>Tell me if you want a different split.</p></div></div>
+      <div class="pv-cap">Inline code <span class="pv-cap-val" data-val="chatInline"></span></div>
+      <div class="pv-bubble"><div class="pv-chat-inline-ctx">Run <code class="pv-inline pv-chat-inline">loadConfig()</code> before the first pass.</div></div>
       <div class="pv-cap">Code block <span class="pv-cap-val" data-val="chatCode"></span></div>
       <pre class="pv-pre pv-chat-code"><code>function greet(name) {\n  return "Hello, " + name;\n}</code></pre>
       <div class="pv-cap">User message <span class="pv-cap-val" data-val="chatUser"></span></div>
-      <div class="pv-bubble pv-user"><div class="pv-user-text">Can you make the parser incremental?</div></div>
-    </div>\n`
+      <div class="pv-bubble pv-user"><div class="pv-user-text">Can you make the parser incremental?</div></div>\n`
     : "";
   const plan = hasPlan
-    ? `    <div class="pv-block">
-      <div class="pv-cap">Plan · agent response <span class="pv-cap-val" data-val="planText"></span></div>
-      <div class="pv-bubble"><div class="pv-plan-text"><p>Step 1. Extract the reader into <code class="pv-inline pv-plan-inline">loadConfig()</code> and cover it with a test.</p></div></div>
-      <div class="pv-cap">Plan · code block <span class="pv-cap-val" data-val="planCode"></span></div>
-      <pre class="pv-pre pv-plan-code"><code>def load_config(path):\n    with open(path) as f:\n        return json.load(f)</code></pre>
-    </div>\n`
+    ? `      <h3>Plan Mode Markdown Preview</h3>
+      <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="planAgent"></span></div>
+      <div class="pv-bubble"><div class="pv-plan-text"><p>Step 1. Extract the reader and cover it with a test.</p></div></div>
+      <div class="pv-cap">Inline code <span class="pv-cap-val" data-val="planInline"></span></div>
+      <div class="pv-bubble"><div class="pv-plan-inline-ctx">Extract the reader into <code class="pv-inline pv-plan-inline">loadConfig()</code> first.</div></div>
+      <div class="pv-cap">Code block <span class="pv-cap-val" data-val="planCode"></span></div>
+      <pre class="pv-pre pv-plan-code"><code>def load_config(path):\n    with open(path) as f:\n        return json.load(f)</code></pre>\n`
     : "";
-  return `  <hr class="divider">
-  <h2>Live Preview</h2>
-  <div class="pv-note">Updates as you tune. The Claude Code window still needs a reload to show these.</div>
-  <div class="preview">
-${chat}${plan}  </div>
+  return `    <div class="col col-preview">
+      <h2>Live Preview</h2>
+      <div class="pv-note">Only the font, size, and spacing knobs that you tune by eye are previewed here, not the whole patch (toggles, the diff card, and the fixes have no preview). Sizes are shown enlarged for legibility; the exact px is in each row. The Claude Code window still needs one reload to apply a change.</div>
+${chat}${plan}    </div>
 `;
 }
 
@@ -412,10 +430,17 @@ const baseCss = `
     font-size: calc(var(--vscode-font-size) * 1.2);
     color: var(--vscode-foreground);
     background: var(--vscode-editor-background);
-    max-width: 480px;
+    max-width: 1040px;
     padding: 16px 28px;
   }
+  /* Controls on the left, live preview on the right. They wrap to a single
+     column when the panel is too narrow to hold both at their min widths. */
+  .layout { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 36px; }
+  .col-controls { flex: 1 1 440px; min-width: 420px; max-width: 520px; }
+  .col-preview { flex: 1 1 340px; min-width: 300px; }
   h1 { font-size: 1.7em; font-weight: 700; margin: 0; }
+  h3 { font-size: 1em; font-weight: 700; margin: 14px 0 6px; color: var(--vscode-descriptionForeground); }
+  .col-preview h3:first-of-type { margin-top: 2px; }
   .spacer { height: 4px; }
   .version-line { font-size: 1.1em; font-weight: 400; margin-bottom: 4px; }
   .version-value { color: #d97757; }
@@ -471,16 +496,15 @@ const baseCss = `
      sizes and fonts each element from the PreviewModel. The font-family rules
      below are the native state (family null), overridden inline by the script
      when a family is set, so clearing the inline style falls back to native. */
-  .pv-note { font-size: .8em; color: var(--vscode-descriptionForeground); margin: 2px 0 8px; }
-  .pv-block { margin-bottom: 6px; }
-  .pv-cap { font-size: .78em; color: var(--vscode-descriptionForeground); margin: 8px 0 3px; }
+  .pv-note { font-size: .8em; color: var(--vscode-descriptionForeground); margin: 2px 0 10px; line-height: 1.35; }
+  .pv-cap { font-size: .78em; color: var(--vscode-descriptionForeground); margin: 10px 0 3px; }
   .pv-cap-val { font-variant-numeric: tabular-nums; opacity: .85; }
   .pv-bubble { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 7px 10px; background: var(--vscode-editor-background); }
   .pv-bubble.pv-user { background: var(--vscode-textBlockQuote-background, rgba(127,127,127,.08)); }
-  .pv-agent-text { font-family: var(--vscode-font-family); }
+  .pv-agent-text, .pv-chat-inline-ctx { font-family: var(--vscode-font-family); }
   .pv-agent-text p { margin: 0; white-space: pre-wrap; }
   .pv-user-text { font-family: var(--vscode-font-family); }
-  .pv-plan-text { font-family: var(--vscode-markdown-font-family, var(--vscode-font-family)); }
+  .pv-plan-text, .pv-plan-inline-ctx { font-family: var(--vscode-markdown-font-family, var(--vscode-font-family)); }
   .pv-plan-text p { margin: 0; }
   .pv-inline { padding: 0 4px; border-radius: 3px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.15)); }
   .pv-chat-inline, .pv-plan-inline { font-family: var(--vscode-editor-font-family); }

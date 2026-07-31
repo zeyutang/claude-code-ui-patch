@@ -36,13 +36,14 @@ export const SECTION_ORDER: Section[] = [
 // not listed keep their natural order after the listed ones.
 const KNOB_ORDER: string[] = [
   "chatHistorySize", // agent response
+  "chatText", // user message input (native chat.fontSize)
   "chatInputHistorySize", // user message history
   "chatCodeInline", // inline code
   "chatCode", // code block
-  "chatMath", // math rendering (KaTeX)
   "diffCard",
   "diffLineNumbers",
   "diffThemeSync",
+  "chatMath", // math rendering (KaTeX), grouped under the diff card settings
   "permCode",
   "permNoWrap",
   "effortSyncFix",
@@ -63,6 +64,13 @@ function knobOrder(id: string): number {
   return i < 0 ? KNOB_ORDER.length : i;
 }
 
+// Knobs computed into the snapshot but intentionally not shown in any UI surface
+// (the panel and the status-bar tooltip alike). The effort-level indicator sync
+// is a set-and-forget fix, not something to tune by hand: hiding it keeps it off
+// both surfaces while its setting still applies and still counts toward the
+// apply / reload state (that logic reads the toggle states, not this knob list).
+export const HIDDEN_KNOBS = new Set<string>(["effortSyncFix"]);
+
 // ---------------------------------------------------------------------------
 // Native chat text size. NOT patched: Claude Code reads chat.fontSize and
 // injects it live (it sizes the chat message text, the input box, and the token
@@ -80,7 +88,12 @@ interface NativeKnob {
 }
 
 const NATIVE_KNOBS: NativeKnob[] = [
-  { id: "chatText", label: "text", vscodeKey: "chat.fontSize", fallback: 13 },
+  {
+    id: "chatText",
+    label: "user message input",
+    vscodeKey: "chat.fontSize",
+    fallback: 13,
+  },
 ];
 
 function nativePx(k: NativeKnob): number {
@@ -4611,6 +4624,7 @@ export interface PreviewModel {
     agentSizePx: number;
     agentFamily: string | null;
     paraSpacing: number; // multiplier on the em-relative paragraph gaps (1 = native)
+    inputSizePx: number; // the chat input box size (native chat.fontSize)
     userSizePx: number;
     userFamily: string | null;
     codeBlockSizePx: number;
@@ -4654,6 +4668,7 @@ export function previewModel(): PreviewModel {
       agentSizePx: Number(formatNativePx(effNum("chatHistorySize", nativeChat))),
       agentFamily: effFamily("chatHistoryFamily"),
       paraSpacing: effScale("chatParaSpacing"),
+      inputSizePx: Number(formatNativePx(nativeChat)),
       userSizePx: Number(
         formatNativePx(effNum("chatInputHistorySize", nativeChat)),
       ),
@@ -5358,6 +5373,26 @@ export class Patcher {
     // The chat text size knob (formerly the native chat.fontSize knob) is now the
     // chatHistoryFontSize injection: it shows the effective size (its own value, or
     // the inherited chat.fontSize when unset) and adjusting it takes control.
+    // The native chat.fontSize knob, surfaced as "user message input": it sizes
+    // the chat input box (and, natively, any chat text still inheriting it).
+    // Writing it applies live, no reload, so it carries a green "live" dot. Shown
+    // only on a supported version, alongside the patch knobs.
+    const native: Knob[] = anyPresent
+      ? NATIVE_KNOBS.map((k) => ({
+          id: k.id,
+          section: "Chat Panel or Tab" as const,
+          label: k.label,
+          kind: "size" as const,
+          px: formatNativePx(nativePx(k)),
+          on: false,
+          max: MAX_PX,
+          native: true,
+          state: "current" as const,
+          pendingReload: false,
+          lost: false,
+          nativeKey: k.vscodeKey,
+        }))
+      : [];
     const chat: Knob[] = INJECT_POINTS.filter(
       (ip) =>
         ip.showInPanel &&
@@ -5431,7 +5466,7 @@ export class Patcher {
       available: true,
       supported: anyPresent,
       version: this.ext.version,
-      knobs: [...chat, ...patch, ...toggleKnobs].sort(
+      knobs: [...native, ...chat, ...patch, ...toggleKnobs].sort(
         (a, b) => knobOrder(a.id) - knobOrder(b.id),
       ),
       applied: anyPresent && allCurrent,
@@ -5751,7 +5786,7 @@ export function tooltipLines(snap: Snapshot | undefined): string[] {
   // `gap` widens the label→value spacing so the popup has more horizontal room.
   const valueStr = (k: Knob) =>
     k.kind === "toggle" ? (k.on ? "on" : "off") : `${k.px}px`;
-  const rows = snap.knobs;
+  const rows = snap.knobs.filter((k) => !HIDDEN_KNOBS.has(k.id));
   const labelW = rows.length ? Math.max(...rows.map((k) => k.label.length)) : 0;
   const pxW = rows.length
     ? Math.max(...rows.map((k) => valueStr(k).length))
@@ -5759,7 +5794,7 @@ export function tooltipLines(snap: Snapshot | undefined): string[] {
   const gap = "        "; // 8 spaces
 
   for (const section of SECTION_ORDER) {
-    const ks = snap.knobs.filter((k) => k.section === section);
+    const ks = rows.filter((k) => k.section === section);
     if (!ks.length) continue;
     out.push("", "---", "", `### ${section}`, "```text");
     for (const k of ks) {

@@ -7,6 +7,7 @@ import {
   SECTION_ORDER,
   STEP,
   MIN_PX,
+  HIDDEN_KNOBS,
 } from "./patcher";
 
 // A webview panel that serves as the detailed control surface (opened by
@@ -144,7 +145,9 @@ ${csp}
 
     const groups = SECTION_ORDER.map((sec) => ({
       sec,
-      knobs: snap.knobs.filter((k) => k.section === sec),
+      knobs: snap.knobs.filter(
+        (k) => k.section === sec && !HIDDEN_KNOBS.has(k.id),
+      ),
     })).filter((g) => g.knobs.length);
     // A divider sits between sections (above every group after the first), not
     // under each title, so section headings read as headings, not underlines.
@@ -160,11 +163,8 @@ ${csp}
     // The live preview mirrors the two knob sections; show a surface only when
     // that section has knobs on this Claude Code version.
     const hasChat = groups.some((g) => g.sec === "Chat Panel or Tab");
-    const hasPlan = groups.some(
-      (g) => g.sec === "Plan Mode Markdown Preview",
-    );
-    const preview =
-      hasChat || hasPlan ? previewHtml(hasChat, hasPlan) : "";
+    const hasPlan = groups.some((g) => g.sec === "Plan Mode Markdown Preview");
+    const preview = hasChat || hasPlan ? previewHtml(hasChat, hasPlan) : "";
     // Embed the initial values so the first paint is styled before any sync
     // arrives. Escape "<" so a font family can never close the <script>.
     const initialPreview = JSON.stringify(snap.preview).replace(
@@ -179,13 +179,13 @@ ${csp}
 <style>${baseCss}</style>
 </head>
 <body>
-  <h1>Claude Code UI Patch</h1>
-  <div class="spacer"></div>
-  <div class="version-line">Patching: <span class="version-value">Claude Code v${snap.version}</span></div>
-  <div class="header-status">${statusInner(snap)}</div>
-  <hr class="divider">
   <div class="layout">
     <div class="col col-controls">
+      <h1>Claude Code UI Patch</h1>
+      <div class="spacer"></div>
+      <div class="version-line">Patching: <span class="version-value">Claude Code v${snap.version}</span></div>
+      <div class="header-status">${statusInner(snap)}</div>
+      <hr class="divider">
 ${sections}
       <hr class="divider">
       <div class="actions">
@@ -239,6 +239,7 @@ ${preview}  </div>
         pp.style.marginTop = i === 0 ? '0' : ('calc(0.1em * ' + c.paraSpacing + ')');
         pp.style.marginBottom = 'calc(0.2em * ' + c.paraSpacing + ')';
       });
+      pvStyle('.pv-input-text', c.inputSizePx, null); // input box uses the native UI font
       pvStyle('.pv-chat-inline-ctx', c.agentSizePx, c.agentFamily); // prose around the token
       pvStyle('.pv-chat-inline', c.codeInlineSizePx, c.codeFamily);
       pvStyle('.pv-chat-code', c.codeBlockSizePx, c.codeFamily);
@@ -250,6 +251,7 @@ ${preview}  </div>
       pvStyle('.pv-plan-code', pl.codeBlockSizePx, pl.codeFamily);
       // Captions read out the true configured values.
       pvSetVal('chatAgent', pvPx(c.agentSizePx) + ' · ' + pvLabel(c.agentFamily) + ' · paragraph spacing ' + c.paraSpacing + '×');
+      pvSetVal('chatInput', pvPx(c.inputSizePx) + ' · native');
       pvSetVal('chatInline', pvPx(c.codeInlineSizePx) + ' · ' + pvLabel(c.codeFamily));
       pvSetVal('chatCode', pvPx(c.codeBlockSizePx) + ' · ' + pvLabel(c.codeFamily));
       pvSetVal('chatUser', pvPx(c.userSizePx) + ' · ' + pvLabel(c.userFamily));
@@ -396,33 +398,32 @@ function syncPayload(snap: Snapshot): {
 // code samples free of backticks and "${" so they survive this template literal.
 function previewHtml(hasChat: boolean, hasPlan: boolean): string {
   const chat = hasChat
-    ? `      <h2>Chat Panel or Tab</h2>
+    ? `      <hr class="divider">
+      <h2>Chat Panel or Tab</h2>
       <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="chatAgent"></span></div>
       <div class="pv-bubble"><div class="pv-agent-text"><p>This is paragraph 1: the parser now reads the config before the first pass, so the first run does a little more work up front.</p><p>This is paragraph 2: tell me if you want a different split.</p></div></div>
-      <hr class="divider">
+      <div class="pv-cap">User message input <span class="pv-cap-val" data-val="chatInput"></span></div>
+      <div class="pv-inputbox"><div class="pv-input-text">Refactor the parser to be incremental</div></div>
+      <div class="pv-cap">User message history <span class="pv-cap-val" data-val="chatUser"></span></div>
+      <div class="pv-bubble pv-user"><div class="pv-user-text">Can you make the parser incremental?</div></div>
       <div class="pv-cap">Inline code <span class="pv-cap-val" data-val="chatInline"></span></div>
       <div class="pv-bubble"><div class="pv-chat-inline-ctx">Run <code class="pv-inline pv-chat-inline">loadConfig()</code> before the first pass.</div></div>
-      <hr class="divider">
       <div class="pv-cap">Code block <span class="pv-cap-val" data-val="chatCode"></span></div>
-      <pre class="pv-pre pv-chat-code"><code>function greet(name) {\n  return "Hello, " + name;\n}</code></pre>
-      <hr class="divider">
-      <div class="pv-cap">User message <span class="pv-cap-val" data-val="chatUser"></span></div>
-      <div class="pv-bubble pv-user"><div class="pv-user-text">Can you make the parser incremental?</div></div>\n`
+      <pre class="pv-pre pv-chat-code"><code>function greet(name) {\n  return "Hello, " + name;\n}</code></pre>\n`
     : "";
   const plan = hasPlan
-    ? `${hasChat ? '      <hr class="divider">\n' : ""}      <h2>Plan Mode Markdown Preview</h2>
+    ? `      <hr class="divider">
+      <h2>Plan Mode Markdown Preview</h2>
       <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="planAgent"></span></div>
       <div class="pv-bubble"><div class="pv-plan-text"><p>Step 1. Extract the reader and cover it with a test.</p></div></div>
-      <hr class="divider">
       <div class="pv-cap">Inline code <span class="pv-cap-val" data-val="planInline"></span></div>
       <div class="pv-bubble"><div class="pv-plan-inline-ctx">Extract the reader into <code class="pv-inline pv-plan-inline">loadConfig()</code> first.</div></div>
-      <hr class="divider">
       <div class="pv-cap">Code block <span class="pv-cap-val" data-val="planCode"></span></div>
       <pre class="pv-pre pv-plan-code"><code>def load_config(path):\n    with open(path) as f:\n        return json.load(f)</code></pre>\n`
     : "";
   return `    <div class="col col-preview">
       <h2 class="pv-title">Live Preview</h2>
-      <div class="pv-note">Only the font, size, and spacing knobs that you tune by eye are previewed here, not the whole patch (toggles, the diff card, and the fixes have no preview). Every block is shown true to size, so it matches what the Claude Code window will show after one reload, without reloading to check each change.</div>
+      <div class="pv-note">Only the font, size, and spacing knobs that you tune by eye are previewed here, not the whole patch (toggles, the diff card, and the fixes have no preview). Every block is shown true to size, so it matches what the Claude Code window will show after the window reload.</div>
 ${chat}${plan}    </div>
 `;
 }
@@ -444,7 +445,7 @@ const baseCss = `
   h1 { font-size: 1.7em; font-weight: 700; margin: 0; }
   /* The preview's column title. Its section headings reuse the h2 rule below, so
      they match the control panel's section headings in size and color exactly. */
-  .pv-title { font-size: 1.35em; font-weight: 700; margin: 12px 0 4px; }
+  .pv-title { font-size: 1.35em; font-weight: 700; margin: 0 0 4px; }
   .spacer { height: 4px; }
   .version-line { font-size: 1.1em; font-weight: 400; margin-bottom: 4px; }
   .version-value { color: #d97757; }
@@ -508,6 +509,9 @@ const baseCss = `
   .pv-agent-text, .pv-chat-inline-ctx { font-family: var(--vscode-font-family); }
   .pv-agent-text p { margin: 0; white-space: pre-wrap; }
   .pv-user-text { font-family: var(--vscode-font-family); }
+  /* The chat input box: a mock text field sized by the native chat.fontSize. */
+  .pv-inputbox { border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 6px; padding: 7px 10px; background: var(--vscode-input-background, var(--vscode-editor-background)); }
+  .pv-input-text { font-family: var(--vscode-font-family); color: var(--vscode-input-foreground, var(--vscode-foreground)); }
   .pv-plan-text, .pv-plan-inline-ctx { font-family: var(--vscode-markdown-font-family, var(--vscode-font-family)); }
   .pv-plan-text p { margin: 0; }
   .pv-inline { padding: 0 4px; border-radius: 3px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.15)); }

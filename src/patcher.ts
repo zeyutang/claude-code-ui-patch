@@ -4592,6 +4592,86 @@ export function formatNativePx(n: number): string {
   return String(Math.round(clamped * 100) / 100);
 }
 
+// ---------------------------------------------------------------------------
+// Live-preview model. The panel renders a small sample of the chat and plan
+// surfaces and styles it from these EFFECTIVE values, so tuning a font / size /
+// spacing setting shows immediately with no window reload. (The real Claude
+// Code webview still needs the reload: it loads the patched bundle once, and an
+// extension can't restyle another extension's webview at runtime. This preview
+// is a faithful mock of that styling, not the live UI.)
+//
+// Reads settings only, never the on-disk bundle, so it reflects what the knobs
+// AND the settings-only family / paragraph-spacing values ask for, resolving
+// each inherit (size 0 -> chat.fontSize or the matching block knob; family "" ->
+// native). A null family means "native": the webview renders it via the
+// matching --vscode-*-font-family variable rather than a pinned family.
+// ---------------------------------------------------------------------------
+export interface PreviewModel {
+  chat: {
+    agentSizePx: number;
+    agentFamily: string | null;
+    paraSpacing: number; // multiplier on the em-relative paragraph gaps (1 = native)
+    userSizePx: number;
+    userFamily: string | null;
+    codeBlockSizePx: number;
+    codeInlineSizePx: number;
+    codeFamily: string | null;
+  };
+  plan: {
+    textSizePx: number;
+    textFamily: string | null;
+    codeBlockSizePx: number;
+    codeInlineSizePx: number;
+    codeFamily: string | null;
+  };
+}
+
+export function previewModel(): PreviewModel {
+  const sizes = readSizes();
+  const nativeChat = nativeChatFontSizePx();
+  const inj = (id: string): InjectPoint | undefined =>
+    INJECT_POINTS.find((p) => p.id === id);
+  const effNum = (id: string, fallback: number): number => {
+    const ip = inj(id);
+    const v = ip ? readInject(ip) : undefined;
+    return typeof v === "number" ? v : fallback;
+  };
+  const effFamily = (id: string): string | null => {
+    const ip = inj(id);
+    const v = ip ? readInject(ip) : undefined;
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+  };
+  const effScale = (id: string): number => {
+    const ip = inj(id);
+    const v = ip ? readInject(ip) : undefined;
+    return typeof v === "number" ? v : 1;
+  };
+  // codeFontFamily is a single setting shared by the chat / permission / plan
+  // code points, so read it once and use it for both surfaces' code.
+  const codeFamily = effFamily("chatCodeFamily");
+  return {
+    chat: {
+      agentSizePx: Number(formatNativePx(effNum("chatHistorySize", nativeChat))),
+      agentFamily: effFamily("chatHistoryFamily"),
+      paraSpacing: effScale("chatParaSpacing"),
+      userSizePx: Number(
+        formatNativePx(effNum("chatInputHistorySize", nativeChat)),
+      ),
+      userFamily: effFamily("chatInputHistoryFamily"),
+      codeBlockSizePx: sizes["chatCode"],
+      codeInlineSizePx: effNum("chatCodeInline", sizes["chatCode"]),
+      codeFamily,
+    },
+    plan: {
+      textSizePx: sizes["text"],
+      textFamily: effFamily("planFamily"),
+      codeBlockSizePx: sizes["code"],
+      codeInlineSizePx: effNum("planCodeInline", sizes["code"]),
+      codeFamily,
+    },
+  };
+}
+
 // --- per-point primitives (dispatch to custom fns or the value-slot model) ---
 
 function pointPresent(content: string, p: PatchPoint): boolean {
@@ -5160,6 +5240,7 @@ export interface Snapshot {
   actionable: boolean;
   needsReload: boolean; // bundle written this session but window not reloaded
   partialLoss: boolean; // a wanted setting can't be applied: its anchor is gone here
+  preview: PreviewModel; // effective font / size / spacing values for the live preview
 }
 
 export class Patcher {
@@ -5357,6 +5438,7 @@ export class Patcher {
       actionable: !allCurrent,
       needsReload: this.pendingReload.size > 0,
       partialLoss,
+      preview: previewModel(),
     };
   }
 

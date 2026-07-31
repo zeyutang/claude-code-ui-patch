@@ -3,6 +3,7 @@ import {
   Patcher,
   Snapshot,
   Knob,
+  PreviewModel,
   SECTION_ORDER,
   STEP,
   MIN_PX,
@@ -156,6 +157,21 @@ ${csp}
       )
       .join("\n");
 
+    // The live preview mirrors the two knob sections; show a surface only when
+    // that section has knobs on this Claude Code version.
+    const hasChat = groups.some((g) => g.sec === "Chat Panel or Tab");
+    const hasPlan = groups.some(
+      (g) => g.sec === "Plan Mode Markdown Preview",
+    );
+    const preview =
+      hasChat || hasPlan ? previewHtml(hasChat, hasPlan) : "";
+    // Embed the initial values so the first paint is styled before any sync
+    // arrives. Escape "<" so a font family can never close the <script>.
+    const initialPreview = JSON.stringify(snap.preview).replace(
+      /</g,
+      "\\u003c",
+    );
+
     return `<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8">
@@ -169,7 +185,7 @@ ${csp}
   <div class="header-status">${statusInner(snap)}</div>
   <hr class="divider">
 ${sections}
-  <hr class="divider">
+${preview}  <hr class="divider">
   <div class="actions">
     <button class="btn btn-green${snap.needsReload ? "" : " quiet"}" data-cmd="discard" title="Revert to the values on disk at the last window reload">Restore Last Applied</button>
     <button class="btn btn-red" data-cmd="restore" title="Reset every setting to Claude Code's native values">Factory Reset</button>
@@ -187,6 +203,47 @@ ${sections}
       btn.textContent = on ? 'On' : 'Off';
       btn.setAttribute('aria-checked', String(on));
     }
+
+    // Live preview: style the sample DOM from the effective values. A null
+    // family means native, so we clear the inline family and let the element's
+    // CSS rule (a --vscode-*-font-family var) take over.
+    const initialPreview = ${initialPreview};
+    function pvPx(n) { return (Math.round(n * 100) / 100) + 'px'; }
+    function pvFam(f) { return f || ''; }
+    function pvLabel(f) { return f ? f : 'native'; }
+    function pvSetVal(key, text) {
+      const el = document.querySelector('.pv-cap-val[data-val="' + key + '"]');
+      if (el) el.textContent = text;
+    }
+    function pvStyle(sel, sizePx, family) {
+      document.querySelectorAll(sel).forEach(function (el) {
+        if (sizePx != null) el.style.fontSize = pvPx(sizePx);
+        el.style.fontFamily = pvFam(family);
+      });
+    }
+    function applyPreview(p) {
+      if (!p) return;
+      const c = p.chat, pl = p.plan;
+      pvStyle('.pv-agent-text', c.agentSizePx, c.agentFamily);
+      // Paragraph gaps are em-relative, so they track the agent size just like
+      // the native rule; the first block keeps a zero top margin.
+      document.querySelectorAll('.pv-agent-text p').forEach(function (pp, i) {
+        pp.style.marginTop = i === 0 ? '0' : ('calc(0.1em * ' + c.paraSpacing + ')');
+        pp.style.marginBottom = 'calc(0.2em * ' + c.paraSpacing + ')';
+      });
+      pvStyle('.pv-chat-inline', c.codeInlineSizePx, c.codeFamily);
+      pvStyle('.pv-chat-code', c.codeBlockSizePx, c.codeFamily);
+      pvStyle('.pv-user-text', c.userSizePx, c.userFamily);
+      pvStyle('.pv-plan-text', pl.textSizePx, pl.textFamily);
+      pvStyle('.pv-plan-inline', pl.codeInlineSizePx, pl.codeFamily);
+      pvStyle('.pv-plan-code', pl.codeBlockSizePx, pl.codeFamily);
+      pvSetVal('chatAgent', pvPx(c.agentSizePx) + ' · ' + pvLabel(c.agentFamily) + ' · spacing ' + c.paraSpacing + '×');
+      pvSetVal('chatCode', 'block ' + pvPx(c.codeBlockSizePx) + ' · inline ' + pvPx(c.codeInlineSizePx) + ' · ' + pvLabel(c.codeFamily));
+      pvSetVal('chatUser', pvPx(c.userSizePx) + ' · ' + pvLabel(c.userFamily));
+      pvSetVal('planText', pvPx(pl.textSizePx) + ' · ' + pvLabel(pl.textFamily));
+      pvSetVal('planCode', 'block ' + pvPx(pl.codeBlockSizePx) + ' · inline ' + pvPx(pl.codeInlineSizePx) + ' · ' + pvLabel(pl.codeFamily));
+    }
+    applyPreview(initialPreview);
 
     document.addEventListener('click', function (e) {
       const el = e.target.closest('[data-cmd]');
@@ -249,6 +306,7 @@ ${sections}
       if (rl) rl.classList.toggle('link-reload-pending', !!m.reloadPending);
       const disc = document.querySelector('button[data-cmd="discard"]');
       if (disc) disc.classList.toggle('quiet', !m.reloadPending);
+      if (m.preview) applyPreview(m.preview);
     });
   </script>
 </body>
@@ -302,12 +360,50 @@ function syncPayload(snap: Snapshot): {
   }>;
   status: string;
   reloadPending: boolean;
+  preview: PreviewModel;
 } {
   const knobs = snap.knobs.map((k) => {
     const { cls: dotClass, title: dotTitle } = dotInfo(k);
     return { id: k.id, px: k.px, on: k.on, dotClass, dotTitle };
   });
-  return { knobs, status: statusInner(snap), reloadPending: snap.needsReload };
+  return {
+    knobs,
+    status: statusInner(snap),
+    reloadPending: snap.needsReload,
+    preview: snap.preview,
+  };
+}
+
+// Static sample markup for the live preview. The webview script sizes and fonts
+// it from the PreviewModel on first paint and on every sync; the values shown in
+// each caption are filled by the same script. Each surface is gated on whether
+// its knob section exists on this Claude Code version. Keep the code samples free
+// of backticks and "${" so they survive this template literal verbatim.
+function previewHtml(hasChat: boolean, hasPlan: boolean): string {
+  const chat = hasChat
+    ? `    <div class="pv-block">
+      <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="chatAgent"></span></div>
+      <div class="pv-bubble"><div class="pv-agent-text"><p>Here is what changed: the parser now reads <code class="pv-inline pv-chat-inline">config.json</code> before the first pass.</p><p>Tell me if you want a different split.</p></div></div>
+      <div class="pv-cap">Code block <span class="pv-cap-val" data-val="chatCode"></span></div>
+      <pre class="pv-pre pv-chat-code"><code>function greet(name) {\n  return "Hello, " + name;\n}</code></pre>
+      <div class="pv-cap">User message <span class="pv-cap-val" data-val="chatUser"></span></div>
+      <div class="pv-bubble pv-user"><div class="pv-user-text">Can you make the parser incremental?</div></div>
+    </div>\n`
+    : "";
+  const plan = hasPlan
+    ? `    <div class="pv-block">
+      <div class="pv-cap">Plan · agent response <span class="pv-cap-val" data-val="planText"></span></div>
+      <div class="pv-bubble"><div class="pv-plan-text"><p>Step 1. Extract the reader into <code class="pv-inline pv-plan-inline">loadConfig()</code> and cover it with a test.</p></div></div>
+      <div class="pv-cap">Plan · code block <span class="pv-cap-val" data-val="planCode"></span></div>
+      <pre class="pv-pre pv-plan-code"><code>def load_config(path):\n    with open(path) as f:\n        return json.load(f)</code></pre>
+    </div>\n`
+    : "";
+  return `  <hr class="divider">
+  <h2>Live Preview</h2>
+  <div class="pv-note">Updates as you tune. The Claude Code window still needs a reload to show these.</div>
+  <div class="preview">
+${chat}${plan}  </div>
+`;
 }
 
 const baseCss = `
@@ -371,6 +467,26 @@ const baseCss = `
      applied, yellow when a reload is due. */
   a.link.link-reload { display: inline-block; background: #3fa34d; color: #fff; padding: 3px 12px; border-radius: 3px; font-weight: 700; }
   a.link.link-reload.link-reload-pending { background: var(--vscode-statusBarItem-warningBackground, #b7791f); }
+  /* Live preview. A faithful mock of the chat and plan surfaces; the script
+     sizes and fonts each element from the PreviewModel. The font-family rules
+     below are the native state (family null), overridden inline by the script
+     when a family is set, so clearing the inline style falls back to native. */
+  .pv-note { font-size: .8em; color: var(--vscode-descriptionForeground); margin: 2px 0 8px; }
+  .pv-block { margin-bottom: 6px; }
+  .pv-cap { font-size: .78em; color: var(--vscode-descriptionForeground); margin: 8px 0 3px; }
+  .pv-cap-val { font-variant-numeric: tabular-nums; opacity: .85; }
+  .pv-bubble { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 7px 10px; background: var(--vscode-editor-background); }
+  .pv-bubble.pv-user { background: var(--vscode-textBlockQuote-background, rgba(127,127,127,.08)); }
+  .pv-agent-text { font-family: var(--vscode-font-family); }
+  .pv-agent-text p { margin: 0; white-space: pre-wrap; }
+  .pv-user-text { font-family: var(--vscode-font-family); }
+  .pv-plan-text { font-family: var(--vscode-markdown-font-family, var(--vscode-font-family)); }
+  .pv-plan-text p { margin: 0; }
+  .pv-inline { padding: 0 4px; border-radius: 3px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.15)); }
+  .pv-chat-inline, .pv-plan-inline { font-family: var(--vscode-editor-font-family); }
+  .pv-pre { margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); overflow-x: auto; white-space: pre; }
+  .pv-pre code { font-family: inherit; }
+  .pv-chat-code, .pv-plan-code { font-family: var(--vscode-editor-font-family); }
 `;
 
 // Per-render nonce so the Content-Security-Policy can allow only this panel's

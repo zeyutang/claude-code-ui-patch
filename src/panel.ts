@@ -401,13 +401,13 @@ function previewHtml(hasChat: boolean, hasPlan: boolean): string {
     ? `      <hr class="divider">
       <h2>Chat Panel or Tab</h2>
       <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="chatAgent"></span></div>
-      <div class="pv-bubble"><div class="pv-agent-text"><p>This is paragraph 1: the parser now reads the config before the first pass, so the first run does a little more work up front.</p><p>This is paragraph 2: tell me if you want a different split.</p></div></div>
+      <div class="pv-bubble"><div class="pv-agent-text"><p>This is paragraph 1: this is an example sentence. This is another sentence.</p><p>This is paragraph 2: this live preview serves as a quick mock-up, where every block is WYSIWYG-true to what a reload would show.</p></div></div>
       <div class="pv-cap">User message input <span class="pv-cap-val" data-val="chatInput"></span></div>
-      <div class="pv-inputbox"><div class="pv-input-text">Refactor the parser to be incremental</div></div>
+      <div class="pv-inputbox"><div class="pv-input-text">This is the textarea where you type...</div></div>
       <div class="pv-cap">User message history <span class="pv-cap-val" data-val="chatUser"></span></div>
-      <div class="pv-bubble pv-user"><div class="pv-user-text">Can you make the parser incremental?</div></div>
+      <div class="pv-bubble pv-user"><div class="pv-user-text">This is the message you sent.</div></div>
       <div class="pv-cap">Inline code <span class="pv-cap-val" data-val="chatInline"></span></div>
-      <div class="pv-bubble"><div class="pv-chat-inline-ctx">Run <code class="pv-inline pv-chat-inline">loadConfig()</code> before the first pass.</div></div>
+      <div class="pv-bubble"><div class="pv-chat-inline-ctx">Inline code example: <code class="pv-inline pv-chat-inline">helloWorld()</code>.</div></div>
       <div class="pv-cap">Code block <span class="pv-cap-val" data-val="chatCode"></span></div>
       <pre class="pv-pre pv-chat-code"><code>function greet(name) {\n  return "Hello, " + name;\n}</code></pre>\n`
     : "";
@@ -415,15 +415,15 @@ function previewHtml(hasChat: boolean, hasPlan: boolean): string {
     ? `      <hr class="divider">
       <h2>Plan Mode Markdown Preview</h2>
       <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="planAgent"></span></div>
-      <div class="pv-bubble"><div class="pv-plan-text"><p>Step 1. Extract the reader and cover it with a test.</p></div></div>
+      <div class="pv-bubble"><div class="pv-plan-text"><p>This is the rendered Markdown plan in the Plan Mode.</p></div></div>
       <div class="pv-cap">Inline code <span class="pv-cap-val" data-val="planInline"></span></div>
-      <div class="pv-bubble"><div class="pv-plan-inline-ctx">Extract the reader into <code class="pv-inline pv-plan-inline">loadConfig()</code> first.</div></div>
+      <div class="pv-bubble"><div class="pv-plan-inline-ctx">This is the inline code in Markdown Preview <code class="pv-inline pv-plan-inline">helloWorld()</code>.</div></div>
       <div class="pv-cap">Code block <span class="pv-cap-val" data-val="planCode"></span></div>
       <pre class="pv-pre pv-plan-code"><code>def load_config(path):\n    with open(path) as f:\n        return json.load(f)</code></pre>\n`
     : "";
   return `    <div class="col col-preview">
       <h2 class="pv-title">Live Preview</h2>
-      <div class="pv-note">Only the font, size, and spacing knobs that you tune by eye are previewed here, not the whole patch (toggles, the diff card, and the fixes have no preview). Every block is shown true to size, so it matches what the Claude Code window will show after the window reload.</div>
+      <div class="pv-note">Only font size and spacing knobs that you tune by eye are previewed here, not the whole patch (toggles, diff cards, buttons, find bar, and other fixes are not in this preview). Every block is shown true to size, so it matches what the Claude Code interface will show after the window reload.</div>
 ${chat}${plan}    </div>
 `;
 }

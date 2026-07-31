@@ -7,9 +7,9 @@
 
 Patch Claude Code VS Code extension UI to provide finegrained settings for various UI details (font sizes, code blocks, diff cards, and more).
 
-|              Configuration Panel               |
-| :--------------------------------------------: |
-| ![Configuration panel](assets/img/webview.png) |
+|               Configuration Panel + Live Preview                |
+| :-------------------------------------------------------------: |
+| ![Configuration panel and live preview](assets/img/webview.png) |
 
 |      Previous and Next Turn, Scroll to Bottom      |
 | :------------------------------------------------: |

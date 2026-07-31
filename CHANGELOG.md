@@ -2,6 +2,16 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.0
+
+- Add a live preview to the panel (opened from the status bar) that shows agent and user messages, inline and fenced code, and the Plan Mode preview at the true size, font, and paragraph spacing from your settings.
+  It updates as you change the font, size, and paragraph-spacing knobs, so you can tune them by eye and reload the window once at the end instead of after each change.
+- Add a "user message input" size knob for the chat input box.
+  It applies live from the panel with no reload, driving the built-in `chat.fontSize`.
+- Lay the panel out with the controls and the live preview side by side.
+  The effort-level indicator sync is no longer shown as a knob in the panel or its tooltip, and still applies on its own.
+- Diff cards with line numbers on avoid re-applying their editor options when the gutter is unchanged, trimming the work done on each render.
+
 ## 1.3.9
 
 - With the scroll-to-bottom or previous/next buttons on, the chat input no longer stutters when something opens, filters, or closes inside it, such as the `@` file picker or the slash-command menu narrowing its list as you type.

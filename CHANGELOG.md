@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.1
+
+- Add an "agent bold weight" knob that sets the weight of bold text in agent messages, for more contrast against the regular weight.
+  It steps by 100 between 400 and 900, applies to bold runs rather than headings, and shows in the live preview's second sample paragraph.
+
 ## 1.4.0
 
 - Add a live preview to the panel (opened from the status bar) that shows agent and user messages, inline and fenced code, and the Plan Mode preview at the true size, font, and paragraph spacing from your settings.

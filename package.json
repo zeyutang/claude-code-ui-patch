@@ -58,6 +58,13 @@
           "default": "",
           "markdownDescription": "Font family for agent messages; the interface and input box stay native. Empty = native."
         },
+        "claudeCodeUiPatch.chatHistoryBoldWeight": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 900,
+          "markdownDescription": "Weight of **bold** text in agent messages, for more contrast against the regular weight. Snaps to the nearest 100 in 400-900; a font with no such cut falls back to its nearest one. `0` = native (700)."
+        },
         "claudeCodeUiPatch.chatHistoryParagraphSpacing": {
           "type": "number",
           "default": 1,

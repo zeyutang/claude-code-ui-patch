@@ -26,6 +26,17 @@ export const MIN_PX = 6;
 export const MAX_PX = 48;
 export const STEP = 0.25;
 
+// Bold-weight knob. CSS font-weight moves in hundreds, so the knob steps by 100
+// rather than by STEP. The floor is the regular weight (a "bold" lighter than
+// the body text is not what this knob is for) and the ceiling is 900, the
+// heaviest weight CSS names. NATIVE_BOLD_WEIGHT is what a browser computes for
+// <strong> against a 400 parent, so it is both the "off" display value and the
+// value that writes no rule.
+export const MIN_WEIGHT = 400;
+export const MAX_WEIGHT = 900;
+export const WEIGHT_STEP = 100;
+export const NATIVE_BOLD_WEIGHT = 700;
+
 export type Section = "Chat Panel or Tab" | "Plan Mode Markdown Preview";
 export const SECTION_ORDER: Section[] = [
   "Chat Panel or Tab",
@@ -36,6 +47,7 @@ export const SECTION_ORDER: Section[] = [
 // not listed keep their natural order after the listed ones.
 const KNOB_ORDER: string[] = [
   "chatHistorySize", // agent response
+  "chatBoldWeight", // agent bold weight
   "chatText", // user message input (native chat.fontSize)
   "chatInputHistorySize", // user message history
   "chatCodeInline", // inline code
@@ -3877,10 +3889,11 @@ interface InjectPoint {
   section: Section;
   label: string;
   key: string; // settings sub-key under the claudeCodeUiPatch namespace
-  kind: "size" | "family" | "rows" | "align" | "scale";
+  kind: "size" | "family" | "rows" | "align" | "scale" | "weight";
   file: string;
   showInPanel: boolean; // size shows as a knob; strings/rows are settings-only
   max: number; // upper clamp for a size knob (unused otherwise)
+  min?: number; // lower clamp for a knob; MIN_PX when omitted
   defaultRaw: InjectValue; // config default
   effective: (raw: InjectValue) => InjectValue | undefined; // undefined = off
   inheritFrom?: string; // PATCH_POINT id whose size this follows when off (panel display)
@@ -3922,6 +3935,20 @@ function chatContentSelector(c: string): string | undefined {
   const md = c.match(CHAT_MD_HASH_RE)?.[1];
   return md ? `.root_${md}` : undefined;
 }
+
+// chatHistoryBoldWeight: weight for **bold** runs in the agent markdown body.
+// Reading serifs drawn for print (Charter, Charis, Source Serif) tend to pair a
+// sturdy regular with a restrained bold, so at transcript sizes the two can read
+// alike; picking a heavier cut (many families ship a 900 Black) restores the
+// contrast without touching the regular weight. The bundle has no rule of its own
+// for <strong>/<b> here, so native is the browser default of 700.
+//
+// Scoped to <strong>/<b> only, NOT headings: headings carry their own size-based
+// hierarchy and are not what this knob is tuning. Code inside a bold run inherits
+// the weight, which is what the surrounding sentence implies.
+const CHAT_BOLD_MARKER = "/*cc-ui-patch:chatBold*/";
+const CHAT_BOLD_VAL_RE =
+  /\/\*cc-ui-patch:chatBold\*\/[^\n]*?\{font-weight:(\d+) !important\}/;
 
 // chatHistoryParagraphSpacing: scale the vertical gaps between agent-message
 // paragraphs. The native rule is
@@ -4207,6 +4234,45 @@ const INJECT_POINTS: InjectPoint[] = [
       );
     },
     remove: (c) => cssRemoveLine(c, CHAT_FAMILY_MARKER),
+  },
+  {
+    id: "chatBoldWeight",
+    section: "Chat Panel or Tab",
+    label: "agent bold weight",
+    key: "chatHistoryBoldWeight",
+    kind: "weight",
+    file: "webview/index.css",
+    showInPanel: true,
+    max: MAX_WEIGHT,
+    min: MIN_WEIGHT,
+    defaultRaw: 0,
+    // 0 = native. Anything else snaps to the nearest 100 within [400, 900]; the
+    // native 700 also writes no rule, so the knob returns to native by stepping
+    // back up to it rather than needing the setting cleared by hand.
+    effective: (raw) => {
+      if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0)
+        return undefined;
+      const w =
+        Math.round(
+          Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, raw)) / WEIGHT_STEP,
+        ) * WEIGHT_STEP;
+      return w === NATIVE_BOLD_WEIGHT ? undefined : w;
+    },
+    present: (c) => CHAT_MD_HASH_RE.test(c),
+    current: (c) => {
+      const m = c.match(CHAT_BOLD_VAL_RE);
+      return m ? Number(m[1]) : undefined;
+    },
+    apply: (c, v) => {
+      const sel = chatContentSelector(c);
+      if (!sel) return c; // markdown anchor gone: leave native
+      return cssApplyLine(
+        c,
+        CHAT_BOLD_MARKER,
+        `${CHAT_BOLD_MARKER}${sel} strong,${sel} b{font-weight:${v} !important}`,
+      );
+    },
+    remove: (c) => cssRemoveLine(c, CHAT_BOLD_MARKER),
   },
   {
     id: "chatParaSpacing",
@@ -4623,6 +4689,7 @@ export interface PreviewModel {
   chat: {
     agentSizePx: number;
     agentFamily: string | null;
+    agentBoldWeight: number; // weight for <strong>/<b> runs (700 = native)
     paraSpacing: number; // multiplier on the em-relative paragraph gaps (1 = native)
     inputSizePx: number; // the chat input box size (native chat.fontSize)
     userSizePx: number;
@@ -4667,6 +4734,7 @@ export function previewModel(): PreviewModel {
     chat: {
       agentSizePx: Number(formatNativePx(effNum("chatHistorySize", nativeChat))),
       agentFamily: effFamily("chatHistoryFamily"),
+      agentBoldWeight: effNum("chatBoldWeight", NATIVE_BOLD_WEIGHT),
       paraSpacing: effScale("chatParaSpacing"),
       inputSizePx: Number(formatNativePx(nativeChat)),
       userSizePx: Number(
@@ -5235,10 +5303,13 @@ export interface Knob {
   id: string;
   section: Section;
   label: string;
-  kind: "size" | "toggle";
-  px: string; // size knobs: current px; toggle knobs: unused ("")
+  kind: "size" | "weight" | "toggle";
+  px: string; // size/weight knobs: current value; toggle knobs: unused ("")
   on: boolean; // toggle knobs: current on/off; size knobs: unused (false)
-  max: number; // upper clamp for the panel's ▲/▼ controls (size knobs)
+  max: number; // upper clamp for the panel's ▲/▼ controls (size/weight knobs)
+  min: number; // lower clamp for the panel's ▲/▼ controls
+  step: number; // increment per ▲/▼ click (px sizes step finer than weights)
+  unit: string; // suffix rendered after the value ("px", or "" for a weight)
   native: boolean;
   state: "current" | "stock" | "custom" | "missing";
   pendingReload: boolean; // this row's bundle was written but window not reloaded
@@ -5386,6 +5457,9 @@ export class Patcher {
           px: formatNativePx(nativePx(k)),
           on: false,
           max: MAX_PX,
+          min: MIN_PX,
+          step: STEP,
+          unit: "px",
           native: true,
           state: "current" as const,
           pendingReload: false,
@@ -5400,20 +5474,29 @@ export class Patcher {
           (anyPresent && injectWanted(ip))),
     ).map((ip) => {
       const eff = readInject(ip);
+      // A weight knob is numeric like a size knob but is not a px measurement:
+      // it has its own clamp, steps in hundreds, renders bare, and shows the
+      // browser's 700 while native (as a size knob shows its inherited px).
+      const weight = ip.kind === "weight";
       return {
         id: ip.id,
         section: ip.section,
         label: ip.label,
-        kind: "size" as const,
-        px: formatNativePx(
-          typeof eff === "number"
-            ? eff
-            : ip.inheritFrom
-              ? sizes[ip.inheritFrom]
-              : nativeChatFontSizePx(),
-        ),
+        kind: weight ? ("weight" as const) : ("size" as const),
+        px: weight
+          ? String(typeof eff === "number" ? eff : NATIVE_BOLD_WEIGHT)
+          : formatNativePx(
+              typeof eff === "number"
+                ? eff
+                : ip.inheritFrom
+                  ? sizes[ip.inheritFrom]
+                  : nativeChatFontSizePx(),
+            ),
         on: false,
         max: ip.max,
+        min: ip.min ?? MIN_PX,
+        step: weight ? WEIGHT_STEP : STEP,
+        unit: weight ? "" : "px",
         native: false,
         state: injectStatusById.get(ip.id) ?? "stock",
         pendingReload: this.pendingReload.has(ip.id),
@@ -5431,6 +5514,9 @@ export class Patcher {
       px: formatPx(sizes[p.id]),
       on: false,
       max: p.maxPx,
+      min: MIN_PX,
+      step: STEP,
+      unit: "px",
       native: false,
       state: statusById.get(p.id) ?? "stock",
       pendingReload: this.pendingReload.has(p.id),
@@ -5448,6 +5534,9 @@ export class Patcher {
       px: "",
       on: toggles[t.id],
       max: 0,
+      min: 0,
+      step: 0,
+      unit: "",
       native: false,
       state: toggleStatusById.get(t.id) ?? "stock",
       pendingReload: this.pendingReload.has(t.id),
@@ -5641,11 +5730,16 @@ export class Patcher {
     // The chat text size knob is an injection (chatHistoryFontSize): adjusting it
     // from the inherited display writes an absolute px, taking control from the
     // native chat.fontSize.
-    const ip = INJECT_POINTS.find((x) => x.id === target && x.kind === "size");
+    // Weight knobs ride the same path: the panel sends an absolute number and
+    // the point's own effective() snaps it (and maps the native weight back to
+    // "no rule"), so only the clamp differs.
+    const ip = INJECT_POINTS.find(
+      (x) => x.id === target && (x.kind === "size" || x.kind === "weight"),
+    );
     if (ip) {
       const next = Math.min(
         ip.max,
-        Math.max(MIN_PX, Math.round(value * 100) / 100),
+        Math.max(ip.min ?? MIN_PX, Math.round(value * 100) / 100),
       );
       const cur = readInject(ip);
       if (typeof cur === "number" && cur === next) return;
@@ -5785,7 +5879,7 @@ export function tooltipLines(snap: Snapshot | undefined): string[] {
   // and the rows as a fenced (monospace) block that keeps the numbers aligned.
   // `gap` widens the label→value spacing so the popup has more horizontal room.
   const valueStr = (k: Knob) =>
-    k.kind === "toggle" ? (k.on ? "on" : "off") : `${k.px}px`;
+    k.kind === "toggle" ? (k.on ? "on" : "off") : `${k.px}${k.unit}`;
   const rows = snap.knobs.filter((k) => !HIDDEN_KNOBS.has(k.id));
   const labelW = rows.length ? Math.max(...rows.map((k) => k.label.length)) : 0;
   const pxW = rows.length

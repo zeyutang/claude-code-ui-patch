@@ -5,8 +5,6 @@ import {
   Knob,
   PreviewModel,
   SECTION_ORDER,
-  STEP,
-  MIN_PX,
   HIDDEN_KNOBS,
 } from "./patcher";
 
@@ -122,13 +120,15 @@ export class PatchPanel {
       </div>`;
     }
     const cmd = k.native ? "nativeAdjust" : "adjust";
-    return `      <div class="knob" data-id="${k.id}" data-min="${MIN_PX}" data-max="${k.max}">
+    // Range and unit ride on the row, the step on each arrow's delta, so one
+    // handler adjusts a px size and a bare font-weight alike.
+    return `      <div class="knob" data-id="${k.id}" data-min="${k.min}" data-max="${k.max}" data-unit="${k.unit}">
         ${dot}
         <span class="label">${k.label}</span>
         <span class="controls">
-          <button class="btn-sm" data-cmd="${cmd}" data-delta="${-STEP}"><b>&#9660;</b></button>
-          <span class="px">${k.px}px</span>
-          <button class="btn-sm" data-cmd="${cmd}" data-delta="${STEP}"><b>&#9650;</b></button>
+          <button class="btn-sm" data-cmd="${cmd}" data-delta="${-k.step}"><b>&#9660;</b></button>
+          <span class="px">${k.px}${k.unit}</span>
+          <button class="btn-sm" data-cmd="${cmd}" data-delta="${k.step}"><b>&#9650;</b></button>
         </span>
       </div>`;
   }
@@ -232,6 +232,11 @@ ${preview}  </div>
       const c = p.chat, pl = p.plan;
       // Chat surface.
       pvStyle('.pv-agent-text', c.agentSizePx, c.agentFamily);
+      // Bold runs carry their own weight, so paragraph 2's <strong> shows the
+      // regular/bold contrast the knob is tuning against the same reading font.
+      document.querySelectorAll('.pv-agent-text strong').forEach(function (el) {
+        el.style.fontWeight = String(c.agentBoldWeight);
+      });
       // Paragraph gaps are em-relative, tracking the agent size exactly as the
       // native rule (margin-top .1em, margin-bottom .2em) times the spacing
       // multiplier; the first block keeps a zero top margin.
@@ -250,7 +255,7 @@ ${preview}  </div>
       pvStyle('.pv-plan-inline', pl.codeInlineSizePx, pl.codeFamily);
       pvStyle('.pv-plan-code', pl.codeBlockSizePx, pl.codeFamily);
       // Captions read out the true configured values.
-      pvSetVal('chatAgent', pvPx(c.agentSizePx) + ' · ' + pvLabel(c.agentFamily) + ' · paragraph spacing ' + c.paraSpacing + '×');
+      pvSetVal('chatAgent', pvPx(c.agentSizePx) + ' · ' + pvLabel(c.agentFamily) + ' · bold ' + c.agentBoldWeight + ' · paragraph spacing ' + c.paraSpacing + '×');
       pvSetVal('chatInput', pvPx(c.inputSizePx) + ' · native');
       pvSetVal('chatInline', pvPx(c.codeInlineSizePx) + ' · ' + pvLabel(c.codeFamily));
       pvSetVal('chatCode', pvPx(c.codeBlockSizePx) + ' · ' + pvLabel(c.codeFamily));
@@ -287,7 +292,7 @@ ${preview}  </div>
         let next = Math.min(max, Math.max(min, cur + parseFloat(el.dataset.delta)));
         next = Math.round(next * 100) / 100;
         if (next === cur) return;
-        pxEl.textContent = fmt(next) + 'px'; // optimistic: show it instantly
+        pxEl.textContent = fmt(next) + (knob.dataset.unit || ''); // optimistic: show it instantly
         pending[id] = fmt(next);
         vscode.postMessage({ command: cmd === 'nativeAdjust' ? 'nativeSet' : 'set', target: id, value: next });
         return;
@@ -305,8 +310,9 @@ ${preview}  </div>
         if (dot) { dot.className = 'dot ' + k.dotClass; dot.title = k.dotTitle; }
         const pxEl = knob.querySelector('.px');
         if (pxEl) {
-          if (pending[k.id] === undefined) { pxEl.textContent = k.px + 'px'; }
-          else if (pending[k.id] === k.px) { pxEl.textContent = k.px + 'px'; delete pending[k.id]; }
+          const unit = knob.dataset.unit || '';
+          if (pending[k.id] === undefined) { pxEl.textContent = k.px + unit; }
+          else if (pending[k.id] === k.px) { pxEl.textContent = k.px + unit; delete pending[k.id]; }
         }
         const tg = knob.querySelector('.btn-toggle');
         if (tg && typeof k.on === 'boolean') {
@@ -401,7 +407,7 @@ function previewHtml(hasChat: boolean, hasPlan: boolean): string {
     ? `      <hr class="divider">
       <h2>Chat Panel or Tab</h2>
       <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="chatAgent"></span></div>
-      <div class="pv-bubble"><div class="pv-agent-text"><p>This is paragraph 1: this is an example sentence. This is another sentence.</p><p>This is paragraph 2: this live preview serves as a quick mock-up, where every block is WYSIWYG-true to what a reload would show.</p></div></div>
+      <div class="pv-bubble"><div class="pv-agent-text"><p>This is paragraph 1: this is an example sentence. This is another sentence.</p><p>This is paragraph 2: this live preview serves as a quick mock-up, where <strong>every block is WYSIWYG-true</strong> to what a reload would show.</p></div></div>
       <div class="pv-cap">User message input <span class="pv-cap-val" data-val="chatInput"></span></div>
       <div class="pv-inputbox"><div class="pv-input-text">This is the textarea where you type...</div></div>
       <div class="pv-cap">User message history <span class="pv-cap-val" data-val="chatUser"></span></div>
@@ -508,6 +514,10 @@ const baseCss = `
   .pv-bubble.pv-user { background: var(--vscode-textBlockQuote-background, rgba(127,127,127,.08)); }
   .pv-agent-text, .pv-chat-inline-ctx { font-family: var(--vscode-font-family); }
   .pv-agent-text p { margin: 0; white-space: pre-wrap; }
+  /* Native bold: what a browser computes for <strong> against a 400 parent. Pinned
+     rather than left to the UA default so a theme body weight can't shift the
+     baseline the script overrides. */
+  .pv-agent-text strong { font-weight: 700; }
   .pv-user-text { font-family: var(--vscode-font-family); }
   /* The chat input box: a mock text field sized by the native chat.fontSize. */
   .pv-inputbox { border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 6px; padding: 7px 10px; background: var(--vscode-input-background, var(--vscode-editor-background)); }

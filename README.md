@@ -40,6 +40,7 @@ chat.fontSize & chat.fontFamily        # native VS Code settings, shared by ever
 Chat Panel and Tab                     # chat history only, private to Claude Code
    ├── chatHistoryFontSize             # agent message text, 0 -> follows chat.fontSize
    ├── chatHistoryFontFamily           # agent message font, empty -> native UI font
+   ├── chatHistoryBoldWeight           # weight of bold text in agent messages, 0 -> native (700)
    ├── chatHistoryParagraphSpacing     # gap between agent paragraphs, 1.0 = native
    ├── chatInputHistoryFontSize        # sent user message text, 0 -> follows chat.fontSize
    ├── chatInputHistoryFontFamily      # sent user message font, empty -> native chat font
@@ -112,6 +113,9 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   The next window reload re-applies it and prompts for one more **Reload Window**.
 - **`chatDiffCardLineNumbers` shows true file positions for live-session edits only.**
   Cards replayed from history (reload, resume), failed edits, and `replace_all` edits number from 1 (Claude Code re-emits conversation history without the absolute line numbers).
+- **`chatHistoryBoldWeight` applies to bold runs, not headings.**
+  Headings keep their own size-based hierarchy.
+  A font with no cut at the weight you pick falls back to its nearest one, so which step changes anything depends on the family: Charter, for instance, goes from 700 straight to its 900 Black.
 - **`chatHistoryFontSize` / `chatHistoryFontFamily` restyle the agent transcript only** (by design).
   The input box, interface, and other chat extensions follow the native `chat.fontSize` / `chat.fontFamily`.
   Your own sent messages are styled by `chatInputHistoryFontSize` / `chatInputHistoryFontFamily`.

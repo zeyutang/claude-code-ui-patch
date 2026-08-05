@@ -2,6 +2,16 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.2
+
+- `chatHistoryParagraphSpacing` now multiplies the visible gap between paragraphs, the native margins plus the line leading, so `2` looks twice as far apart as `1`.
+  Previously only the hairline native margins scaled, the constant leading dwarfed them, and even `5` read as roughly double.
+- With `chatInputMaxLines` set, the text no longer paints one line away from the caret while editing at the box's cap (it could fall a line behind after deleting back to a line end).
+- Add `claudeCodeUiPatch.useCtrlEnterToSendEverywhere`, off by default: with Claude Code's `useCtrlEnterToSend` on, the AskUserQuestion `Other` box and the permission feedback box also insert a newline on `Enter` and submit on `Cmd`/`Ctrl`+`Enter`, following the native setting live.
+  The Plan Mode comment box follows it too, with its value from the last reload.
+- The panel's knobs and live preview now respond to each click or settings edit immediately, and a burst of quick changes patches the bundle once instead of once per change.
+- The panel's status banner is now the reload control: when it turns amber it reads "Click here to reload", replacing the Reload Window link at the bottom.
+
 ## 1.4.1
 
 - Add an "agent bold weight" knob that sets the weight of bold text in agent messages, for more contrast against the regular weight.

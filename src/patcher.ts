@@ -26,6 +26,11 @@ export const MIN_PX = 6;
 export const MAX_PX = 48;
 export const STEP = 0.25;
 
+// Trailing debounce for the disk apply pass: long enough to fold a burst of
+// config events (rapid panel clicks, a multi-key settings.json save) into one
+// pass, short enough to be invisible on a lone change.
+const APPLY_DEBOUNCE_MS = 100;
+
 // Bold-weight knob. CSS font-weight moves in hundreds, so the knob steps by 100
 // rather than by STEP. The floor is the regular weight (a "bold" lighter than
 // the body text is not what this knob is for) and the ceiling is 900, the
@@ -3500,6 +3505,151 @@ const SHOW_MORE_HASH_RE =
 const PLAN_COMMENT_SEND_RE =
   /(if \(e\.key === 'Enter' && )(!e\.shiftKey|\(e\.metaKey \|\| e\.ctrlKey\))(\) \{)/g;
 
+// useCtrlEnterToSendEverywhere: extend the native claudeCode.useCtrlEnterToSend
+// setting beyond the chat input. Natively only the chat input consults it (its
+// keydown gates the send on `n.useCtrlEnterToSend ? metaOrCtrl : true`); the
+// AskUserQuestion "Other" answer box and the permission feedback box hardcode
+// plain Enter as their submit, so with the native setting on, an Enter meant as
+// a newline still submits there. Three rewrites in webview/index.js make both
+// boxes consult the same live config getter the chat input uses (so flipping
+// the native setting mid-session applies immediately, no reload):
+//
+// - The permission component receives the app context as its `context` prop
+//   (the class carrying the `useCtrlEnterToSend` getter). Its feedback-box
+//   Enter handler gains a guard: with the native setting on and no modifier,
+//   return before preventDefault, so the contenteditable inserts a newline
+//   natively and Cmd/Ctrl+Enter keeps submitting (which it already did: the
+//   native condition never checked modifiers).
+// - The question component receives no context prop at all, so the
+//   AskUserQuestion render site (the one `permissionRequest` method whose body
+//   is exactly `return b(Comp,{input,onInputChange,options})`) threads it
+//   through as a `ccupCtx` prop, the component signature picks it up as
+//   `ccupQCtx`, and the "Other" box's Enter branch (preventDefault + advance to
+//   the next question) runs only without the setting or with a modifier held.
+//   Plain Enter then falls through to a native newline; the handler's existing
+//   stopPropagation (any unmodified key) already keeps the container's own
+//   Enter/digit shortcuts out of the way while typing. When the modifier chord
+//   does advance, the gate adds a stopPropagation of its own: the option row
+//   wrapping this box selects/toggles "Other" on any bubbled Enter without
+//   checking modifiers (natively reachable via Cmd/Ctrl+Enter, where it
+//   re-toggles the multi-select checkbox), and the send chord must not do that.
+//
+// The rewrites are all-or-nothing: each of the five anchors must match exactly
+// once (they are unique in the current bundle) or the file is left native, so a
+// drifted bundle can never end up half-threaded with a dangling identifier.
+// Restore strips each patched form independently. The /*ccup-uce*/ tag marks
+// the on state. The plan preview's comment box lives in a different webview
+// with no access to this config, so it follows via the commentCtrlEnter toggle
+// instead: readToggles() folds (ctrlEnterEverywhere && the native setting's
+// value at apply time) into that toggle, and a native-setting change re-runs
+// the apply through the foreign-key watch (taking effect there on reload).
+const UCE_TAG = "/*ccup-uce*/";
+// The AskUserQuestion render site: the only permissionRequest method whose body
+// is exactly the input/onInputChange/options passthrough (param 1 = context).
+const UCE_Q_RENDER_RE =
+  /permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return b\(([\w$]+),\{input:\2,onInputChange:\3,options:\4\}\)\}/;
+const UCE_Q_RENDER_ON_RE =
+  /permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return b\(([\w$]+),\{input:\2,onInputChange:\3,options:\4,ccupCtx:\1\}\)\}/;
+// The question component's props destructure (unique: the render site above
+// spells the same names after `b(Comp,` with no `({`).
+const UCE_Q_SIG_RE =
+  /function ([\w$]+)\(\{input:([\w$]+),onInputChange:([\w$]+),options:([\w$]+)\}\)\{/;
+const UCE_Q_SIG_ON_RE =
+  /function ([\w$]+)\(\{input:([\w$]+),onInputChange:([\w$]+),options:([\w$]+),ccupCtx:ccupQCtx\}\)\{/;
+// The "Other" box's keydown: stopPropagation for unmodified keys, then the
+// Enter branch that advances to the next unanswered question.
+const UCE_Q_KEY_RE =
+  /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;if\(\1\.preventDefault\(\),([\w$]+)\.questions&&([\w$]+)<\2\.questions\.length-1\)([\w$]+)\(\3\+1\)\}\}/;
+const UCE_Q_KEY_ON_RE =
+  /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;\/\*ccup-uce\*\/var ccupOn=ccupQCtx&&ccupQCtx\.useCtrlEnterToSend;if\(!ccupOn\|\|\1\.metaKey\|\|\1\.ctrlKey\)\{if\(ccupOn\)\1\.stopPropagation\(\);if\(\1\.preventDefault\(\),([\w$]+)\.questions&&([\w$]+)<\2\.questions\.length-1\)([\w$]+)\(\3\+1\)\}\}\}/;
+// The permission component's signature (yields the context param's minified
+// name) and its feedback box's Enter-submits keydown handler.
+const UCE_PERM_SIG_RE =
+  /function [\w$]+\(\{request:[\w$]+,context:([\w$]+),onPermissionModeChange:[\w$]+\}\)\{/;
+const UCE_PERM_TE_RE =
+  /(=async\(([\w$]+)\)=>\{if\(\2\.key==="Enter"&&!\2\.shiftKey\)\{if\(\2\.nativeEvent\.isComposing\)return;)(\2\.preventDefault\(\),[\w$]+\(\)\})/;
+const UCE_PERM_TE_ON_RE =
+  /(=async\(([\w$]+)\)=>\{if\(\2\.key==="Enter"&&!\2\.shiftKey\)\{if\(\2\.nativeEvent\.isComposing\)return;)\/\*ccup-uce\*\/if\([\w$]+\.useCtrlEnterToSend&&!\2\.metaKey&&!\2\.ctrlKey\)return;/;
+
+function countMatches(c: string, re: RegExp): number {
+  return (c.match(new RegExp(re.source, "g")) ?? []).length;
+}
+
+// All five native anchors, each exactly once, so the rewrites can only land as
+// a complete, mutually consistent set.
+function uceNativeAnchorsPresent(c: string): boolean {
+  return [
+    UCE_Q_RENDER_RE,
+    UCE_Q_SIG_RE,
+    UCE_Q_KEY_RE,
+    UCE_PERM_SIG_RE,
+    UCE_PERM_TE_RE,
+  ].every((re) => countMatches(c, re) === 1);
+}
+
+function uceCurrentOn(c: string): boolean | undefined {
+  if (c.includes(UCE_TAG)) return true;
+  return uceNativeAnchorsPresent(c) ? false : undefined;
+}
+
+function ucePresent(c: string): boolean {
+  return uceCurrentOn(c) !== undefined;
+}
+
+function uceSet(c: string, on: boolean): string {
+  if (on) {
+    if (c.includes(UCE_TAG)) return c; // already on
+    if (!uceNativeAnchorsPresent(c)) return c; // anchors drifted: stay native
+    const ctx = c.match(UCE_PERM_SIG_RE)![1];
+    let out = c;
+    out = out.replace(
+      UCE_Q_RENDER_RE,
+      (_w, p1, p2, p3, p4, comp) =>
+        `permissionRequest(${p1},${p2},${p3},${p4}){return b(${comp},{input:${p2},onInputChange:${p3},options:${p4},ccupCtx:${p1}})}`,
+    );
+    out = out.replace(
+      UCE_Q_SIG_RE,
+      (_w, name, input, onChange, options) =>
+        `function ${name}({input:${input},onInputChange:${onChange},options:${options},ccupCtx:ccupQCtx}){`,
+    );
+    out = out.replace(
+      UCE_Q_KEY_RE,
+      (_w, k, props, idx, setIdx) =>
+        `onKeyDown:(${k})=>{if(!${k}.metaKey&&!${k}.ctrlKey)${k}.stopPropagation();` +
+        `if(${k}.key==="Enter"&&!${k}.shiftKey){if(${k}.nativeEvent.isComposing)return;` +
+        `${UCE_TAG}var ccupOn=ccupQCtx&&ccupQCtx.useCtrlEnterToSend;` +
+        `if(!ccupOn||${k}.metaKey||${k}.ctrlKey){if(ccupOn)${k}.stopPropagation();` +
+        `if(${k}.preventDefault(),${props}.questions&&${idx}<${props}.questions.length-1)${setIdx}(${idx}+1)}}}`,
+    );
+    out = out.replace(
+      UCE_PERM_TE_RE,
+      (_w, head, ev, tail) =>
+        `${head}${UCE_TAG}if(${ctx}.useCtrlEnterToSend&&!${ev}.metaKey&&!${ev}.ctrlKey)return;${tail}`,
+    );
+    return out;
+  }
+  let out = c;
+  out = out.replace(
+    UCE_Q_RENDER_ON_RE,
+    (_w, p1, p2, p3, p4, comp) =>
+      `permissionRequest(${p1},${p2},${p3},${p4}){return b(${comp},{input:${p2},onInputChange:${p3},options:${p4}})}`,
+  );
+  out = out.replace(
+    UCE_Q_SIG_ON_RE,
+    (_w, name, input, onChange, options) =>
+      `function ${name}({input:${input},onInputChange:${onChange},options:${options}}){`,
+  );
+  out = out.replace(
+    UCE_Q_KEY_ON_RE,
+    (_w, k, props, idx, setIdx) =>
+      `onKeyDown:(${k})=>{if(!${k}.metaKey&&!${k}.ctrlKey)${k}.stopPropagation();` +
+      `if(${k}.key==="Enter"&&!${k}.shiftKey){if(${k}.nativeEvent.isComposing)return;` +
+      `if(${k}.preventDefault(),${props}.questions&&${idx}<${props}.questions.length-1)${setIdx}(${idx}+1)}}`,
+  );
+  out = out.replace(UCE_PERM_TE_ON_RE, (_w, head) => head);
+  return out;
+}
+
 interface TogglePoint {
   id: string;
   section: Section;
@@ -3661,14 +3811,40 @@ const TOGGLE_POINTS: TogglePoint[] = [
     offValue: "!e.shiftKey",
     isOn: (v) => v.includes("metaKey"),
   },
+  {
+    id: "ctrlEnterEverywhere",
+    section: "Chat Panel or Tab",
+    label: "Cmd/Ctrl+Enter to send everywhere",
+    key: "useCtrlEnterToSendEverywhere",
+    defaultOn: false,
+    file: "webview/index.js",
+    fnPresent: ucePresent,
+    fnCurrentOn: uceCurrentOn,
+    fnSet: uceSet,
+  },
 ];
 
 export type ToggleMap = Record<string, boolean>;
+
+// The native claudeCode.useCtrlEnterToSend value: what the chat input already
+// follows live, and what ctrlEnterEverywhere extends to the other boxes.
+function nativeUseCtrlEnterToSend(): boolean {
+  return vscode.workspace
+    .getConfiguration("claudeCode")
+    .get<boolean>("useCtrlEnterToSend", false);
+}
 
 export function readToggles(): ToggleMap {
   const c = vscode.workspace.getConfiguration(CONFIG_NS);
   const m: ToggleMap = {};
   for (const t of TOGGLE_POINTS) m[t.id] = c.get<boolean>(t.key, t.defaultOn);
+  // The plan preview's comment box cannot read the native setting live (its
+  // webview has no config channel), so ctrlEnterEverywhere reaches it by baking
+  // the native value into the commentCtrlEnter swap at apply time. The explicit
+  // plan toggle still forces the swap on its own, so this is a pure widening.
+  if (m["ctrlEnterEverywhere"] && nativeUseCtrlEnterToSend()) {
+    m["commentCtrlEnter"] = true;
+  }
   return m;
 }
 
@@ -3954,12 +4130,24 @@ const CHAT_BOLD_VAL_RE =
 // paragraphs. The native rule is
 // `.root_<hash> p{white-space:pre-wrap;margin-top:.1em;margin-bottom:.2em}`, so
 // the gap is already em-relative (it tracks chatHistoryFontSize) and asymmetric.
-// We multiply BOTH margins by the setting, preserving their ratio. The base ems
-// are read from the native rule at apply time and baked into a calc(base*mult)
-// with !important, so: a native change to the base values is followed
-// faithfully, the rule stays em-relative, and the multiplier reads back out of
-// the calc factor (per-marker, not whole-file, so EOF line order never matters).
-// Because our p rule carries !important it would beat the native
+// The multiplier targets the VISIBLE gap, not the raw margins: what the eye
+// reads as "space between paragraphs" is the collapsed margin PLUS the line
+// leading (1lh - 1em; the chat container sets line-height 1.5, so ~0.5em),
+// which dwarfs the tiny native margins. Multiplying only the margins made a 5x
+// setting render ~2x (measured by ink-band pixels), so margin-bottom carries
+// the compensation: base*mult + (mult-1)*(1lh - 1em), clamped at 0 so sub-1
+// values bottom out at "paragraph break reads as a plain line break" rather
+// than pulling lines closer than the in-paragraph rhythm. margin-top scales
+// plainly: adjacent p margins collapse to max(), which the compensated bottom
+// dominates for mult >= 1, and the plain top keeps spacing after non-p blocks
+// (headings, lists, code) on its native scale. The remaining sub-mult residue
+// is the font's own ink slack inside the em box, which no margin can subtract.
+// The base ems are read from the native rule at apply time, so a native change
+// to them is followed faithfully; the multiplier reads back out of the
+// margin-bottom calc (per-marker, not whole-file, so EOF line order never
+// matters), and requiring the max(0em,...) form there makes a rule written by
+// the older margins-only patch read as stale and rebuild in place. Because our
+// p rule carries !important it would beat the native
 // `.root_<hash>>:first-child{margin-top:0}` (important over non-important) and
 // re-open a gap above the first block, so we re-assert that reset with
 // !important on the same line (0 needs no scaling). 1 = native (no rule).
@@ -3969,9 +4157,10 @@ const CHAT_PARA_MARKER = "/*cc-ui-patch:chatParaSpacing*/";
 // Requires white-space:pre-wrap so our own appended rule can never re-match.
 const CHAT_PARA_BASE_RE =
   /\.root_([-\w]+) p\{white-space:pre-wrap;margin-top:(\d*\.?\d+)em;margin-bottom:(\d*\.?\d+)em\}/;
-// The multiplier baked into our appended rule (recovered from the calc factor).
+// The multiplier baked into our appended rule (recovered from the compensated
+// margin-bottom calc; older margins-only lines fail this on purpose).
 const CHAT_PARA_MULT_RE =
-  /\/\*cc-ui-patch:chatParaSpacing\*\/[^\n]*?margin-top:calc\(\d*\.?\d+em \* (\d*\.?\d+)\)/;
+  /\/\*cc-ui-patch:chatParaSpacing\*\/[^\n]*?margin-bottom:max\(0em, calc\(\d*\.?\d+em \* (\d*\.?\d+) \+ /;
 
 // chatInputHistoryFontSize / chatInputHistoryFontFamily: size and font for the
 // TEXT of sent user messages in the chat history (.expandableContainer_<hash>,
@@ -4171,12 +4360,26 @@ function planInjectCodeFamily(c: string, v: InjectValue): string {
 // track the bundle; the anchor requires a unitless line-height and a 4-value px
 // padding and fails gracefully (native) on any other form. The mirror gets the
 // same cap to stay metric-identical; it needs no scroll-padding (overflow is
-// hidden there, the JS copies the input's scrollTop).
+// hidden there, the JS copies the input's scrollTop on the input's scroll
+// events).
+//
+// The mirror also gets one line of extra bottom padding. The editable layer can
+// lay out a caret line the static mirror does not: deleting back to a trailing
+// newline leaves the input's scrollHeight one line taller than a fresh layout
+// of the same text (the mirror's), so at max scroll the mirror clamps a line
+// short of the copied scrollTop and every glyph paints a line below the caret
+// ("cursor on the wrong line" while typing at the end). Extra padding-bottom
+// extends only the mirror's scrollable range (its box is capped by max-height,
+// and text position at a given scrollTop is unchanged), so the copy can always
+// reach the input's scrollTop; whenever the heights already agree the extra
+// range is simply never scrolled into.
 const MSG_INPUT_MARKER = "/*cc-ui-patch:inputLines*/";
 const MSG_INPUT_RULE_RE =
   /\.messageInput_([-\w]+)\{[^{}]*?max-height:\d+(?:\.\d+)?px;padding:(\d+(?:\.\d+)?)px \d+(?:\.\d+)?px (\d+(?:\.\d+)?)px \d+(?:\.\d+)?px;[^{}]*?line-height:(\d+(?:\.\d+)?)\}/;
+// Requires the mirror's compensating padding-bottom segment, so a line written
+// by the older patch (without it) reads as stale and rebuilds in place.
 const MSG_INPUT_EM_RE =
-  /\/\*cc-ui-patch:inputLines\*\/[^\n]*?max-height:min\((\d+(?:\.\d+)?)em,70vh\)/;
+  /\/\*cc-ui-patch:inputLines\*\/[^\n]*?max-height:min\((\d+(?:\.\d+)?)em,70vh\)[^\n]*?\.mentionMirror_[-\w]+\{padding-bottom:calc\(\d+(?:\.\d+)?px \+ 1lh\)/;
 
 const INJECT_POINTS: InjectPoint[] = [
   {
@@ -4300,7 +4503,7 @@ const INJECT_POINTS: InjectPoint[] = [
       return cssApplyLine(
         c,
         CHAT_PARA_MARKER,
-        `${CHAT_PARA_MARKER}.root_${m[1]} p{margin-top:calc(${m[2]}em * ${v}) !important;margin-bottom:calc(${m[3]}em * ${v}) !important}` +
+        `${CHAT_PARA_MARKER}.root_${m[1]} p{margin-top:calc(${m[2]}em * ${v}) !important;margin-bottom:max(0em, calc(${m[3]}em * ${v} + (${v} - 1) * (1lh - 1em))) !important}` +
           `.root_${m[1]}>:first-child{margin-top:0 !important}`,
       );
     },
@@ -4596,7 +4799,8 @@ const INJECT_POINTS: InjectPoint[] = [
         c,
         MSG_INPUT_MARKER,
         `${MSG_INPUT_MARKER}.messageInput_${hash},.mentionMirror_${hash}{max-height:min(${em}em,70vh) !important}` +
-          `.messageInput_${hash}{scroll-padding:${padTop}px 0 ${padBottom}px !important}`,
+          `.messageInput_${hash}{scroll-padding:${padTop}px 0 ${padBottom}px !important}` +
+          `.mentionMirror_${hash}{padding-bottom:calc(${padBottom}px + 1lh) !important}`,
       );
     },
     remove: (c) => cssRemoveLine(c, MSG_INPUT_MARKER),
@@ -4732,7 +4936,9 @@ export function previewModel(): PreviewModel {
   const codeFamily = effFamily("chatCodeFamily");
   return {
     chat: {
-      agentSizePx: Number(formatNativePx(effNum("chatHistorySize", nativeChat))),
+      agentSizePx: Number(
+        formatNativePx(effNum("chatHistorySize", nativeChat)),
+      ),
       agentFamily: effFamily("chatHistoryFamily"),
       agentBoldWeight: effNum("chatBoldWeight", NATIVE_BOLD_WEIGHT),
       paraSpacing: effScale("chatParaSpacing"),
@@ -4826,13 +5032,13 @@ function stockValueFor(p: PatchPoint, capture: StockCapture): string {
 // Number-style points are captured only when force=true (fresh bundle after a
 // version change), because a bare number can't be distinguished from a
 // previously patched value.
-function captureStockValues(ext: ClaudeExt, force: boolean): StockCapture {
+function captureStockValues(
+  ext: ClaudeExt,
+  force: boolean,
+  cache?: ReadCache,
+): StockCapture {
   const captured: StockCapture = {};
-  const cache = new Map<string, string | undefined>();
-  const read = (rel: string) => {
-    if (!cache.has(rel)) cache.set(rel, readFileSafe(ext, rel));
-    return cache.get(rel);
-  };
+  const read = cacheReader(ext, cache);
   for (const p of PATCH_POINTS) {
     if (!p.style || !p.res) continue;
     const content = read(p.file);
@@ -4963,16 +5169,41 @@ function readFileSafe(ext: ClaudeExt, rel: string): string | undefined {
   }
 }
 
+// A per-pass read cache: the target files are multi-megabyte (webview/index.js
+// alone is ~5 MB), and one apply pass consults them from applyPatch, the
+// pendingReload reconcile, the stock capture, and four analyzers, each of which
+// otherwise re-reads from disk. Sharing one cache across a pass turns that into
+// a single read per file. The cache is pinned to the install dir it was filled
+// from, so a Claude Code update that swaps the versioned directory mid-pass can
+// never serve content from the old dir: helpers fall back to a private map when
+// the dir differs. applyPatch seeds the cache with each file's post-write
+// content, so downstream consumers see exactly what landed on disk.
+export interface ReadCache {
+  dir: string;
+  map: Map<string, string | undefined>;
+}
+
+function cacheReader(
+  ext: ClaudeExt,
+  cache?: ReadCache,
+): (rel: string) => string | undefined {
+  const map =
+    cache && cache.dir === ext.dir
+      ? cache.map
+      : new Map<string, string | undefined>();
+  return (rel: string) => {
+    if (!map.has(rel)) map.set(rel, readFileSafe(ext, rel));
+    return map.get(rel);
+  };
+}
+
 export function analyze(
   ext: ClaudeExt,
   sizes: SizeMap,
   capture: StockCapture,
+  cache?: ReadCache,
 ): PointState[] {
-  const cache = new Map<string, string | undefined>();
-  const read = (rel: string) => {
-    if (!cache.has(rel)) cache.set(rel, readFileSafe(ext, rel));
-    return cache.get(rel);
-  };
+  const read = cacheReader(ext, cache);
   return PATCH_POINTS.map((p): PointState => {
     const base = { id: p.id, label: p.label, section: p.section };
     const content = read(p.file);
@@ -5010,12 +5241,9 @@ export interface ToggleState {
 export function analyzeToggles(
   ext: ClaudeExt,
   toggles: ToggleMap,
+  cache?: ReadCache,
 ): ToggleState[] {
-  const cache = new Map<string, string | undefined>();
-  const read = (rel: string) => {
-    if (!cache.has(rel)) cache.set(rel, readFileSafe(ext, rel));
-    return cache.get(rel);
-  };
+  const read = cacheReader(ext, cache);
   return TOGGLE_POINTS.map((t): ToggleState => {
     const base = { id: t.id, label: t.label, section: t.section };
     const wantOn = toggles[t.id];
@@ -5040,10 +5268,14 @@ export interface AlwaysState {
   status: AlwaysStatus;
 }
 
-export function analyzeAlways(ext: ClaudeExt): AlwaysState[] {
+export function analyzeAlways(
+  ext: ClaudeExt,
+  cache?: ReadCache,
+): AlwaysState[] {
+  const read = cacheReader(ext, cache);
   return ALWAYS_POINTS.map((a): AlwaysState => {
     const base = { id: a.id, label: a.label };
-    const c = readFileSafe(ext, a.file);
+    const c = read(a.file);
     if (c === undefined) return { ...base, status: "missing" };
     const want = a.build(c);
     const cur = cssMarkedLine(c, a.marker);
@@ -5065,12 +5297,11 @@ export interface InjectState {
 // Same shape as analyze()/analyzeToggles() for the string/size/rows injections:
 // "stock" = bundle native and the setting wants an injection; "custom" = the
 // bundle carries an injection differing from the setting (leftover or drifted).
-export function analyzeInjects(ext: ClaudeExt): InjectState[] {
-  const cache = new Map<string, string | undefined>();
-  const read = (rel: string) => {
-    if (!cache.has(rel)) cache.set(rel, readFileSafe(ext, rel));
-    return cache.get(rel);
-  };
+export function analyzeInjects(
+  ext: ClaudeExt,
+  cache?: ReadCache,
+): InjectState[] {
+  const read = cacheReader(ext, cache);
   return INJECT_POINTS.map((ip): InjectState => {
     const base = { id: ip.id, label: ip.label, section: ip.section };
     const want = readInject(ip);
@@ -5129,18 +5360,24 @@ export function applyPatch(
   sizes: SizeMap,
   toggles: ToggleMap,
   capture: StockCapture,
+  cache?: ReadCache,
 ): PatchReport {
   const changed: string[] = [];
   const pointsByFile = byFile();
   const togglesByFile = toggleByFile();
   const injectsByFile = injectByFile();
   const files = allPatchedFiles();
+  const seed =
+    cache && cache.dir === ext.dir
+      ? (rel: string, c: string | undefined) => void cache.map.set(rel, c)
+      : () => {};
   for (const file of files) {
     const abs = filePath(ext, file);
     let content: string;
     try {
       content = fs.readFileSync(abs, "utf8");
     } catch {
+      seed(file, undefined);
       continue;
     }
     let out = content;
@@ -5213,6 +5450,7 @@ export function applyPatch(
       changed.push(`${a.label} ${want === undefined ? "native" : "applied"}`);
     }
     if (out !== content) writeFileAtomic(abs, out);
+    seed(file, out);
   }
   // Math rendering ships webfont FILES alongside the bundle edits: keep them in
   // step with the toggle (copied when on, removed when off).
@@ -5379,13 +5617,17 @@ export class Patcher {
       ...INJECT_POINTS.map((ip) => ip.key),
       ...EXTRA_PATCH_KEYS.map(([k]) => k),
     ].map((k) => `${CONFIG_NS}.${k}`);
+    // Foreign settings a patch bakes a value from: the plan comment box takes
+    // claudeCode.useCtrlEnterToSend through the commentCtrlEnter fold, so a
+    // change there must re-run the apply pass too.
+    patchKeys.push("claudeCode.useCtrlEnterToSend");
     // chat.fontSize is no longer a knob, but the chatHistoryFontSize knob shows it
     // while inheriting, so a native change should refresh (not re-patch) the view.
     const nativeKeys = NATIVE_KNOBS.map((k) => k.vscodeKey);
     return [
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (patchKeys.some((k) => e.affectsConfiguration(k))) {
-          this.autoApply();
+          this.scheduleAutoApply();
         } else if (nativeKeys.some((k) => e.affectsConfiguration(k))) {
           this.refresh();
         }
@@ -5566,14 +5808,14 @@ export class Patcher {
     };
   }
 
-  private refresh(): void {
+  private refresh(cache?: ReadCache): void {
     this.ext = findLatestClaudeExt(this.context);
     if (this.ext) {
-      this.refreshStockCapture(this.ext);
-      this.states = analyze(this.ext, readSizes(), this.stockCapture);
-      this.toggleStates = analyzeToggles(this.ext, readToggles());
-      this.injectStates = analyzeInjects(this.ext);
-      this.alwaysStates = analyzeAlways(this.ext);
+      this.refreshStockCapture(this.ext, cache);
+      this.states = analyze(this.ext, readSizes(), this.stockCapture, cache);
+      this.toggleStates = analyzeToggles(this.ext, readToggles(), cache);
+      this.injectStates = analyzeInjects(this.ext, cache);
+      this.alwaysStates = analyzeAlways(this.ext, cache);
       if (this.activationPx.size === 0) this.captureActivationPx();
     } else {
       this.states = [];
@@ -5613,6 +5855,9 @@ export class Patcher {
   // After writing, reconcile pendingReload in a single pass, then refresh once.
   // `activation` is set only for the activation-time re-apply (constructor); on
   // that path we prompt a reload once the write leaves the running window stale.
+  // One ReadCache spans the whole pass: applyPatch seeds it with what landed on
+  // disk, and the reconcile plus every analyzer read from it, so each target
+  // file is read once per pass instead of once per consumer.
   private async autoApply(activation?: { updated: boolean }): Promise<void> {
     // Re-resolve the install in case Claude Code updated in place since the last
     // refresh (its versioned directory changes on update, so a cached ext could
@@ -5622,9 +5867,16 @@ export class Patcher {
       this.refresh();
       return;
     }
+    const cache: ReadCache = { dir: this.ext.dir, map: new Map() };
     try {
-      applyPatch(this.ext, readSizes(), readToggles(), this.stockCapture);
-      this.reconcilePendingReload();
+      applyPatch(
+        this.ext,
+        readSizes(),
+        readToggles(),
+        this.stockCapture,
+        cache,
+      );
+      this.reconcilePendingReload(cache);
       // A drifted bundle at activation means Claude Code reverted the patch
       // (typically an update). We just re-applied it to disk, but the running
       // window still shows the reverted UI, so prompt a reload. Only notify when
@@ -5637,7 +5889,45 @@ export class Patcher {
         `Claude Code UI Patch: failed to patch Claude Code: ${(err as Error).message}`,
       );
     }
-    this.refresh();
+    this.refresh(cache);
+  }
+
+  // Config changes arrive one event per written key, and rapid panel clicks
+  // arrive as a burst of writes. Firing the emitter immediately keeps the
+  // settings-derived panel state (live preview, px readouts) tracking each
+  // click with no disk work on the path, while the heavy disk pass (multi-MB
+  // reads, regex transforms, writes, re-analysis) coalesces behind a short
+  // trailing debounce: a burst runs one pass, against the settings current at
+  // pass time. Disk-truth indicators (dots, the reload cue) update when that
+  // pass lands. A change arriving mid-pass queues exactly one follow-up.
+  private applyTimer: ReturnType<typeof setTimeout> | undefined;
+  private applyRunning = false;
+  private applyQueued = false;
+
+  private scheduleAutoApply(): void {
+    this.emitter.fire();
+    if (this.applyTimer !== undefined) clearTimeout(this.applyTimer);
+    this.applyTimer = setTimeout(() => {
+      this.applyTimer = undefined;
+      void this.runCoalescedApply();
+    }, APPLY_DEBOUNCE_MS);
+  }
+
+  private async runCoalescedApply(): Promise<void> {
+    if (this.applyRunning) {
+      this.applyQueued = true;
+      return;
+    }
+    this.applyRunning = true;
+    try {
+      await this.autoApply();
+    } finally {
+      this.applyRunning = false;
+      if (this.applyQueued) {
+        this.applyQueued = false;
+        void this.runCoalescedApply();
+      }
+    }
   }
 
   // Re-run the reconcile outside a configuration change. Used by the
@@ -5666,13 +5956,9 @@ export class Patcher {
       });
   }
 
-  private reconcilePendingReload(): void {
+  private reconcilePendingReload(cache?: ReadCache): void {
     if (!this.ext) return;
-    const cache = new Map<string, string | undefined>();
-    const read = (rel: string) => {
-      if (!cache.has(rel)) cache.set(rel, readFileSafe(this.ext!, rel));
-      return cache.get(rel);
-    };
+    const read = cacheReader(this.ext, cache);
     const reconcile = (id: string, now: string | undefined) => {
       if (now === this.activationPx.get(id)) this.pendingReload.delete(id);
       else this.pendingReload.add(id);
@@ -5699,7 +5985,7 @@ export class Patcher {
   // globalState was cleared), the bundle may already be patched, so we only
   // capture value-style points (reliably detected as stock via var()) and fall
   // back to hardcoded originalPx for number-style points.
-  private refreshStockCapture(ext: ClaudeExt): void {
+  private refreshStockCapture(ext: ClaudeExt, cache?: ReadCache): void {
     const savedVersion =
       this.context.globalState.get<string>(STOCK_VERSION_KEY);
     const savedValues = this.context.globalState.get<StockCapture>(
@@ -5711,14 +5997,20 @@ export class Patcher {
 
     let capture: StockCapture;
     if (realVersionChange) {
-      capture = captureStockValues(ext, true);
+      capture = captureStockValues(ext, true, cache);
     } else {
-      capture = { ...savedValues, ...captureStockValues(ext, false) };
+      capture = { ...savedValues, ...captureStockValues(ext, false, cache) };
     }
 
     this.stockCapture = capture;
-    void this.context.globalState.update(STOCK_VERSION_KEY, ext.version);
-    void this.context.globalState.update(STOCK_VALUES_KEY, capture);
+    // globalState writes hit the extension-host storage DB; skip them when the
+    // pass changed nothing, which is every pass but the first per version.
+    if (savedVersion !== ext.version) {
+      void this.context.globalState.update(STOCK_VERSION_KEY, ext.version);
+    }
+    if (JSON.stringify(savedValues) !== JSON.stringify(capture)) {
+      void this.context.globalState.update(STOCK_VALUES_KEY, capture);
+    }
   }
 
   // Set an absolute size for a patch knob. The panel computes the target value

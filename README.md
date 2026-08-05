@@ -41,7 +41,7 @@ Chat Panel and Tab                     # chat history only, private to Claude Co
    ├── chatHistoryFontSize             # agent message text, 0 -> follows chat.fontSize
    ├── chatHistoryFontFamily           # agent message font, empty -> native UI font
    ├── chatHistoryBoldWeight           # weight of bold text in agent messages, 0 -> native (700)
-   ├── chatHistoryParagraphSpacing     # gap between agent paragraphs, 1.0 = native
+   ├── chatHistoryParagraphSpacing     # visible gap between agent paragraphs, 1.0 = native
    ├── chatInputHistoryFontSize        # sent user message text, 0 -> follows chat.fontSize
    ├── chatInputHistoryFontFamily      # sent user message font, empty -> native chat font
    ├── chatCodeBlockFontSize           # fenced code blocks
@@ -80,7 +80,9 @@ Behavior
    ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)
    ├── effortSyncFix                   # push persisted effort level to a reloaded session if On
-   └── planPreviewCommentInputCtrlEnterToSend  # Cmd/Ctrl+Enter sends, plain Enter newlines if On
+   ├── planPreviewCommentInputCtrlEnterToSend  # Cmd/Ctrl+Enter sends, plain Enter newlines if On
+   └── useCtrlEnterToSendEverywhere    # native useCtrlEnterToSend reaches the question "Other" box,
+                                       #   permission feedback box, and plan comment box if On
 
 Always applied                         # no setting; installing this patch is the opt-in
    └── permission focus ring           # focused permission/question box gets the input box's ring
@@ -105,6 +107,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
 
 - **Panel controls:** Press `Cmd+Shift+P` / `Ctrl+Shift+P` (or `F1`) to open the Command Palette, then run **Claude Code UI Patch: Open Panel**. Or alternatively, click the `aA` item at the far right of the status bar.
   Use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect), yellow (reload needed), or red (unavailable on this Claude Code version).
+  When changes are pending, the header banner turns amber and becomes the reload button: click it to reload the window.
 - **Direct edits:** Font families, the math size (`chatMathFontSizeEm`), the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload.
 
 ## Caveats

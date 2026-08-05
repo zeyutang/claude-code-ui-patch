@@ -193,7 +193,6 @@ ${sections}
         <button class="btn btn-red" data-cmd="restore" title="Reset every setting to Claude Code's native values">Factory Reset</button>
       </div>
       <a class="link" data-cmd="openSettings">&#9881; Open Settings</a>
-      <a class="link link-reload${snap.needsReload ? " link-reload-pending" : ""}" data-cmd="reload">&#8635; Reload Window</a>
     </div>
 ${preview}  </div>
   <script nonce="${nonce}">
@@ -237,12 +236,13 @@ ${preview}  </div>
       document.querySelectorAll('.pv-agent-text strong').forEach(function (el) {
         el.style.fontWeight = String(c.agentBoldWeight);
       });
-      // Paragraph gaps are em-relative, tracking the agent size exactly as the
-      // native rule (margin-top .1em, margin-bottom .2em) times the spacing
-      // multiplier; the first block keeps a zero top margin.
+      // Paragraph gaps use the same compensated formula the patch writes: the
+      // multiplier scales the native margins plus the line leading (1lh - 1em),
+      // clamped at zero, so the preview band matches the chat's visible gap;
+      // the first block keeps a zero top margin.
       document.querySelectorAll('.pv-agent-text p').forEach(function (pp, i) {
         pp.style.marginTop = i === 0 ? '0' : ('calc(0.1em * ' + c.paraSpacing + ')');
-        pp.style.marginBottom = 'calc(0.2em * ' + c.paraSpacing + ')';
+        pp.style.marginBottom = 'max(0em, calc(0.2em * ' + c.paraSpacing + ' + (' + c.paraSpacing + ' - 1) * (1lh - 1em)))';
       });
       pvStyle('.pv-input-text', c.inputSizePx, null); // input box uses the native UI font
       pvStyle('.pv-chat-inline-ctx', c.agentSizePx, c.agentFamily); // prose around the token
@@ -324,8 +324,6 @@ ${preview}  </div>
         const st = document.querySelector('.header-status');
         if (st) st.innerHTML = m.status;
       }
-      const rl = document.querySelector('a[data-cmd="reload"]');
-      if (rl) rl.classList.toggle('link-reload-pending', !!m.reloadPending);
       const disc = document.querySelector('button[data-cmd="discard"]');
       if (disc) disc.classList.toggle('quiet', !m.reloadPending);
       if (m.preview) applyPreview(m.preview);
@@ -361,13 +359,17 @@ function dotInfo(k: Knob): { cls: string; title: string } {
     : { cls: "dot-ok", title: "in effect" };
 }
 
+// The banner doubles as the reload control: the amber pending state renders as
+// a real <button> (keyboard and focus come free) wired to the reload command,
+// so the cue and the action are one element; the informational states stay
+// inert spans.
 function statusInner(snap: Snapshot): string {
   if (!snap.supported)
     return `<span class="status-banner warn">Patch not supported on Claude Code v${snap.version}</span>`;
   if (snap.partialLoss)
     return `<span class="status-banner lost">Some settings can't be applied on this version</span>`;
   if (snap.needsReload)
-    return `<span class="status-banner warn">Reload window to apply changes</span>`;
+    return `<button class="status-banner warn status-action" data-cmd="reload" title="Reload the window to apply the pending changes">&#8635; Click here to reload</button>`;
   return `<span class="status-banner ok">All settings applied</span>`;
 }
 
@@ -488,21 +490,20 @@ const baseCss = `
   /* Every header status is a full-width banner so the strip never changes height
      between states: green when everything is applied, yellow when a reload is due
      or the version is unsupported, and Claude clay when some wanted settings can't
-     be applied on this Claude Code version. */
-  .status-banner { display: block; color: #fff; padding: 4px 12px; border-radius: 3px; font-weight: 700; }
+     be applied on this Claude Code version. The amber pending state is a real
+     button (the reload control itself), so it resets button chrome to the banner
+     look and only adds a pointer and a hover shade. */
+  .status-banner { display: block; width: 100%; box-sizing: border-box; color: #fff; padding: 4px 12px; border-radius: 3px; font-weight: 700; }
   .status-banner.ok { background: #3fa34d; }
   .status-banner.warn { background: var(--vscode-statusBarItem-warningBackground, #b7791f); }
   .status-banner.lost { background: #d97757; }
+  button.status-action { border: none; text-align: left; font-family: inherit; font-size: inherit; cursor: pointer; }
+  button.status-action:hover { filter: brightness(0.92); }
   .dot { font-size: .8em; }
   .dot-ok { color: var(--vscode-gitDecoration-addedResourceForeground); }
   .dot-warn { color: var(--vscode-editorWarning-foreground); }
   .dot-lost { color: var(--vscode-editorError-foreground, #c74e39); }
   a.link { color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: none; font-size: 1.1em; margin-top: 12px; display: block; }
-  /* The reload link is always a badge with the same box in both states, so it
-     never jitters when the pending state flips: green while everything is
-     applied, yellow when a reload is due. */
-  a.link.link-reload { display: inline-block; background: #3fa34d; color: #fff; padding: 3px 12px; border-radius: 3px; font-weight: 700; }
-  a.link.link-reload.link-reload-pending { background: var(--vscode-statusBarItem-warningBackground, #b7791f); }
   /* Live preview. A faithful mock of the chat and plan surfaces; the script
      sizes and fonts each element from the PreviewModel. The font-family rules
      below are the native state (family null), overridden inline by the script
@@ -513,7 +514,9 @@ const baseCss = `
   .pv-bubble { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 7px 10px; background: var(--vscode-editor-background); }
   .pv-bubble.pv-user { background: var(--vscode-textBlockQuote-background, rgba(127,127,127,.08)); }
   .pv-agent-text, .pv-chat-inline-ctx { font-family: var(--vscode-font-family); }
-  .pv-agent-text p { margin: 0; white-space: pre-wrap; }
+  /* The chat container sets line-height 1.5, which the paragraph-gap formula
+     reads through its 1lh term, so the mock must match for a true gap. */
+  .pv-agent-text p { margin: 0; white-space: pre-wrap; line-height: 1.5; }
   /* Native bold: what a browser computes for <strong> against a 400 parent. Pinned
      rather than left to the UA default so a theme body weight can't shift the
      baseline the script overrides. */

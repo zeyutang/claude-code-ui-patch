@@ -70,7 +70,7 @@
           "default": 1,
           "minimum": 0,
           "maximum": 5,
-          "markdownDescription": "Multiplier on the gap between agent-message paragraphs (scales the native `em` margins, so it tracks `#claudeCodeUiPatch.chatHistoryFontSize#`). `1` = native, `1.2` = 20% looser, `0` = no gap."
+          "markdownDescription": "Multiplier on the visible gap between agent-message paragraphs (the native `em` margins plus the line leading, so it tracks `#claudeCodeUiPatch.chatHistoryFontSize#`). `1` = native, `2` = twice the visible gap, `0` = a plain line break."
         },
         "claudeCodeUiPatch.chatInputHistoryFontSize": {
           "type": "number",
@@ -163,6 +163,11 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Recall previous/next sent messages with `Cmd`/`Ctrl`+`Up`/`Down` from anywhere in the chat input, and keep plain `Up`/`Down` moving the caret only. Off = native (plain `Up`/`Down` at the input's very start/end recalls)."
+        },
+        "claudeCodeUiPatch.useCtrlEnterToSendEverywhere": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Extend `#claudeCode.useCtrlEnterToSend#` beyond the chat input: the AskUserQuestion `Other` answer and the permission feedback box follow it live, and the Plan Mode comment box follows its value from the last reload. Off = native (`Enter` submits in those boxes)."
         },
         "claudeCodeUiPatch.chatFindBar": {
           "type": "boolean",

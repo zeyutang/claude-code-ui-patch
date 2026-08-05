@@ -42,10 +42,14 @@ export const MAX_WEIGHT = 900;
 export const WEIGHT_STEP = 100;
 export const NATIVE_BOLD_WEIGHT = 700;
 
-export type Section = "Chat Panel or Tab" | "Plan Mode Markdown Preview";
+export type Section =
+  | "Chat Panel or Tab"
+  | "Plan Mode Markdown Preview"
+  | "Behavior";
 export const SECTION_ORDER: Section[] = [
   "Chat Panel or Tab",
   "Plan Mode Markdown Preview",
+  "Behavior",
 ];
 
 // Display order of knobs within a section (panel and popup), by point id. Ids
@@ -61,20 +65,22 @@ const KNOB_ORDER: string[] = [
   "diffLineNumbers",
   "diffThemeSync",
   "chatMath", // math rendering (KaTeX), grouped under the diff card settings
-  "permCode",
-  "permNoWrap",
-  "effortSyncFix",
-  "scrollDot", // scroll-to-bottom dot
-  "jumpMsg", // jump to previous/next message
-  "histKeys", // input history recall on Cmd/Ctrl+Up/Down
-  "findBar", // in-chat find bar (Cmd/Ctrl+F)
   "text", // plan agent response
   "planCodeInline", // plan inline code
   "code", // plan code block
   "preview", // plan comment quote
   "input", // plan comment composer
   "badge", // plan comment badge
+  // Behavior, mirroring the README tree's order (alphabetical by settings key).
+  "findBar", // in-chat find bar (Cmd/Ctrl+F)
+  "histKeys", // input history recall on Cmd/Ctrl+Up/Down
+  "jumpMsg", // jump to previous/next message
+  "scrollDot", // scroll-to-bottom dot
+  "permCode",
+  "permNoWrap",
+  "effortSyncFix",
   "commentCtrlEnter", // plan comment send key
+  "ctrlEnterEverywhere",
 ];
 function knobOrder(id: string): number {
   const i = KNOB_ORDER.indexOf(id);
@@ -82,11 +88,17 @@ function knobOrder(id: string): number {
 }
 
 // Knobs computed into the snapshot but intentionally not shown in any UI surface
-// (the panel and the status-bar tooltip alike). The effort-level indicator sync
-// is a set-and-forget fix, not something to tune by hand: hiding it keeps it off
-// both surfaces while its setting still applies and still counts toward the
-// apply / reload state (that logic reads the toggle states, not this knob list).
-export const HIDDEN_KNOBS = new Set<string>(["effortSyncFix"]);
+// (the panel and the status-bar tooltip alike). Hiding keeps a knob off both
+// surfaces while its setting still applies and still counts toward the apply /
+// reload state (that logic reads the toggle states, not this knob list). The
+// effort-level indicator sync is a set-and-forget fix, not something to tune by
+// hand. The plan comment send key is settings-only: the panel's "Cmd/Ctrl +
+// Enter to send everywhere" row already reaches the plan comment box (the
+// readToggles fold), so a dedicated row was noise.
+export const HIDDEN_KNOBS = new Set<string>([
+  "effortSyncFix",
+  "commentCtrlEnter",
+]);
 
 // ---------------------------------------------------------------------------
 // Native chat text size. NOT patched: Claude Code reads chat.fontSize and
@@ -247,7 +259,7 @@ const PATCH_POINTS: PatchPoint[] = [
   {
     id: "text",
     section: "Plan Mode Markdown Preview",
-    label: "agent response",
+    label: "Claude's drafted plan",
     key: "planPreviewFontSize",
     defaultPx: 14,
     maxPx: 24,
@@ -3707,7 +3719,7 @@ const TOGGLE_POINTS: TogglePoint[] = [
   },
   {
     id: "effortSyncFix",
-    section: "Chat Panel or Tab",
+    section: "Behavior",
     label: "effort-level indicator sync",
     key: "effortSyncFix",
     defaultOn: false,
@@ -3718,8 +3730,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   },
   {
     id: "permCode",
-    section: "Chat Panel or Tab",
-    label: "permission code fontsize sync",
+    section: "Behavior",
+    label: "Chat panel or tab: permission request syncs code block font size",
     key: "chatPermissionCodeMatchChatCodeBlock",
     defaultOn: false,
     file: "webview/index.css",
@@ -3729,8 +3741,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   },
   {
     id: "permNoWrap",
-    section: "Chat Panel or Tab",
-    label: "permission code no-wrap",
+    section: "Behavior",
+    label: "Chat panel or tab: permission request code block no-wrap",
     key: "chatPermissionCodeNoWrap",
     defaultOn: false,
     file: "webview/index.css",
@@ -3754,8 +3766,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   },
   {
     id: "scrollDot",
-    section: "Chat Panel or Tab",
-    label: "scroll-to-bottom button",
+    section: "Behavior",
+    label: "Chat panel or tab: add scroll-to-bottom button",
     key: "chatScrollToBottomDot",
     defaultOn: false,
     file: "webview/index.js",
@@ -3765,8 +3777,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   },
   {
     id: "jumpMsg",
-    section: "Chat Panel or Tab",
-    label: "previous/next message buttons",
+    section: "Behavior",
+    label: "Chat panel or tab: jump to previous/next msg in chat history",
     key: "chatJumpToMessageButtons",
     defaultOn: false,
     file: "webview/index.js",
@@ -3776,8 +3788,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   },
   {
     id: "histKeys",
-    section: "Chat Panel or Tab",
-    label: "input Cmd/Ctrl + Up/Down to recall",
+    section: "Behavior",
+    label: "Chat panel or tab: Cmd/Ctrl + Up/Down to recall previous/next msg",
     key: "chatInputCtrlUpDownToHistory",
     defaultOn: false,
     file: "webview/index.js",
@@ -3787,8 +3799,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   },
   {
     id: "findBar",
-    section: "Chat Panel or Tab",
-    label: "find in chat (Cmd/Ctrl+F)",
+    section: "Behavior",
+    label: "Chat panel or tab: add FindBar (Cmd/Ctrl+F)",
     key: "chatFindBar",
     defaultOn: false,
     file: "webview/index.js",
@@ -3801,8 +3813,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   },
   {
     id: "commentCtrlEnter",
-    section: "Plan Mode Markdown Preview",
-    label: "comment Cmd/Ctrl + Enter to send",
+    section: "Behavior",
+    label: "Plan mode preview: Cmd/Ctrl + Enter to send comment",
     key: "planPreviewCommentInputCtrlEnterToSend",
     defaultOn: false,
     file: "extension.js",
@@ -3813,8 +3825,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   },
   {
     id: "ctrlEnterEverywhere",
-    section: "Chat Panel or Tab",
-    label: "Cmd/Ctrl+Enter to send everywhere",
+    section: "Behavior",
+    label: "Cmd/Ctrl + Enter to send everywhere",
     key: "useCtrlEnterToSendEverywhere",
     defaultOn: false,
     file: "webview/index.js",
@@ -4725,7 +4737,7 @@ const INJECT_POINTS: InjectPoint[] = [
   },
   {
     id: "showMoreAlign",
-    section: "Chat Panel or Tab",
+    section: "Behavior",
     label: "show more/less align",
     key: "chatShowMoreAndLessAlign",
     kind: "align",
@@ -4768,7 +4780,7 @@ const INJECT_POINTS: InjectPoint[] = [
   },
   {
     id: "chatInputLines",
-    section: "Chat Panel or Tab",
+    section: "Behavior",
     label: "input box max lines",
     key: "chatInputMaxLines",
     kind: "rows",
@@ -6172,7 +6184,13 @@ export function tooltipLines(snap: Snapshot | undefined): string[] {
   // `gap` widens the label→value spacing so the popup has more horizontal room.
   const valueStr = (k: Knob) =>
     k.kind === "toggle" ? (k.on ? "on" : "off") : `${k.px}${k.unit}`;
-  const rows = snap.knobs.filter((k) => !HIDDEN_KNOBS.has(k.id));
+  // The tooltip stays a glanceable summary of the two surface sections; the
+  // Behavior toggles are set-and-forget, shown in the panel only.
+  const rows = snap.knobs.filter(
+    (k) => !HIDDEN_KNOBS.has(k.id) && k.section !== "Behavior",
+  );
+  // One shared set of column widths: the section blocks render stacked in the
+  // same monospace face, so the value column lines up across them.
   const labelW = rows.length ? Math.max(...rows.map((k) => k.label.length)) : 0;
   const pxW = rows.length
     ? Math.max(...rows.map((k) => valueStr(k).length))

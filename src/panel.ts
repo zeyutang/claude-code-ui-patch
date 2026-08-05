@@ -160,8 +160,9 @@ ${csp}
       )
       .join("\n");
 
-    // The live preview mirrors the two knob sections; show a surface only when
-    // that section has knobs on this Claude Code version.
+    // The live preview mirrors the chat and plan sections (the Behavior section
+    // is toggles, nothing to size by eye); show a surface only when that
+    // section has knobs on this Claude Code version.
     const hasChat = groups.some((g) => g.sec === "Chat Panel or Tab");
     const hasPlan = groups.some((g) => g.sec === "Plan Mode Markdown Preview");
     const preview = hasChat || hasPlan ? previewHtml(hasChat, hasPlan) : "";
@@ -334,13 +335,15 @@ ${preview}  </div>
   }
 }
 
-// Structure signature: a full re-render happens only when this changes.
+// Structure signature: a full re-render happens only when this changes. Labels
+// are part of the structure (they are baked into the HTML, not synced), so a
+// label change in an update re-renders an already-open panel.
 function shapeOf(snap: Snapshot | undefined): string {
   if (!snap || !snap.available) return "none";
   return [
     snap.supported,
     snap.version,
-    snap.knobs.map((k) => k.id).join(","),
+    snap.knobs.map((k) => `${k.id}:${k.label}`).join(","),
   ].join("|");
 }
 
@@ -422,7 +425,7 @@ function previewHtml(hasChat: boolean, hasPlan: boolean): string {
   const plan = hasPlan
     ? `      <hr class="divider">
       <h2>Plan Mode Markdown Preview</h2>
-      <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="planAgent"></span></div>
+      <div class="pv-cap">Claude's drafted plan <span class="pv-cap-val" data-val="planAgent"></span></div>
       <div class="pv-bubble"><div class="pv-plan-text"><p>This is the rendered Markdown plan in the Plan Mode.</p></div></div>
       <div class="pv-cap">Inline code <span class="pv-cap-val" data-val="planInline"></span></div>
       <div class="pv-bubble"><div class="pv-plan-inline-ctx">This is the inline code in Markdown Preview <code class="pv-inline pv-plan-inline">helloWorld()</code>.</div></div>

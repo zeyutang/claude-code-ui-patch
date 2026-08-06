@@ -372,8 +372,8 @@ function statusInner(snap: Snapshot): string {
   if (snap.partialLoss)
     return `<span class="status-banner lost">Some settings can't be applied on this version</span>`;
   if (snap.needsReload)
-    return `<button class="status-banner warn status-action" data-cmd="reload" title="Reload the window to apply the pending changes">&#8635; Click here to reload</button>`;
-  return `<span class="status-banner ok">All settings applied</span>`;
+    return `<button class="status-banner warn status-action" data-cmd="reload" title="Reload the window to apply the pending changes">&#8635; CLICK HERE to Reload Window and Apply Changes</button>`;
+  return `<span class="status-banner ok">All Patches Applied</span>`;
 }
 
 // Lightweight per-knob state + header status for in-place DOM updates.

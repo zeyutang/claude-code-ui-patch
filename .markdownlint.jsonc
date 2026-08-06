@@ -1,0 +1,11 @@
+{
+  "MD013": false, // line-length: prose is one sentence per line, never column-wrapped
+  "MD024": { "siblings_only": true }, // no-duplicate-header: allow duplicate headers in different sections
+  "MD028": false, // no-blanks-blockquote
+  "MD032": false, // blanks-around-lists
+  "MD036": false, // no-emphasis-as-heading: `_Case ID:_` lines depend on this
+  "MD038": false, // no-space-in-code
+  "MD040": false, // fenced-code-language
+  "MD041": false, // first-line-heading
+  "MD060": false, // table-column-style: Prettier owns table padding
+}

@@ -16,7 +16,7 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 - Add `claudeCodeUiPatch.useCtrlEnterToSendEverywhere`, off by default: with Claude Code's `useCtrlEnterToSend` on, the AskUserQuestion `Other` box and the permission feedback box also insert a newline on `Enter` and submit on `Cmd`/`Ctrl`+`Enter`, following the native setting live.
   The Plan Mode comment box follows it too, with its value from the last reload.
 - The panel's knobs and live preview now respond to each click or settings edit immediately, and a burst of quick changes patches the bundle once instead of once per change.
-- The panel's status banner is now the reload control: when it turns amber it reads "Click here to reload", replacing the Reload Window link at the bottom.
+- The panel's status banner is now the reload control: when it turns amber it reads "Click here ...", replacing the Reload Window link at the bottom.
 - The panel now ends with a "Behavior" section, mirroring the README tree: the feature toggles move there, each named for the surface it changes, like "Chat panel or tab: add FindBar (Cmd/Ctrl+F)", and the two surface sections keep the font, size, diff card, and math knobs.
   The plan section's text knob is now labeled "Claude's drafted plan".
   The status-bar tooltip keeps just the two surface sections, and the plan comment send key keeps its setting with no panel row ("Cmd/Ctrl + Enter to send everywhere" already reaches the plan comment box).

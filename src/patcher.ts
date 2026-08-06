@@ -980,6 +980,45 @@ function permRingBuild(c: string): string | undefined {
   return `${PERM_RING_MARKER}.permissionRequestContainer_${hash}:focus-within{box-shadow:${ring}}`;
 }
 
+// AskUserQuestion caret reveal (always on): the questions list
+// (.questionsContainer_<hash>, overflow-y:auto capped at 40vh) is the scroll
+// container around the growing "Other" answer box (.otherInput_<hash>, a
+// bordered wrapper carrying the box's padding, inside an .option_<hash> row).
+// Typing at the end of the box makes Chromium's caret reveal scroll that
+// container just far enough to put the caret's line box at the fold, so the
+// box's bottom padding and border, and the row padding under them, stay below
+// the fold, and the container's overflow indicator (a border-bottom on the
+// same element) draws a full-width line the text sits flush against: the box
+// reads as having lost its padding while its real border is clipped out of
+// view. Whether it shows depends only on the popup exceeding 40vh of the
+// webview, so short panels hit it constantly and tall windows never do.
+// Scroll-padding on the container makes every reveal keep the box chrome in
+// view: box vertical padding + box border + option-row padding, plus 2px for
+// fractional-height rounding (the reveal already aligns whole line boxes, so
+// no glyph-descent term is needed; overshoot past max scroll just clamps).
+// The same numbers inset upward reveals, showing the box's top edge when the
+// caret surfaces mid-box. The three anchors below must all parse, with the
+// container in its scrolling form, or the fix is skipped for that build.
+// The permission popup's feedback box cannot hit this: its container is
+// overflow:hidden with no scrollable ancestor, and the shared inner scroller
+// (max-height:120px) sits inside the padded wrapper, which therefore always
+// keeps the 6px gap visible.
+const QUESTION_REVEAL_MARKER = "/*cc-ui-patch:questionReveal*/";
+const QUESTIONS_CONTAINER_RULE_RE =
+  /\.questionsContainer_([-\w]+)\{[^{}]*?overflow-y:auto[^{}]*?\}/;
+const OTHER_INPUT_RULE_RE =
+  /\.otherInput_([-\w]+)\{[^{}]*?border:(\d+(?:\.\d+)?)px solid[^{}]*?padding:(\d+(?:\.\d+)?)px \d+(?:\.\d+)?px[^{}]*?\}/;
+const OPTION_ROW_RULE_RE = /\.option_([-\w]+)\{[^{}]*?padding:(\d+(?:\.\d+)?)px\}/;
+
+function questionRevealBuild(c: string): string | undefined {
+  const qHash = c.match(QUESTIONS_CONTAINER_RULE_RE)?.[1];
+  const box = c.match(OTHER_INPUT_RULE_RE);
+  const row = c.match(OPTION_ROW_RULE_RE);
+  if (!qHash || !box || !row) return undefined; // anchor gone: leave native
+  const pad = Math.round(Number(box[2]) + Number(box[3]) + Number(row[2]) + 2);
+  return `${QUESTION_REVEAL_MARKER}.questionsContainer_${qHash}{scroll-padding:${pad}px 0 ${pad}px}`;
+}
+
 // ---------------------------------------------------------------------------
 // Chat math rendering (ON): the chat webview renders agent markdown through
 // react-markdown with no math support, so TeX like $\mathcal{G}$ shows as raw
@@ -3990,6 +4029,13 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: "webview/index.css",
     marker: PERM_RING_MARKER,
     build: permRingBuild,
+  },
+  {
+    id: "questionReveal",
+    label: "question answer box reveal",
+    file: "webview/index.css",
+    marker: QUESTION_REVEAL_MARKER,
+    build: questionRevealBuild,
   },
 ];
 

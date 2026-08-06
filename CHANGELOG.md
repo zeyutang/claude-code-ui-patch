@@ -2,6 +2,12 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.3
+
+- Typing a long answer in the AskUserQuestion `Other` box no longer pins the text flush against the popup's scroll edge with the box's bottom padding and border hidden from view.
+  When the question list has to scroll, it now keeps the box's edges visible around the caret.
+  Always applied, no setting; the permission prompt's feedback box never had this problem.
+
 ## 1.4.2
 
 - `chatHistoryParagraphSpacing` now multiplies the visible gap between paragraphs, the native margins plus the line leading, so `2` looks twice as far apart as `1`.

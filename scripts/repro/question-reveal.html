@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<!--
+  Standalone replica of the AskUserQuestion popup for the questionReveal fix
+  (see patcher.ts, questionRevealBuild). The rules in the "verbatim" block are
+  a snapshot of Claude Code 2.1.223's webview/index.css; the companion
+  scenario (question-reveal.mjs) checks the LIVE installed bundle against the
+  patcher's anchors, so this copy only has to shape the geometry, not track
+  every release. Driven by scripts/cdp-driver.mjs; also fine to open by hand.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+/* VSCode dark-theme variable stand-ins (visual fidelity only) */
+:root {
+  --vscode-chat-font-size: 13px;
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  --vscode-foreground: #cccccc;
+  --vscode-editor-background: #1f1f1f;
+  --vscode-sideBar-background: #181818;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-background: #313131;
+  --vscode-widget-border: #454545;
+  --vscode-editorWidget-border: #6a6a6a;
+  --vscode-inputOption-activeBorder: #2488db;
+  --vscode-menu-background: #1f1f1f;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-background: #0078d4;
+  --vscode-descriptionForeground: #9d9d9d;
+
+  --app-primary-foreground: var(--vscode-foreground);
+  --app-secondary-foreground: var(--vscode-descriptionForeground);
+  --app-input-border: var(--vscode-widget-border);
+  --app-input-active-border: var(--vscode-inputOption-activeBorder);
+  --app-input-secondary-background: var(--vscode-menu-background);
+  --app-tool-background: var(--vscode-editor-background);
+  --app-widget-border: var(--vscode-editorWidget-border);
+  --app-button-foreground: var(--vscode-button-foreground);
+  --app-button-background: var(--vscode-button-background);
+  --corner-radius-large: 8px;
+}
+html { display: flex; overscroll-behavior: none; position: relative; flex: 1; height: 100%; }
+body {
+  display: flex; flex-direction: column; justify-content: flex-end;
+  overscroll-behavior: none;
+  font-size: var(--vscode-chat-font-size, 13px);
+  font-family: var(--vscode-font-family);
+  flex: 1; max-width: 100%; margin: 0; padding: 8px;
+  background: #181818; box-sizing: border-box; height: 100%;
+}
+
+/* ==== verbatim native rules from webview/index.css (2.1.223) ==== */
+.permissionRequestContainer_qlaBag{display:flex;background-color:var(--app-input-secondary-background);border:1px solid var(--app-input-border);border-radius:var(--corner-radius-large);overflow:hidden;outline:0;position:relative;flex-direction:column;max-height:70vh;margin-bottom:6px;padding:8px}
+.permissionRequestContent_qlaBag{color:var(--app-primary-foreground);display:flex;z-index:1;flex-direction:column;flex-shrink:0;font-size:1.1em}
+.questionsContainer_hONcXw{display:flex;overflow-y:auto;border-top:1px solid #0000;border-bottom:1px solid #0000;flex-direction:column;gap:16px;max-height:40vh;margin:8px -8px;padding-left:8px;padding-right:8px;transition:border-color .15s ease-in-out}
+.questionsContainerOverflowTop_hONcXw{border-top-color:var(--app-widget-border)}
+.questionsContainerOverflowBottom_hONcXw{border-bottom-color:var(--app-widget-border)}
+.questionBlock_hONcXw{display:flex;flex-direction:column;gap:8px}
+.questionHeader_hONcXw{display:flex;flex-direction:column;gap:4px}
+.questionTextLarge_hONcXw{color:var(--app-primary-foreground);font-size:.95em;font-weight:500}
+.optionsContainer_hONcXw{display:flex;flex-direction:column;gap:2px}
+.option_hONcXw{display:flex;cursor:pointer;background-color:#0000;border-radius:4px;flex-direction:row;align-items: flex-start;gap:10px;padding:4px}
+.optionContent_hONcXw{display:flex;flex-direction:column;flex:1;gap:0;min-width:0}
+.optionCheckbox_hONcXw{flex-shrink:0;align-self: center;margin-top:2px}
+.radio_hONcXw{border:1.5px solid var(--app-input-border);display:flex;background-color:#0000;border-radius:50%;justify-content:center;align-items: center;width:16px;height:16px}
+.radioDot_hONcXw{background-color:var(--app-button-background);border-radius:50%;width:8px;height:8px}
+.optionLabel_hONcXw{color:var(--app-primary-foreground);font-size:.9em;font-weight:500}
+.otherInput_hONcXw{border:1px solid var(--app-input-border);background-color:var(--app-tool-background);color:var(--app-primary-foreground);outline:none;box-sizing:border-box;border-radius:4px;width:100%;margin-top:6px;padding:6px 8px;font-size:.9em}
+.otherInput_hONcXw:focus-within{border-color:var(--app-input-active-border)}
+.wrapper_q4zSJA{position:relative;width:100%}
+.placeholder_q4zSJA{position:absolute;color:var(--app-secondary-foreground);opacity:.7;pointer-events:none;user-select:none;top:6px;left:8px}
+.input_q4zSJA{overflow-y:auto;white-space:pre-wrap;word-wrap:break-word;outline:none;max-height:120px;line-height:1.4}
+/* ==== end verbatim rules ==== */
+
+.submitBar { background: var(--app-button-background); color: #fff; font-weight: 600; border-radius: 4px; padding: 8px 10px; margin-top: 8px; }
+.hints { color: var(--app-secondary-foreground); font-size: .9em; padding: 6px 2px 0; }
+.desc { color: var(--app-secondary-foreground); font-size: .85em; }
+</style>
+</head>
+<body>
+  <div class="permissionRequestContainer_qlaBag">
+    <div class="permissionRequestContent_qlaBag">
+      <div class="questionsContainer_hONcXw" id="qc">
+        <div class="questionBlock_hONcXw">
+          <div class="questionHeader_hONcXw">
+            <div class="questionTextLarge_hONcXw">Which semantics should the declared interface adopt?</div>
+          </div>
+          <div class="optionsContainer_hONcXw">
+            <div class="option_hONcXw">
+              <div class="optionCheckbox_hONcXw"><div class="radio_hONcXw"></div></div>
+              <div class="optionContent_hONcXw">
+                <div class="optionLabel_hONcXw">Keep current semantics</div>
+                <div class="desc">The declared interface stays as-is.</div>
+              </div>
+            </div>
+            <div class="option_hONcXw">
+              <div class="optionCheckbox_hONcXw"><div class="radio_hONcXw"></div></div>
+              <div class="optionContent_hONcXw">
+                <div class="optionLabel_hONcXw">Merge with boundary interface</div>
+                <div class="desc">Unify the two notions into one.</div>
+              </div>
+            </div>
+            <div class="option_hONcXw">
+              <div class="optionCheckbox_hONcXw"><div class="radio_hONcXw"></div></div>
+              <div class="optionContent_hONcXw">
+                <div class="optionLabel_hONcXw">Other</div>
+                <div onclick="event.stopPropagation()">
+                  <div class="wrapper_q4zSJA otherInput_hONcXw" id="otherWrap">
+                    <div class="input_q4zSJA" id="ed" contenteditable="plaintext-only" spellcheck="false"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="submitBar"><span style="opacity:.8">1</span>&nbsp; Submit answers</div>
+      <div class="hints">Esc to cancel</div>
+    </div>
+  </div>
+<script>
+// Replica of the app's ZY overflow hook: toggles the container border classes
+const qc = document.getElementById('qc');
+function upd() {
+  const { scrollTop, scrollHeight, clientHeight } = qc;
+  qc.classList.toggle('questionsContainerOverflowTop_hONcXw', scrollTop > 0);
+  qc.classList.toggle('questionsContainerOverflowBottom_hONcXw', scrollTop + clientHeight < scrollHeight - 1);
+}
+upd();
+qc.addEventListener('scroll', upd);
+new ResizeObserver(upd).observe(qc);
+</script>
+</body>
+</html>

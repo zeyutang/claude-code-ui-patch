@@ -85,7 +85,8 @@ Behavior
                                        #   permission feedback box, and plan comment box if On
 
 Always applied                         # no setting; installing this patch is the opt-in
-   └── permission focus ring           # focused permission/question box gets the input box's ring
+   ├── permission focus ring           # focused permission/question box gets the input box's ring
+   └── question answer box reveal      # typing keeps the "Other" box's border and padding in view
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)

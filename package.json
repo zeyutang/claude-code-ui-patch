@@ -110,6 +110,13 @@
           "maximum": 40,
           "markdownDescription": "Chat input box growth cap in lines before it scrolls, clamped to 70% of the window height; the caret reveal keeps the bottom padding in view. `0` = native (a fixed 200px cap)."
         },
+        "claudeCodeUiPatch.chatPopupInputMaxLines": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 40,
+          "markdownDescription": "AskUserQuestion `Other` box and permission feedback box growth cap in lines before they scroll, clamped to 70% of the window height. `0` = native (a fixed 120px cap)."
+        },
         "claudeCodeUiPatch.chatDiffCardFontSize": {
           "type": "number",
           "default": 12,

@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.4
+
+- Add `claudeCodeUiPatch.chatPopupInputMaxLines`: how many lines the AskUserQuestion `Other` box and the permission feedback box grow to before they scroll (clamped to 70% of the window height).
+  `0` keeps the native fixed 120px cap, which fits fewer lines the larger the chat font.
+
 ## 1.4.3
 
 - Typing a long answer in the AskUserQuestion `Other` box no longer pins the text flush against the popup's scroll edge with the box's bottom padding and border hidden from view.

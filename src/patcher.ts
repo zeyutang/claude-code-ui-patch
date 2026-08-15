@@ -1001,8 +1001,9 @@ function permRingBuild(c: string): string | undefined {
 // container in its scrolling form, or the fix is skipped for that build.
 // The permission popup's feedback box cannot hit this: its container is
 // overflow:hidden with no scrollable ancestor, and the shared inner scroller
-// (max-height:120px) sits inside the padded wrapper, which therefore always
-// keeps the 6px gap visible.
+// (max-height-capped, natively 120px; chatPopupInputMaxLines can raise it)
+// sits inside the padded wrapper, which therefore always keeps the 6px gap
+// visible.
 const QUESTION_REVEAL_MARKER = "/*cc-ui-patch:questionReveal*/";
 const QUESTIONS_CONTAINER_RULE_RE =
   /\.questionsContainer_([-\w]+)\{[^{}]*?overflow-y:auto[^{}]*?\}/;
@@ -4439,6 +4440,38 @@ const MSG_INPUT_RULE_RE =
 const MSG_INPUT_EM_RE =
   /\/\*cc-ui-patch:inputLines\*\/[^\n]*?max-height:min\((\d+(?:\.\d+)?)em,70vh\)[^\n]*?\.mentionMirror_[-\w]+\{padding-bottom:calc\(\d+(?:\.\d+)?px \+ 1lh\)/;
 
+// chatPopupInputMaxLines: the AskUserQuestion "Other" answer box and the
+// permission feedback box are the two mounts of one ContentEditableInput
+// module: a padded, bordered wrapper (.otherInput_ / .rejectMessageInput_)
+// around an inner scroller (.input_<hash>) that grows with content up to a
+// hardcoded max-height:120px, then scrolls. As with the chat input, the cap is
+// fixed px, so how many lines fit shrinks as the chat font grows (both boxes
+// inherit it, the Other box at .9em). N >= 1 appends a scoped rule replacing
+// the cap with exactly N lines (line-height em units, so it tracks each box's
+// own font size), clamped to 70vh so a huge N cannot swallow a short window.
+// 0 = native. No scroll-padding or mirror term here, unlike the chat input:
+// the inner scroller carries no padding or border of its own (the wrapper
+// does), so the caret reveal already aligns line boxes flush with its edges,
+// and the box paints its text directly (no mirror overlay). The questionReveal
+// scroll-padding fix reads only wrapper and option-row numbers, so it is
+// unaffected by the taller scroller. The .input_ class name is generic (other
+// modules hash one too), so the anchor requires the module's distinctive
+// overflow-y:auto + px max-height + unitless line-height run, confirmed by the
+// wrapper and placeholder rules sharing its hash.
+const POPUP_INPUT_MARKER = "/*cc-ui-patch:popupInputLines*/";
+const POPUP_INPUT_RULE_RE =
+  /\.input_([-\w]+)\{[^{}]*?overflow-y:auto[^{}]*?max-height:\d+(?:\.\d+)?px;line-height:(\d+(?:\.\d+)?)\}/;
+const POPUP_INPUT_EM_RE =
+  /\/\*cc-ui-patch:popupInputLines\*\/[^\n]*?max-height:min\((\d+(?:\.\d+)?)em,70vh\)/;
+// The module's inner-scroller rule, with the sibling-rule confirmation.
+// undefined when the module is gone or reshaped (leave native).
+function popupInputAnchor(c: string): RegExpMatchArray | undefined {
+  const m = c.match(POPUP_INPUT_RULE_RE);
+  if (!m || !c.includes(`.wrapper_${m[1]}{`) || !c.includes(`.placeholder_${m[1]}{`))
+    return undefined;
+  return m;
+}
+
 const INJECT_POINTS: InjectPoint[] = [
   {
     id: "chatHistorySize",
@@ -4862,6 +4895,41 @@ const INJECT_POINTS: InjectPoint[] = [
       );
     },
     remove: (c) => cssRemoveLine(c, MSG_INPUT_MARKER),
+  },
+  {
+    id: "popupInputLines",
+    section: "Behavior",
+    label: "popup input max lines",
+    key: "chatPopupInputMaxLines",
+    kind: "rows",
+    file: "webview/index.css",
+    showInPanel: false,
+    max: 0,
+    defaultRaw: 0,
+    effective: (raw) =>
+      typeof raw === "number" && raw >= 1
+        ? Math.min(40, Math.round(raw))
+        : undefined,
+    present: (c) => c.includes(POPUP_INPUT_MARKER) || !!popupInputAnchor(c),
+    // Lines currently written, derived as em-cap / line-height (see
+    // chatInputLines above for why derive rather than store N).
+    current: (c) => {
+      const em = c.match(POPUP_INPUT_EM_RE)?.[1];
+      const lh = c.match(POPUP_INPUT_RULE_RE)?.[2];
+      if (em === undefined || lh === undefined) return undefined;
+      return Math.round((Number(em) / Number(lh)) * 100) / 100;
+    },
+    apply: (c, v) => {
+      const m = popupInputAnchor(c);
+      if (!m) return c; // module gone or reshaped: leave native
+      const em = Math.round(Number(m[2]) * Number(v) * 100) / 100;
+      return cssApplyLine(
+        c,
+        POPUP_INPUT_MARKER,
+        `${POPUP_INPUT_MARKER}.input_${m[1]}{max-height:min(${em}em,70vh) !important}`,
+      );
+    },
+    remove: (c) => cssRemoveLine(c, POPUP_INPUT_MARKER),
   },
 ];
 

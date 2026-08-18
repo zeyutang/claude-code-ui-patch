@@ -24,6 +24,9 @@ import { join, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 function findHeadlessShell() {
+  // $CCUP_SHELL pins a specific binary (e.g. to match the Chromium version
+  // of VSCode's Electron); default is the newest cached shell
+  if (process.env.CCUP_SHELL) return process.env.CCUP_SHELL;
   const root = join(homedir(), ".cache", "puppeteer", "chrome-headless-shell");
   let versions = [];
   try {

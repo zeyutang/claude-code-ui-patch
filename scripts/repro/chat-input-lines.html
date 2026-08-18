@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<!--
+  Standalone replica of the chat composer input for the chatInputMaxLines
+  point (see patcher.ts, chatInputLines / MSG_INPUT_MARKER). The rules in the
+  "verbatim" block are a snapshot of Claude Code 2.1.234's webview/index.css;
+  the companion scenario (chat-input-lines.mjs) checks the LIVE installed
+  bundle against the patcher's anchors, so this copy only has to shape the
+  geometry, not track every release. Driven by scripts/cdp-driver.mjs; also
+  fine to open by hand.
+
+  Fidelity notes (from webview/index.js, 2.1.234):
+  - The editable is contenteditable="plaintext-only". The app probes support
+    for that mode (its `iv` flag); on Chromium the probe passes, so typing,
+    Shift+Enter, and paste all run the NATIVE editing pipeline with the
+    browser's own caret reveal. The app's manual-Range helper (`yy`) and the
+    execCommand("insertLineBreak") branch are fallbacks for engines without
+    plaintext-only, and never run in the VSCode webview.
+  - Plain Enter is preventDefault'ed (the app sends the message instead).
+  - The mirror re-renders from the input state on input events (a plain
+    textContent copy for chip-free text) and copies the input's
+    scrollTop/scrollLeft on the input's scroll events.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+/* VSCode dark-theme variable stand-ins (visual fidelity only) */
+:root {
+  --vscode-chat-font-size: 13px;
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  --vscode-foreground: #cccccc;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-background: #313131;
+  --vscode-menu-background: #1f1f1f;
+  --vscode-widget-border: #454545;
+
+  --app-primary-foreground: var(--vscode-foreground);
+  --app-secondary-foreground: var(--vscode-descriptionForeground);
+  --app-input-foreground: var(--vscode-input-foreground);
+  --app-input-background: var(--vscode-input-background);
+  --app-input-secondary-background: var(--vscode-menu-background);
+  --app-input-border: var(--vscode-widget-border);
+  --corner-radius-large: 8px;
+}
+html { height: 100%; }
+body {
+  display: flex; flex-direction: column; justify-content: flex-end;
+  font-size: var(--vscode-chat-font-size, 13px);
+  font-family: var(--vscode-font-family);
+  margin: 0; padding: 8px; height: 100%; box-sizing: border-box;
+  background: #181818; color: var(--app-primary-foreground);
+}
+
+/* ==== verbatim native rules from webview/index.css (2.1.234) ==== */
+.inputWrapper_cKsPxg{width:100%;max-width:680px;margin:0 auto}
+.inputContainer_cKsPxg{background:var(--app-input-secondary-background);border:1px solid var(--app-input-border);border-radius:var(--corner-radius-large);color:var(--app-input-foreground);display:flex;position:relative;flex-direction:column;min-width:0;margin:0;padding:0;box-shadow:0 1px 2px #0000001a}
+.inputContainerBackground_cKsPxg{background:var(--app-input-background);position:absolute;border-radius:var(--corner-radius-large);inset:0}
+.messageInputContainer_cKsPxg{position:relative;display:flex}
+.messageInput_cKsPxg{outline:none;overflow-y:auto;overflow-wrap:break-word;word-break:break-word;white-space:pre-wrap;scrollbar-gutter:stable;position:relative;user-select:text;color:#0000;caret-color:var(--app-input-foreground);z-index:1;flex:1;align-self:stretch;min-height:1.5em;max-height:200px;padding:10px 36px 10px 14px;font-family:inherit;line-height:1.5}
+.mentionMirror_cKsPxg{overflow:hidden;scrollbar-gutter:stable;position:absolute;pointer-events:none;white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word;color:var(--app-input-foreground);min-height:1.5em;max-height:200px;padding:10px 36px 10px 14px;font-family:inherit;line-height:1.5;inset:0}
+.mentionMirror_cKsPxg{padding-right:64px}
+/* ==== end verbatim rules ==== */
+
+/* Cosmetic stand-in for the toolbar row under the input; its top border is
+   the divider the last line sits against in the real UI. */
+.fakeToolbar { display: flex; align-items: center; gap: 12px; padding: 6px 10px;
+  border-top: 1px solid var(--app-input-border);
+  color: var(--app-secondary-foreground); }
+.fakeSend { margin-left: auto; background: #d13438; color: #fff;
+  border-radius: 6px; padding: 2px 9px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="inputWrapper_cKsPxg">
+    <div class="inputContainer_cKsPxg">
+      <div class="inputContainerBackground_cKsPxg"></div>
+      <div class="messageInputContainer_cKsPxg">
+        <div id="ed" class="messageInput_cKsPxg" contenteditable="plaintext-only"
+             spellcheck="false" role="textbox" aria-multiline="true"></div>
+        <div id="mirror" class="mentionMirror_cKsPxg" aria-hidden="true"></div>
+      </div>
+      <div class="fakeToolbar"><span>＋</span><span>/</span><span class="fakeSend">↑</span></div>
+    </div>
+  </div>
+<script>
+const ed = document.getElementById('ed');
+const mirror = document.getElementById('mirror');
+// App: the mirror is re-rendered from the input state on every input event
+ed.addEventListener('input', () => { mirror.textContent = ed.textContent; });
+// App: the mirror copies the input's scroll position on its scroll events
+ed.addEventListener('scroll', () => {
+  mirror.scrollTop = ed.scrollTop; mirror.scrollLeft = ed.scrollLeft;
+});
+// App: plain Enter sends the message, never inserts; Shift+Enter falls
+// through to the native plaintext-only line break. With useCtrlEnterToSend
+// (the uce patch) plain Enter falls through natively too; scenarios model
+// that by setting window.uceMode.
+ed.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !window.uceMode) e.preventDefault();
+});
+</script>
+</body>
+</html>

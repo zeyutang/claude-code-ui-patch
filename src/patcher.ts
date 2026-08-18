@@ -30,6 +30,10 @@ export const STEP = 0.25;
 // config events (rapid panel clicks, a multi-key settings.json save) into one
 // pass, short enough to be invisible on a lone change.
 const APPLY_DEBOUNCE_MS = 100;
+// Settle time for the extension-root watchers: an auto-update extracts a new
+// versioned directory over several events, so wait for the burst to end
+// before re-running the apply pass against it.
+const EXT_WATCH_SETTLE_MS = 2000;
 
 // Bold-weight knob. CSS font-weight moves in hundreds, so the knob steps by 100
 // rather than by STEP. The floor is the regular weight (a "bold" lighter than
@@ -5758,8 +5762,58 @@ export class Patcher {
           this.refresh();
         }
       }),
+      // A Claude Code auto-update swaps in a pristine bundle mid-session, and
+      // with only the configuration trigger above it stays native until the
+      // next settings change or window reload (observed as an hour of stock
+      // composer behavior). Repatch as soon as the new install lands: the
+      // extensions API event covers install/update/enable in this host, and
+      // the root watchers below catch the versioned directory appearing on
+      // disk even before the extension host restarts into it, so the swap
+      // finds the bundle already patched.
+      ...(vscode.extensions?.onDidChange
+        ? [vscode.extensions.onDidChange(() => this.scheduleAutoApply())]
+        : []),
+      this.watchExtensionRoots(),
       this.emitter,
     ];
+  }
+
+  // Watch the extension roots for a Claude Code install appearing or being
+  // rewritten. Debounced longer than the config path so a mid-extraction
+  // event does not run the pass against half-written files; the marker-file
+  // check in findLatestClaudeExt and the anchors simply not matching guard
+  // the remainder, and another event re-arms the timer. A watch failure just
+  // means the update is picked up by the next activation or config event.
+  private watchExtensionRoots(): vscode.Disposable {
+    const watchers: fs.FSWatcher[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    for (const base of extensionsDirs(this.context)) {
+      try {
+        const watcher = fs.watch(base, (_event, file) => {
+          if (!file || !file.startsWith(EXT_PREFIX)) return;
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            timer = undefined;
+            this.scheduleAutoApply();
+          }, EXT_WATCH_SETTLE_MS);
+        });
+        watchers.push(watcher);
+      } catch {
+        // root not watchable: fall back to the activation/config triggers
+      }
+    }
+    return {
+      dispose: () => {
+        if (timer) clearTimeout(timer);
+        for (const watcher of watchers) {
+          try {
+            watcher.close();
+          } catch {
+            // already closed
+          }
+        }
+      },
+    };
   }
 
   snapshot(): Snapshot | undefined {

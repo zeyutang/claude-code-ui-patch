@@ -2,10 +2,10 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 1.4.5
 
 - Patches now re-apply as soon as a Claude Code auto-update lands, instead of waiting for the next settings change or window reload.
-  Previously an update could leave the freshly installed bundle running with native styling (for example the chat input's bottom padding scrolled out of view while typing at its cap) until something else re-triggered the patcher.
+  Previously an update could leave the freshly installed bundle running with native styling until something else re-triggered the patcher.
 
 ## 1.4.4
 

@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.6
+
+- The previous/next turn and scroll-to-bottom buttons no longer cover a notice banner above the input box (Remote Control, rate limit, a browser or debugger or Jupyter connection, a settings file that failed to parse).
+  They now sit above the banner, leaving its text and its dismiss button clear.
+
 ## 1.4.5
 
 - Patches now re-apply as soon as a Claude Code auto-update lands, instead of waiting for the next settings change or window reload.

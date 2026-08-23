@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<!--
+  Standalone replica of the composer stack for the notice-banner overlap fix
+  (see patcher.ts, btnHostsJs). The rules in the "verbatim" block are a
+  snapshot of Claude Code 2.1.241's webview/index.css; the companion scenario
+  (banner-overlap.mjs) checks the LIVE installed bundle for the facts the fix
+  leans on, so this copy only has to shape the geometry, not track every
+  release. Driven by scripts/cdp-driver.mjs; also fine to open by hand.
+
+  The stack native Claude Code builds, bottom up:
+
+    div.inputContainer_<chat>        absolute, z:20, floats over the transcript
+      div.promptInputContainer       display:none while a permission popup is up
+        div.inputWrapper_<input>     banners and the composer share this parent
+          div.banner_<notice>        0..N notices, each margin-bottom:-8px
+          form > fieldset.inputContainer_<input>
+
+  The scroll-to-bottom and jump buttons mount inside a host at top:-34px, so
+  hosting on the fieldset puts them 26px into the banner's box, while hosting
+  on the wrapper lifts them clear of however many banners are up.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+/* VSCode dark-theme variable stand-ins (visual fidelity only) */
+:root {
+  --vscode-chat-font-size: 13px;
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  --vscode-foreground: #cccccc;
+  --vscode-editor-background: #1f1f1f;
+  --vscode-widget-border: #454545;
+  --vscode-menu-background: #1f1f1f;
+  --vscode-input-background: #262626;
+  --vscode-descriptionForeground: #9d9d9d;
+
+  --app-primary-foreground: var(--vscode-foreground);
+  --app-secondary-foreground: var(--vscode-descriptionForeground);
+  --app-primary-background: #181818;
+  --app-secondary-background: #1f1f1f;
+  --app-input-foreground: var(--vscode-foreground);
+  --app-input-border: var(--vscode-widget-border);
+  --app-input-background: var(--vscode-input-background);
+  --app-input-secondary-background: var(--vscode-menu-background);
+  --app-ghost-button-hover-background: #ffffff14;
+  --app-banner-tint: #4a8fe7;
+  --corner-radius-large: 8px;
+}
+html, body { height: 100%; margin: 0; }
+body {
+  font-size: var(--vscode-chat-font-size, 13px);
+  font-family: var(--vscode-font-family);
+  color: var(--app-primary-foreground);
+  background: var(--app-primary-background);
+}
+#chat { position: relative; height: 100%; overflow: hidden; }
+#transcript { padding: 16px 16px 220px; color: #8a8a8a; line-height: 1.6; }
+
+/* ==== verbatim native rules from webview/index.css (2.1.241) ==== */
+.inputContainer_07S1Yg{position:absolute;display:flex;z-index:20;flex-direction:column;bottom:16px;left:16px;right:16px}
+.messageGradient_07S1Yg{position:absolute;background:linear-gradient(to bottom,transparent 0%,var(--app-primary-background)100%);pointer-events:none;z-index:2;height:150px;bottom:0;left:0;right:0}
+.inputWrapper_cKsPxg{width:100%;max-width:680px;margin:0 auto}
+.inputContainer_cKsPxg{background:var(--app-input-secondary-background);border:1px solid var(--app-input-border);border-radius:var(--corner-radius-large);color:var(--app-input-foreground);display:flex;position:relative;flex-direction:column;min-width:0;margin:0;padding:0;box-shadow:0 1px 2px #0000001a}
+.inputContainerBackground_cKsPxg{background:var(--app-input-background);position:absolute;border-radius:var(--corner-radius-large);inset:0}
+.messageInput_cKsPxg{outline:none;overflow-y:auto;overflow-wrap:break-word;word-break:break-word;white-space:pre-wrap;scrollbar-gutter:stable;position:relative;user-select:text;caret-color:var(--app-input-foreground);z-index:1;flex:1;align-self:stretch;min-height:1.5em;max-height:200px;padding:10px 36px 10px 14px;font-family:inherit;line-height:1.5}
+.banner_88YE4g{display:flex;color:var(--app-primary-foreground);border:.5px solid red;border-radius:8px 8px 0 0;justify-content:space-between;align-items: center;gap:12px;margin-bottom:-8px;padding:6px 6px 12px 16px;font-size:.85em;font-weight:600;line-height:1.4}
+.banner_88YE4g{border-color:color-mix(in srgb,var(--app-primary-foreground),var(--app-banner-tint)50%);color:color-mix(in srgb,var(--app-primary-foreground),var(--app-banner-tint)50%);background:color-mix(in srgb,var(--app-secondary-background),var(--app-banner-tint)25%)}
+.closeButton_88YE4g{cursor:pointer;display:flex;color:inherit;background:0 0;border:none;border-radius:4px;flex-shrink:0;justify-content:center;align-items: center;padding:4px}
+/* ==== end verbatim rules ==== */
+
+/* The composer's footer row, standing in for the mode/model/send controls */
+.footer { display: flex; justify-content: flex-end; gap: 8px; padding: 6px 8px; }
+.footer span { color: var(--app-secondary-foreground); font-size: .9em; }
+</style>
+</head>
+<body>
+<div id="chat">
+  <div id="transcript">
+    <p>Turn one: the transcript sits behind the composer stack, which floats over it.</p>
+    <p>Turn two: the 150px gradient fades the last lines out under the composer.</p>
+    <p>Turn three: the strip just above the composer is where the buttons live.</p>
+    <p>Turn four: with a notice banner up, that strip is the banner's own box.</p>
+    <p>Turn five: enough text that the transcript is taller than the viewport.</p>
+  </div>
+  <div class="messageGradient_07S1Yg"></div>
+  <div class="inputContainer_07S1Yg">
+    <div id="promptInput">
+      <div class="inputWrapper_cKsPxg" id="wrap">
+        <form>
+          <fieldset class="inputContainer_cKsPxg" id="box">
+            <div class="inputContainerBackground_cKsPxg"></div>
+            <div class="messageInput_cKsPxg">&#8984; Esc to focus or unfocus Claude</div>
+            <div class="footer"><span>Auto</span><span>&#8593;</span></div>
+          </fieldset>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+// The notice banner the scenario mounts and removes between passes. Same
+// markup shape as the app's yb component: text, then the close button.
+window.setBanner = function (on) {
+  var wrap = document.getElementById("wrap");
+  var b = document.getElementById("banner");
+  if (!on) { if (b) b.remove(); return; }
+  if (b) return;
+  b = document.createElement("div");
+  b.className = "banner_88YE4g";
+  b.id = "banner";
+  b.innerHTML =
+    '<span style="min-width:0;overflow-wrap:anywhere">Remote Control is active' +
+    ' · Continue here, on your phone, or at <a href="#">claude.ai/code</a></span>' +
+    '<button class="closeButton_88YE4g">✕</button>';
+  wrap.insertBefore(b, wrap.firstChild);
+};
+</script>
+</body>
+</html>

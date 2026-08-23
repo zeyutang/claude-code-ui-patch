@@ -1661,11 +1661,13 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
 // nothing signals that the conversation has run ahead, and the only way back is
 // manual scrolling. When ON we append a marked, self-contained IIFE at the end
 // of webview/index.js that mounts a small button just OUTSIDE the input box's
-// contour, above its top-right corner (anchored to the bordered box
-// .inputContainer_<hash> at top:-34px/right:5px, so it clears the box border,
+// contour, above its top-right corner (anchored to the composer wrapper
+// .inputWrapper_<hash> at top:-34px/right:5px, so it clears the box border,
 // shares the send button's 5px right inset (the footer padding) and therefore
 // its vertical column, and never shares a row with the send button, the source
-// of the earlier dot's shifting). It mirrors the send button's footprint (a
+// of the earlier dot's shifting; the wrapper rather than the box itself so a
+// notice banner cannot end up underneath it, see btnHostSel below). It
+// mirrors the send button's footprint (a
 // 26px rounded square, box-sizing so the 1px border does not inflate it) and
 // its 20px icon size, but stays neutral, using the input's own surface,
 // border, and text color so it reads as a secondary control; hover stacks the
@@ -1698,9 +1700,9 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
 // re-scrolling under the glide. The two required DOM surfaces are addressed via
 // CSS-module hashes read from the bundle's class maps at patch time (the input
 // module via its messageInput entry, whose module also owns
-// .inputContainer_<hash>; the chat module via messagesContainer); if either map
-// is gone the point reports missing and the bundle stays native. While ON, the
-// permission-popup auto-scroll guard (see PERM_YANK_MARKER above) also rewrites
+// .inputContainer_<hash> and .inputWrapper_<hash>; the chat module via
+// messagesContainer); if either map is gone the point reports missing and the
+// bundle stays native. While ON, the permission-popup auto-scroll guard (see PERM_YANK_MARKER above) also rewrites
 // the chat's "popup pending → scroll to bottom" effect to respect the
 // stick-to-bottom zone. The whole body is wrapped in try/catch so a
 // failure can never break the chat, and the /*ccup:scrollDot*/ marker makes the
@@ -1727,24 +1729,27 @@ const HOVER_TIP_JS =
   `b.addEventListener("mouseleave",hideTip)}`;
 
 // Shared button-host collector for the scroll-to-bottom and jump buttons. The
-// buttons normally anchor to the input box (.inputContainer_<hash>), but while
-// a permission request or AskUserQuestion popup is up the app hides that box
-// (display:none on its wrapper) and shows the request UI inside a sibling
-// wrapper (.permissionsContainer_<hash>, a plain centered block shared with the
-// auth/refusal dialogs), so the buttons vanish exactly when reading history is
-// most likely. hosts() therefore returns the input boxes plus, for each mounted
-// request card (.permissionRequestContainer_<hash>, the popup module's root,
+// buttons normally anchor to the composer wrapper (btnHostSel above), but while
+// a permission request or AskUserQuestion popup is up the app hides the whole
+// composer (display:none on the wrapper's own parent) and shows the request UI
+// inside a sibling wrapper (.permissionsContainer_<hash>, a plain centered block
+// shared with the auth/refusal dialogs), so the buttons vanish exactly when
+// reading history is most likely. hosts() therefore returns the composer
+// wrappers plus, for each mounted request card
+// (.permissionRequestContainer_<hash>, the popup module's root,
 // which identifies the tool-permission/question wrapper among the dialogs
 // sharing the wrapper class), its closest() wrapper. The card itself cannot
 // host (overflow:hidden clips anything above its border), so the wrapper gets a
 // ccup-btn-host marker class making it position:relative, and the buttons'
-// top:-34px/right offsets land in the same spots as on the input box. The class
-// add is guarded by a contains() check so the body observers (class/style in
+// top:-34px/right offsets land in exactly the same spots as on the composer
+// wrapper, both being unbordered, unpadded, centered blocks. The class add is
+// guarded by a contains() check so the body observers (class/style in
 // their filter) see at most one mutation per mount and settle; React never
 // rewrites the wrapper's static className, so the marker survives re-renders
 // and dies with the popup. Both permission hashes are read from the bundle's
-// class maps at patch time; if either is gone hosts() degrades to the input
-// boxes alone (the popups just lose the buttons) instead of failing the toggle.
+// class maps at patch time; if either is gone hosts() degrades to the composer
+// wrappers alone (the popups just lose the buttons) instead of failing the
+// toggle.
 // The same pass syncs the ccup-dim marker onto the messages container, since the
 // card query that drives it is already in hand here (see dimCss for what the
 // marker replaced and why). Unlike ccup-btn-host it has to come off again, the
@@ -1755,13 +1760,43 @@ const PERM_WRAP_HASH_RE =
   /permissionsContainer:"permissionsContainer_([-\w]+)"/;
 const PERM_REQ_HASH_RE =
   /permissionRequestContainer:"permissionRequestContainer_([-\w]+)"/;
-const BTN_HOST_CSS = ".ccup-btn-host{position:relative}";
-function btnHostsJs(
-  input: string,
+const BTN_WRAP_HASH_RE = /inputWrapper:"inputWrapper_([-\w]+)"/;
+
+// Composer-side host selector. The buttons sit at top:-34px, so the host has to
+// be the element whose top edge is the top of the whole composer STACK, not the
+// input box alone: the app drops notice banners (Remote Control, rate limit,
+// browser/debugger/Jupyter MCP, a settings-parse error, the review upsell) into
+// .inputWrapper_<hash>, the box's parent, each one tucked onto the box's top
+// edge by a margin-bottom:-8px. Anchored to the box, the buttons land squarely
+// inside a banner's box and cover its text and close button; anchored to the
+// wrapper they ride 8px above whatever is topmost, banner or box. The wrapper is
+// natively unpositioned, so the rule below makes it the containing block. It is
+// also unbordered and unpadded, unlike the box (a 1px border, and the box's
+// containing block is its PADDING box), so the move settles the buttons 1px
+// further out in both axes, exactly matching where they already sit on the
+// permission popup's wrapper. The wrapper class comes from the same class map as
+// messageInput; if a future bundle drops the entry the host falls back to the
+// box and the banner overlap comes back, which is the old behavior rather than a
+// broken toggle.
+function btnHostSel(input: string, wrap: string | undefined): string {
+  return wrap ? `.inputWrapper_${wrap}` : `.inputContainer_${input}`;
+}
+function btnHostCss(
+  wrap: string | undefined,
   perm: string | undefined,
   preq: string | undefined,
 ): string {
-  const base = `var a=[].slice.call(document.querySelectorAll(".inputContainer_${input}"))`;
+  return (
+    (wrap ? `.inputWrapper_${wrap}{position:relative}` : "") +
+    (perm && preq ? ".ccup-btn-host{position:relative}" : "")
+  );
+}
+function btnHostsJs(
+  host: string,
+  perm: string | undefined,
+  preq: string | undefined,
+): string {
+  const base = `var a=[].slice.call(document.querySelectorAll("${host}"))`;
   if (!perm || !preq) return `function hosts(){${base};return a}`;
   return (
     `function hosts(){${base},p=document.querySelectorAll(".permissionRequestContainer_${preq}");` +
@@ -1904,7 +1939,9 @@ function scrollDotBuild(c: string): string | undefined {
   if (!input || !chat) return undefined;
   const perm = c.match(PERM_WRAP_HASH_RE)?.[1];
   const preq = c.match(PERM_REQ_HASH_RE)?.[1];
-  // The button floats just above the box's top-right corner, outside its border.
+  const wrap = c.match(BTN_WRAP_HASH_RE)?.[1];
+  const host = btnHostSel(input, wrap);
+  // The button floats just above the composer stack's top-right corner.
   // box-sizing:border-box keeps the 26px footprint matching the send button's
   // despite the 1px border; it stays hidden (opacity 0, no pointer events, nudged
   // down) until data-show is set. currentColor drives the arrow's stroke.
@@ -1919,15 +1956,16 @@ function scrollDotBuild(c: string): string | undefined {
     ".ccup-scroll-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-scroll-btn svg{display:block;width:20px;height:20px}" +
     // The composer's own dropdowns (mention, mode, model, slash, add) all open
-    // above the box (.menuPopup_<hash>, bottom:100%, z-index <= 10) inside this
-    // same input container, which has no z-index of its own: it and the button
-    // flatten into the composer's z:20 context, where the button's z:21 paints
-    // THROUGH the popup. Hide the button while any popup is mounted rather than
-    // chase a z-index below every popup (one is z:auto, so that means negative).
-    // Matched by the stable menuPopup_ class-name substring, no per-build hash;
-    // scoped to this input so a popup in one chat view never blanks another's.
-    `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-scroll-btn[data-show]{opacity:0;pointer-events:none}` +
-    (perm && preq ? BTN_HOST_CSS : "") +
+    // above the box (.menuPopup_<hash>, bottom:100%, z-index <= 10) inside the
+    // same wrapper the button mounts on, and neither has a z-index of its own:
+    // wrapper, popups, and button all flatten into the composer's z:20 context,
+    // where the button's z:21 paints THROUGH the popup. Hide the button while
+    // any popup is mounted rather than chase a z-index below every popup (one
+    // is z:auto, so that means negative). Matched by the stable menuPopup_
+    // class-name substring, no per-build hash; scoped to this composer so a
+    // popup in one chat view never blanks another's.
+    `${host}:has([class*=menuPopup_]) .ccup-scroll-btn[data-show]{opacity:0;pointer-events:none}` +
+    btnHostCss(wrap, perm, preq) +
     dimCss(chat, preq) +
     HOVER_TIP_CSS;
   // Down arrow, drawn with currentColor strokes; single-quoted attributes so the
@@ -1942,7 +1980,7 @@ function scrollDotBuild(c: string): string | undefined {
     HOVER_TIP_JS +
     `function rm(){return matchMedia("(prefers-reduced-motion:reduce)").matches}` +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
-    btnHostsJs(input, perm, preq) +
+    btnHostsJs(host, perm, preq) +
     // Settle pass (permission/question arrival only): the glide above lands on
     // the bottom as it stands now, but the popup's spacer grows a frame or two
     // later, so for 600ms afterwards any newly opened gap is closed too. Each
@@ -2023,8 +2061,8 @@ function scrollDotSet(c: string, on: boolean): string {
 // responses scroll underneath, so the natural navigation stops are those
 // headers. When ON we append a marked, self-contained IIFE at the end of
 // webview/index.js that mounts two neutral 26px squares above the input box's
-// top-right corner (anchored to .inputContainer_<hash>), in the same row
-// (top:-34px) as the scroll-to-bottom button and to its left: with that button
+// top-right corner (anchored to .inputWrapper_<hash>, see btnHostSel), in the
+// same row (top:-34px) as the scroll-to-bottom button and to its left: with that button
 // ON the trio reads up/down/bottom at right:65/35/5px (a 30px pitch off the
 // send button's 5px inset); with it OFF the pair slides into right:35/5px. The
 // slot choice is baked at patch time by checking the bundle for the scrollDot
@@ -2104,7 +2142,7 @@ function scrollDotSet(c: string, on: boolean): string {
 // observer's class/style attribute filter, and the observer callback drops the
 // records our own measurements produce (style writes on sticky headers, from
 // the click-time pass and the census probe alike), so the updater never
-// re-triggers itself. The three class-map hashes (messageInput's inputContainer,
+// re-triggers itself. The three class-map hashes (messageInput's inputWrapper,
 // messagesContainer, and stickyHeader) are read at patch time; if any is gone
 // the point reports missing and the bundle stays native. try/catch wraps the
 // whole body, and the /*ccup:jumpMsg*/ marker makes the ON state detectable; a
@@ -2126,9 +2164,12 @@ function jumpMsgBuild(c: string): string | undefined {
   if (!input || !chat || !sticky) return undefined;
   const perm = c.match(PERM_WRAP_HASH_RE)?.[1];
   const preq = c.match(PERM_REQ_HASH_RE)?.[1];
-  // Two 26px squares matching the scroll-to-bottom button, above the input's
-  // top-right corner: left of the scroll button's right:5px slot when its marker
-  // is in the bundle, slid into its place otherwise (30px pitch either way);
+  const wrap = c.match(BTN_WRAP_HASH_RE)?.[1];
+  const host = btnHostSel(input, wrap);
+  // Two 26px squares matching the scroll-to-bottom button, above the composer
+  // stack's top-right corner: left of the scroll button's right:5px slot when
+  // its marker is in the bundle, slid into its place otherwise (30px pitch
+  // either way);
   // box-sizing keeps the 1px border from inflating them. data-show fades a button
   // in; data-show+data-off dims an exhausted direction.
   const withDot = c.includes(SCROLL_DOT_MARKER);
@@ -2144,11 +2185,12 @@ function jumpMsgBuild(c: string): string | undefined {
     ".ccup-nav-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-nav-btn svg{display:block;width:20px;height:20px}" +
     // Hide both nav buttons while any composer dropdown is open: they mount in
-    // the input container (no stacking context of its own), so their z:21 would
-    // paint through the popups that open above the box. See scrollDotBuild for
-    // the full stacking rationale; matched by the menuPopup_ class substring.
-    `.inputContainer_${input}:has([class*=menuPopup_]) .ccup-nav-btn[data-show]{opacity:0;pointer-events:none}` +
-    (perm && preq ? BTN_HOST_CSS : "") +
+    // the composer wrapper (no stacking context of its own), so their z:21
+    // would paint through the popups that open above the box. See
+    // scrollDotBuild for the full stacking rationale; matched by the
+    // menuPopup_ class substring.
+    `${host}:has([class*=menuPopup_]) .ccup-nav-btn[data-show]{opacity:0;pointer-events:none}` +
+    btnHostCss(wrap, perm, preq) +
     dimCss(chat, preq) +
     HOVER_TIP_CSS;
   // Chevron up / down (no stem), distinct from the scroll button's stemmed arrow;
@@ -2164,7 +2206,7 @@ function jumpMsgBuild(c: string): string | undefined {
     `var UP="${up}",DN="${dn}",raf=0,gen=0,n0el=null,n0=0;` +
     HOVER_TIP_JS +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
-    btnHostsJs(input, perm, preq) +
+    btnHostsJs(host, perm, preq) +
     `function hh(t){return t.querySelectorAll(".stickyHeader_${sticky}")}` +
     // Header offset within container t: offsetTop summed up the offsetParent
     // chain (one hop normally; two while .highlightedMessage wraps its turn).

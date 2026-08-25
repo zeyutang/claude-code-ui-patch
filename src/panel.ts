@@ -255,6 +255,18 @@ ${preview}  </div>
       pvStyle('.pv-plan-inline-ctx', pl.textSizePx, pl.textFamily);
       pvStyle('.pv-plan-inline', pl.codeInlineSizePx, pl.codeFamily);
       pvStyle('.pv-plan-code', pl.codeBlockSizePx, pl.codeFamily);
+      // Select-and-comment popup. The quote and the badge digit declare no family
+      // in the bundle, so they ride the plan family; the composer is pinned to the
+      // native UI font there, so only its size is set here. Rows go on the real
+      // textarea's own attribute, so its height comes out exactly as in the popup
+      // (no attribute = native, where the 60px floor decides).
+      pvStyle('.pv-plan-quote', pl.quoteSizePx, pl.textFamily);
+      pvStyle('.pv-plan-comment', pl.commentSizePx, null);
+      pvStyle('.pv-badge', pl.badgeSizePx, pl.textFamily);
+      document.querySelectorAll('.pv-plan-comment').forEach(function (el) {
+        if (pl.commentRows) el.setAttribute('rows', String(pl.commentRows));
+        else el.removeAttribute('rows');
+      });
       // Captions read out the true configured values.
       pvSetVal('chatAgent', pvPx(c.agentSizePx) + ' · ' + pvLabel(c.agentFamily) + ' · bold ' + c.agentBoldWeight + ' · paragraph spacing ' + c.paraSpacing + '×');
       pvSetVal('chatInput', pvPx(c.inputSizePx) + ' · native');
@@ -264,6 +276,9 @@ ${preview}  </div>
       pvSetVal('planAgent', pvPx(pl.textSizePx) + ' · ' + pvLabel(pl.textFamily));
       pvSetVal('planInline', pvPx(pl.codeInlineSizePx) + ' · ' + pvLabel(pl.codeFamily));
       pvSetVal('planCode', pvPx(pl.codeBlockSizePx) + ' · ' + pvLabel(pl.codeFamily));
+      pvSetVal('planQuote', pvPx(pl.quoteSizePx) + ' · ' + pvLabel(pl.textFamily));
+      pvSetVal('planComment', pvPx(pl.commentSizePx) + ' · native · ' + (pl.commentRows ? pl.commentRows + ' rows' : 'native rows'));
+      pvSetVal('planBadge', pvPx(pl.badgeSizePx) + ' · ' + pvLabel(pl.textFamily));
     }
     applyPreview(initialPreview);
 
@@ -430,11 +445,23 @@ function previewHtml(hasChat: boolean, hasPlan: boolean): string {
       <div class="pv-cap">Inline code <span class="pv-cap-val" data-val="planInline"></span></div>
       <div class="pv-bubble"><div class="pv-plan-inline-ctx">This is the inline code in Markdown Preview <code class="pv-inline pv-plan-inline">helloWorld()</code>.</div></div>
       <div class="pv-cap">Code block <span class="pv-cap-val" data-val="planCode"></span></div>
-      <pre class="pv-pre pv-plan-code"><code>def load_config(path):\n    with open(path) as f:\n        return json.load(f)</code></pre>\n`
+      <pre class="pv-pre pv-plan-code"><code>def load_config(path):\n    with open(path) as f:\n        return json.load(f)</code></pre>
+      <div class="pv-cap">Comment quote <span class="pv-cap-val" data-val="planQuote"></span></div>
+      <div class="pv-cap">Comment input box <span class="pv-cap-val" data-val="planComment"></span></div>
+      <div class="pv-popup" aria-hidden="true">
+        <div class="pv-plan-quote">This is the plan text you selected, quoted here above your comment.</div>
+        <textarea class="pv-plan-comment" readonly tabindex="-1">This is the comment you type...</textarea>
+        <div class="pv-actions">
+          <button class="pv-cancel" tabindex="-1">Cancel</button>
+          <button class="pv-submit" tabindex="-1">Add Comment</button>
+        </div>
+      </div>
+      <div class="pv-cap">Comment badge <span class="pv-cap-val" data-val="planBadge"></span></div>
+      <div class="pv-bubble"><div class="pv-plan-text">This is the plan text <mark class="pv-mark">you commented on<span class="pv-badge">1</span></mark>.</div></div>\n`
     : "";
   return `    <div class="col col-preview">
       <h2 class="pv-title">Live Preview</h2>
-      <div class="pv-note">Only font size and spacing knobs that you tune by eye are previewed here, not the whole patch (toggles, diff cards, buttons, find bar, and other fixes are not in this preview). Every block is shown true to size, so it matches what the Claude Code interface will show after the window reload.</div>
+      <div class="pv-note">Only font size and spacing knobs that you tune by eye are previewed here, not the whole patch (toggles, diff cards, chat nav buttons, find bar, and other fixes are not in this preview). Every block is shown true to size, so it matches what the Claude Code interface will show after the window reload.</div>
 ${chat}${plan}    </div>
 `;
 }
@@ -513,6 +540,8 @@ const baseCss = `
      when a family is set, so clearing the inline style falls back to native. */
   .pv-note { font-size: .9em; color: var(--vscode-descriptionForeground); margin: 2px 0 10px; line-height: 1.4; }
   .pv-cap { font-size: .85em; color: var(--vscode-descriptionForeground); margin: 10px 0 3px; }
+  /* Two captions in a row label one sample (the comment popup covers both). */
+  .pv-cap + .pv-cap { margin-top: 0; }
   .pv-cap-val { font-variant-numeric: tabular-nums; opacity: .85; }
   .pv-bubble { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 7px 10px; background: var(--vscode-editor-background); }
   .pv-bubble.pv-user { background: var(--vscode-textBlockQuote-background, rgba(127,127,127,.08)); }
@@ -528,8 +557,30 @@ const baseCss = `
   /* The chat input box: a mock text field sized by the native chat.fontSize. */
   .pv-inputbox { border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 6px; padding: 7px 10px; background: var(--vscode-input-background, var(--vscode-editor-background)); }
   .pv-input-text { font-family: var(--vscode-font-family); color: var(--vscode-input-foreground, var(--vscode-foreground)); }
-  .pv-plan-text, .pv-plan-inline-ctx { font-family: var(--vscode-markdown-font-family, var(--vscode-font-family)); }
+  /* The plan preview's body sets line-height 1.6, and the quote's 60px clip is
+     measured against it, so the plan mock carries it too. */
+  .pv-plan-text, .pv-plan-inline-ctx, .pv-plan-quote { font-family: var(--vscode-markdown-font-family, var(--vscode-font-family)); line-height: 1.6; }
   .pv-plan-text p { margin: 0; }
+  /* Select-and-comment popup, ruled the way the plan preview's own stylesheet
+     rules it, so the mock wraps and clips like the real popup. Its 320px box is
+     content-box there, hence 346px here with the 12px padding and 1px border
+     folded in; the cap lets a narrow panel shrink it instead of overflowing. */
+  .pv-popup { width: 346px; max-width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); border-radius: 6px; background: var(--vscode-editorWidget-background); box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
+  .pv-plan-quote { color: var(--vscode-descriptionForeground); border-left: 2px solid var(--vscode-textBlockQuote-border); padding: 4px 8px; margin-bottom: 8px; max-height: 60px; overflow: hidden; white-space: pre-wrap; word-break: break-word; }
+  /* A real (read-only) textarea, so the rows knob shows its true height and the
+     60px floor and resize grip come along with it. */
+  .pv-plan-comment { display: block; width: 100%; min-height: 60px; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 3px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); font-family: var(--vscode-font-family); resize: vertical; }
+  /* Cancel / Add Comment are not patched: the bundle leaves their font-family
+     unset, so they keep the default control font at a pinned 12px. Inert in the
+     mock, hence the default cursor. */
+  .pv-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
+  .pv-actions button { padding: 4px 12px; border-radius: 3px; font-size: 12px; border: none; cursor: default; }
+  .pv-actions .pv-submit { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+  .pv-actions .pv-cancel { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+  /* A commented span and its badge: the knob sizes the digit, the 14px circle
+     around it is fixed. */
+  .pv-mark { background: color-mix(in srgb, var(--vscode-editor-findMatchHighlightBackground, #ea5c0055) 60%, transparent); border-radius: 2px; padding: 1px 0; }
+  .pv-badge { display: inline-block; width: 14px; height: 14px; background: var(--vscode-textLink-foreground); color: var(--vscode-editor-background); border-radius: 50%; line-height: 14px; text-align: center; margin-left: 2px; vertical-align: middle; }
   .pv-inline { padding: 0 4px; border-radius: 3px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.15)); }
   .pv-chat-inline, .pv-plan-inline { font-family: var(--vscode-editor-font-family); }
   .pv-pre { margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); overflow-x: auto; white-space: pre; }

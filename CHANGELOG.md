@@ -2,6 +2,10 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.8
+
+- The panel's live preview now includes the Plan Mode select-and-comment popup, so the comment quote, the comment box (its text size and its rows), and the comment badge can all be tuned by eye like the rest of the preview.
+
 ## 1.4.7
 
 - `useCtrlEnterToSendEverywhere` applies again on Claude Code 2.1.245, where it had gone back to submitting on a plain `Enter` in the AskUserQuestion `Other` box and the permission feedback box.

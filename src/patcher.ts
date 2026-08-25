@@ -5105,6 +5105,13 @@ export interface PreviewModel {
     codeBlockSizePx: number;
     codeInlineSizePx: number;
     codeFamily: string | null;
+    // Select-and-comment popup. The quote carries no family of its own, so it
+    // rides textFamily (the body swap reaches it); the composer is pinned to the
+    // native UI font in the bundle, so only its size is tunable.
+    quoteSizePx: number;
+    commentSizePx: number;
+    commentRows: number | null; // null = native (the 60px floor, about 3 rows)
+    badgeSizePx: number; // the digit inside the 14px comment badge
   };
 }
 
@@ -5127,6 +5134,12 @@ export function previewModel(): PreviewModel {
     const ip = inj(id);
     const v = ip ? readInject(ip) : undefined;
     return typeof v === "number" ? v : 1;
+  };
+  // A rows count, or null for native (no rows attribute on the textarea).
+  const effRows = (id: string): number | null => {
+    const ip = inj(id);
+    const v = ip ? readInject(ip) : undefined;
+    return typeof v === "number" ? v : null;
   };
   // codeFontFamily is a single setting shared by the chat / permission / plan
   // code points, so read it once and use it for both surfaces' code.
@@ -5154,6 +5167,10 @@ export function previewModel(): PreviewModel {
       codeBlockSizePx: sizes["code"],
       codeInlineSizePx: effNum("planCodeInline", sizes["code"]),
       codeFamily,
+      quoteSizePx: sizes["preview"],
+      commentSizePx: sizes["input"],
+      commentRows: effRows("planCommentRows"),
+      badgeSizePx: sizes["badge"],
     },
   };
 }

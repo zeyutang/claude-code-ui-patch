@@ -504,18 +504,18 @@ const ABS_LN_HELPER =
 // if(o.type==="tool_result"){let r=BG(e,o.tool_use_id);if(r)r.setToolResult(o)}`
 // (captures: 2=block, 3=message, 4=wrapper, 5=finder, 6=list).
 const ABS_LN_TUR_RE =
-  /(for\(let (\w+) of (\w+)\.message\.content\)if\(\2\.type==="tool_result"\)\{let (\w+)=(\w+)\((\w+),\2\.tool_use_id\);)(if\(\4\)\4\.setToolResult\(\2\)\})/g;
+  /(for\(let ([\w$]+) of ([\w$]+)\.message\.content\)if\(\2\.type==="tool_result"\)\{let ([\w$]+)=([\w$]+)\(([\w$]+),\2\.tool_use_id\);)(if\(\4\)\4\.setToolResult\(\2\)\})/g;
 
 // prop: the Edit card's body, from its `is_error?"Edit failed"` head through the
 // diff-component JSX call (captures: 2/3/4=body params ctx/input/result,
 // 5=jsx factory, 6=component; the bounded lazy gap spans the summary line).
 const ABS_LN_PROP_RE =
-  /(body\((\w+),(\w+),(\w+)\)\{let \w+=\4&&\4\.is_error\?"Edit failed"[\s\S]{1,800}?\b(\w+)\((\w+),\{original:\3\.old_string\|\|"",modified:\3\.new_string\|\|"",filePath:\3\.file_path\|\|"")(\}\))/g;
+  /(body\(([\w$]+),([\w$]+),([\w$]+)\)\{let [\w$]+=\4&&\4\.is_error\?"Edit failed"[\s\S]{1,800}?\b([\w$]+)\(([\w$]+),\{original:\3\.old_string\|\|"",modified:\3\.new_string\|\|"",filePath:\3\.file_path\|\|"")(\}\))/g;
 
 // arg: the diff component's props destructure (captures: 2=component,
 // 3=original, 4=modified, 5=language, 6=filePath).
 const ABS_LN_ARG_RE =
-  /(function (\w+)\(\{original:(\w+),modified:(\w+),language:(\w+)="plaintext",filePath:(\w+))(\}\))/g;
+  /(function ([\w$]+)\(\{original:([\w$]+),modified:([\w$]+),language:([\w$]+)="plaintext",filePath:([\w$]+))(\}\))/g;
 
 // card: the card's models effect, setModel followed by a FOUR-dep array (the
 // modal's twin has one dep, so the arity disambiguates; captures: 1=editor ref,
@@ -526,7 +526,7 @@ const ABS_LN_ARG_RE =
 // with and costs ~80ms per pass over the ~5MB bundle (~3ms this way), which the
 // toggle round-trip pays several times.
 const ABS_LN_CARD_FX_RE =
-  /(?<=(\w+))(\.current\.setModel\(\{original:(\w+)\.current\.original,modified:\3\.current\.modified\}\))\},\[(\w+),(\w+),(\w+),(\w+)\]\)/g;
+  /(?<=([\w$]+))(\.current\.setModel\(\{original:([\w$]+)\.current\.original,modified:\3\.current\.modified\}\))\},\[([\w$]+),([\w$]+),([\w$]+),([\w$]+)\]\)/g;
 
 // use: the diff component's editor-creation effect, read only for the build's
 // useEffect alias, which the fx fragment needs to declare an effect of its own
@@ -535,19 +535,19 @@ const ABS_LN_CARD_FX_RE =
 // sits a couple of thousand bytes above the models effect in the same
 // component, which absLnThread checks by distance.
 const ABS_LN_USEEFFECT_RE =
-  /(?<=(\w+)\(\(\)=>\{if\(!(\w+)\.current\)return;let (\w+)=(\w+))\.createDiffEditor\(/g;
+  /(?<=([\w$]+)\(\(\)=>\{if\(!([\w$]+)\.current\)return;let ([\w$]+)=([\w$]+))\.createDiffEditor\(/g;
 const ABS_LN_USEEFFECT_MAX_GAP = 4000;
 
 // mprop: the card's expand click, openModal({original,modified,language,
 // filePath}) (captures: 2=openModal, 3=original, 4=modified).
 const ABS_LN_MODAL_PROP_RE =
-  /(\{(\w+)\(\{original:(\w+),modified:(\w+),language:(\w+),filePath:(\w+))(\}\)\})/g;
+  /(\{([\w$]+)\(\{original:([\w$]+),modified:([\w$]+),language:([\w$]+),filePath:([\w$]+))(\}\)\})/g;
 
 // modal: the modal's models effect, setModel followed by the ONE-dep array
 // (captures: 1=editor ref via the same lookbehind, 2=setModel chunk, 3=models
 // ref, 4=deps tail, 5=modal state).
 const ABS_LN_MODAL_FX_RE =
-  /(?<=(\w+))(\.current\.setModel\(\{original:(\w+)\.current\.original,modified:\3\.current\.modified\}\))(\},\[(\w+)\]\))/g;
+  /(?<=([\w$]+))(\.current\.setModel\(\{original:([\w$]+)\.current\.original,modified:\3\.current\.modified\}\))(\},\[([\w$]+)\]\))/g;
 
 // gm: the diff editor's left-hand-side option derive, which forces the original
 // editor's glyph margin on in side-by-side view.
@@ -557,7 +557,7 @@ const ABS_LN_GM_RE =
 // gap: the inline-view layout's original-editor slice width (cut at the end of
 // its line-number column).
 const ABS_LN_GAP_RE =
-  /(Math\.max\(5,this\._editors\.originalObs\.layoutInfoDecorationsLeft\.read\(\w+\)\))/g;
+  /(Math\.max\(5,this\._editors\.originalObs\.layoutInfoDecorationsLeft\.read\([\w$]+\)\))/g;
 
 function absLnExec(re: RegExp, c: string): RegExpExecArray | null {
   re.lastIndex = 0;
@@ -1883,23 +1883,41 @@ function dimCss(chat: string, preq: string | undefined): string {
 // native helper as the fallback for a bundle whose injected line failed. Both
 // take (ref, smooth), so the site is a one-token widening of the callee.
 // All three minified names (session, scroll helper, container ref) are captured
-// and re-emitted, so restore is byte-identical; the marker makes the guarded
-// state detectable. The edit is best-effort: on a drifted bundle where the
-// branch is gone the toggle still applies (buttons only), and permYankGuardOk
-// treats "no native site" as satisfied so the state machinery never loops on it.
+// and re-emitted, as is the rest of the branch's condition, which this build
+// extends with an `&&!<teleport flag>` conjunct (capture 2, empty on a build
+// that tests the pending count alone). So restore is byte-identical and the
+// guard rides whatever else the branch tests without reading it, and the marker
+// makes the guarded state detectable. The edit is best-effort: on a drifted
+// bundle where the branch is gone the toggle still applies (buttons only), and
+// permYankGuardOk treats "no native site" as satisfied so the state machinery
+// never loops on it.
 const PERM_YANK_MARKER = "/*ccup:permYankGuard*/";
-const PERM_YANK_NATIVE_RE =
-  /if\((\w+)\.permissionRequests\.value\.length>0\)\{(\w+)\((\w+),!0\);return\}/;
-const PERM_YANK_GUARDED_RE =
-  /if\((\w+)\.permissionRequests\.value\.length>0\)\{\/\*ccup:permYankGuard\*\/if\(\(\(n\)=>!n\|\|n\.scrollHeight-n\.scrollTop-n\.clientHeight<50\)\((\w+)\.current\)\)\(window\.__ccupPermGlide\|\|(\w+)\)\(\2,!0\);return\}/;
+const PERM_YANK_COND = String.raw`if\(([\w$]+)\.permissionRequests\.value\.length>0((?:&&!?[\w$.]+)*)\)\{`;
+const PERM_YANK_NATIVE_RE = new RegExp(
+  PERM_YANK_COND + String.raw`([\w$]+)\(([\w$]+),!0\);return\}`,
+);
+const PERM_YANK_GUARD_HEAD = String.raw`\/\*ccup:permYankGuard\*\/if\(\(\(n\)=>!n\|\|n\.scrollHeight-n\.scrollTop-n\.clientHeight<50\)\(([\w$]+)\.current\)\)`;
+const PERM_YANK_GUARDED_RE = new RegExp(
+  PERM_YANK_COND +
+    PERM_YANK_GUARD_HEAD +
+    String.raw`\(window\.__ccupPermGlide\|\|([\w$]+)\)\(\3,!0\);return\}`,
+);
 // The 1.3.2-1.3.6 guard, which called the native helper directly. Stripping it
 // is what lets an in-place upgrade rebuild the branch instead of stranding the
 // old form (the native regex no longer matches an already-guarded branch).
-const PERM_YANK_LEGACY_RE =
-  /if\((\w+)\.permissionRequests\.value\.length>0\)\{\/\*ccup:permYankGuard\*\/if\(\(\(n\)=>!n\|\|n\.scrollHeight-n\.scrollTop-n\.clientHeight<50\)\((\w+)\.current\)\)(\w+)\(\2,!0\);return\}/;
-function permYankGuardedText(e: string, fn: string, ref: string): string {
+const PERM_YANK_LEGACY_RE = new RegExp(
+  PERM_YANK_COND +
+    PERM_YANK_GUARD_HEAD +
+    String.raw`([\w$]+)\(\3,!0\);return\}`,
+);
+function permYankGuardedText(
+  e: string,
+  cond: string,
+  fn: string,
+  ref: string,
+): string {
   return (
-    `if(${e}.permissionRequests.value.length>0){${PERM_YANK_MARKER}` +
+    `if(${e}.permissionRequests.value.length>0${cond}){${PERM_YANK_MARKER}` +
     `if(((n)=>!n||n.scrollHeight-n.scrollTop-n.clientHeight<50)(${ref}.current))` +
     `(window.__ccupPermGlide||${fn})(${ref},!0);return}`
   );
@@ -1907,14 +1925,20 @@ function permYankGuardedText(e: string, fn: string, ref: string): string {
 // Strip any guard (current or legacy) back to the native branch, then re-apply
 // when on.
 function permYankGuardSet(c: string, on: boolean): string {
-  const native = (_m: string, e: string, ref: string, fn: string): string =>
-    `if(${e}.permissionRequests.value.length>0){${fn}(${ref},!0);return}`;
+  const native = (
+    _m: string,
+    e: string,
+    cond: string,
+    ref: string,
+    fn: string,
+  ): string =>
+    `if(${e}.permissionRequests.value.length>0${cond}){${fn}(${ref},!0);return}`;
   const off = c
     .replace(PERM_YANK_GUARDED_RE, native)
     .replace(PERM_YANK_LEGACY_RE, native);
   if (!on) return off;
-  return off.replace(PERM_YANK_NATIVE_RE, (_m, e, fn, ref) =>
-    permYankGuardedText(e, fn, ref),
+  return off.replace(PERM_YANK_NATIVE_RE, (_m, e, cond, fn, ref) =>
+    permYankGuardedText(e, cond, fn, ref),
   );
 }
 // The guard's ON-state health: guarded in the current form, or nothing left to
@@ -3643,13 +3667,14 @@ const PLAN_COMMENT_SEND_RE =
 // the apply through the foreign-key watch (taking effect there on reload).
 const UCE_TAG = "/*ccup-uce*/";
 // The AskUserQuestion render site: the only permissionRequest method whose body
-// is exactly the input/onInputChange/options passthrough (param 1 = context).
+// is exactly the input/onInputChange/options passthrough (param 1 = context,
+// capture 5 = the build's minified JSX factory, 6 = the component).
 const UCE_Q_RENDER_RE =
-  /permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return b\(([\w$]+),\{input:\2,onInputChange:\3,options:\4\}\)\}/;
+  /permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return ([\w$]+)\(([\w$]+),\{input:\2,onInputChange:\3,options:\4\}\)\}/;
 const UCE_Q_RENDER_ON_RE =
-  /permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return b\(([\w$]+),\{input:\2,onInputChange:\3,options:\4,ccupCtx:\1\}\)\}/;
+  /permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return ([\w$]+)\(([\w$]+),\{input:\2,onInputChange:\3,options:\4,ccupCtx:\1\}\)\}/;
 // The question component's props destructure (unique: the render site above
-// spells the same names after `b(Comp,` with no `({`).
+// spells the same names after `<factory>(Comp,` with no `({`).
 const UCE_Q_SIG_RE =
   /function ([\w$]+)\(\{input:([\w$]+),onInputChange:([\w$]+),options:([\w$]+)\}\)\{/;
 const UCE_Q_SIG_ON_RE =
@@ -3702,8 +3727,8 @@ function uceSet(c: string, on: boolean): string {
     let out = c;
     out = out.replace(
       UCE_Q_RENDER_RE,
-      (_w, p1, p2, p3, p4, comp) =>
-        `permissionRequest(${p1},${p2},${p3},${p4}){return b(${comp},{input:${p2},onInputChange:${p3},options:${p4},ccupCtx:${p1}})}`,
+      (_w, p1, p2, p3, p4, fac, comp) =>
+        `permissionRequest(${p1},${p2},${p3},${p4}){return ${fac}(${comp},{input:${p2},onInputChange:${p3},options:${p4},ccupCtx:${p1}})}`,
     );
     out = out.replace(
       UCE_Q_SIG_RE,
@@ -3729,8 +3754,8 @@ function uceSet(c: string, on: boolean): string {
   let out = c;
   out = out.replace(
     UCE_Q_RENDER_ON_RE,
-    (_w, p1, p2, p3, p4, comp) =>
-      `permissionRequest(${p1},${p2},${p3},${p4}){return b(${comp},{input:${p2},onInputChange:${p3},options:${p4}})}`,
+    (_w, p1, p2, p3, p4, fac, comp) =>
+      `permissionRequest(${p1},${p2},${p3},${p4}){return ${fac}(${comp},{input:${p2},onInputChange:${p3},options:${p4}})}`,
   );
   out = out.replace(
     UCE_Q_SIG_ON_RE,

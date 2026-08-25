@@ -2,6 +2,12 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.7
+
+- `useCtrlEnterToSendEverywhere` applies again on Claude Code 2.1.245, where it had gone back to submitting on a plain `Enter` in the AskUserQuestion `Other` box and the permission feedback box.
+- With `chatDiffCardLineNumbers` on, diff cards again number their lines by the file's real line numbers on Claude Code 2.1.245, instead of counting from 1 within the snippet.
+- With `chatScrollToBottomDot` or `chatJumpToMessageButtons` on, an arriving permission prompt no longer pulls the chat down while you read back through history, and when you are already at the bottom it now scrolls the whole way instead of stopping a popup's height short.
+
 ## 1.4.6
 
 - The previous/next turn and scroll-to-bottom buttons no longer cover a notice banner above the input box (Remote Control, rate limit, a browser or debugger or Jupyter connection, a settings file that failed to parse).

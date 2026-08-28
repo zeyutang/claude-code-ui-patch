@@ -427,7 +427,7 @@ function previewHtml(hasChat: boolean, hasPlan: boolean): string {
     ? `      <hr class="divider">
       <h2>Chat Panel or Tab</h2>
       <div class="pv-cap">Agent response <span class="pv-cap-val" data-val="chatAgent"></span></div>
-      <div class="pv-bubble"><div class="pv-agent-text"><p>This is paragraph 1: this is an example sentence. This is another sentence.</p><p>This is paragraph 2: this live preview serves as a quick mock-up, where <strong>every block is WYSIWYG-true</strong> to what a reload would show.</p></div></div>
+      <div class="pv-bubble"><div class="pv-agent-text"><p>This is paragraph 1: this is an example sentence.</p><p>This is paragraph 2: this live preview is <strong>WYSIWYG-true</strong> to what a Developer: Reload Window would show.</p></div></div>
       <div class="pv-cap">User message input <span class="pv-cap-val" data-val="chatInput"></span></div>
       <div class="pv-inputbox"><div class="pv-input-text">This is the textarea where you type...</div></div>
       <div class="pv-cap">User message history <span class="pv-cap-val" data-val="chatUser"></span></div>
@@ -446,22 +446,21 @@ function previewHtml(hasChat: boolean, hasPlan: boolean): string {
       <div class="pv-bubble"><div class="pv-plan-inline-ctx">This is the inline code in Markdown Preview <code class="pv-inline pv-plan-inline">helloWorld()</code>.</div></div>
       <div class="pv-cap">Code block <span class="pv-cap-val" data-val="planCode"></span></div>
       <pre class="pv-pre pv-plan-code"><code>def load_config(path):\n    with open(path) as f:\n        return json.load(f)</code></pre>
-      <div class="pv-cap">Comment quote <span class="pv-cap-val" data-val="planQuote"></span></div>
-      <div class="pv-cap">Comment input box <span class="pv-cap-val" data-val="planComment"></span></div>
+      <div class="pv-cap">Comment badge <span class="pv-cap-val" data-val="planBadge"></span></div>
+      <div class="pv-bubble"><div class="pv-plan-text">This is <mark class="pv-mark">the plan text you selected</mark><span class="pv-badge">1</span></div></div>
+      <div class="pv-cap">Comment quote <span class="pv-cap-val" data-val="planQuote"></span> | Comment input box <span class="pv-cap-val" data-val="planComment"></span></div>
       <div class="pv-popup" aria-hidden="true">
-        <div class="pv-plan-quote">This is the plan text you selected, quoted here above your comment.</div>
+        <div class="pv-plan-quote">the plan text you selected</div>
         <textarea class="pv-plan-comment" readonly tabindex="-1">This is the comment you type...</textarea>
         <div class="pv-actions">
           <button class="pv-cancel" tabindex="-1">Cancel</button>
           <button class="pv-submit" tabindex="-1">Add Comment</button>
         </div>
-      </div>
-      <div class="pv-cap">Comment badge <span class="pv-cap-val" data-val="planBadge"></span></div>
-      <div class="pv-bubble"><div class="pv-plan-text">This is the plan text <mark class="pv-mark">you commented on<span class="pv-badge">1</span></mark>.</div></div>\n`
+      </div>\n`
     : "";
   return `    <div class="col col-preview">
       <h2 class="pv-title">Live Preview</h2>
-      <div class="pv-note">Only font size and spacing knobs that you tune by eye are previewed here, not the whole patch (toggles, diff cards, chat nav buttons, find bar, and other fixes are not in this preview). Every block is shown true to size, so it matches what the Claude Code interface will show after the window reload.</div>
+      <div class="pv-note">Only font size and spacing knobs that you tune by eye are previewed here, not the whole patch (toggles, diff cards, chat nav buttons, find bar, and other fixes are not in this preview).</div>
 ${chat}${plan}    </div>
 `;
 }

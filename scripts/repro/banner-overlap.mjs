@@ -6,6 +6,10 @@
 //
 //   node scripts/cdp-driver.mjs scripts/repro/banner-overlap.mjs 760 520
 //
+// The fieldset's OVERLAY banners (the session feedback survey, the review
+// upsell) are the other half of this problem and take the opposite remedy, the
+// buttons hiding rather than clearing; see overlay-banner.mjs.
+//
 // Anchors mirror btnHostsJs in src/patcher.ts; keep the two in sync. The live
 // bundle is located under ~/.vscode/extensions (newest Claude Code install) or
 // via $CCUP_BUNDLE (the webview directory).

@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.9
+
+- The previous/next turn and scroll-to-bottom buttons now step aside while a banner opens over the input box (the session feedback survey, the review prompt), instead of covering its buttons and its dismiss control.
+  They come back as soon as the banner is answered or dismissed.
+
 ## 1.4.8
 
 - The panel's live preview now includes the Plan Mode select-and-comment popup, so the comment quote, the comment box (its text size and its rows), and the comment badge can all be tuned by eye like the rest of the preview.

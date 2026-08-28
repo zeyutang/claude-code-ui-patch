@@ -1791,6 +1791,48 @@ function btnHostCss(
     (perm && preq ? ".ccup-btn-host{position:relative}" : "")
   );
 }
+// Shared hide rule for the scroll-to-bottom and jump buttons: whatever native
+// element opens INSIDE the strip the buttons occupy (26px at top:-34px, so the
+// 8px band above the box) takes that strip back for as long as it is mounted.
+// Two kinds do, both children of the composer fieldset rather than of the
+// wrapper the buttons host on, and neither carrying a z-index of its own:
+//   menuPopup_  the composer's own dropdowns (mention, mode, model, slash,
+//               add), bottom:100%, z-index <= 10.
+//   banner_     the fieldset's two overlay banners, the session feedback survey
+//               ("How is Claude doing this session?", Bad/Fine/Good) and the
+//               marketplace review upsell, both position:absolute;bottom:100%
+//               with margin-bottom:8px, which is exactly the gap the buttons
+//               leave above the box: each banner's box IS the buttons' strip,
+//               so the buttons land on its rightmost choice button and its
+//               dismiss control.
+// Wrapper, popups, banners, and buttons all flatten into the composer's z:20
+// stacking context, where the buttons' z:21 paints THROUGH whatever opened, so
+// hiding is the remedy rather than a z-index below every overlay (one popup is
+// z:auto, which would mean negative), and hiding is also what lets the pointer
+// reach the thing underneath. Both tests are stable class-name substrings with
+// no per-build hash, and the whole rule is scoped to this composer so an
+// overlay in one chat view never blanks another view's buttons.
+// The banner test is scoped to the fieldset because the wrapper's OTHER banners
+// are the in-flow notice ones (Remote Control, rate limit, browser/debugger/
+// Jupyter MCP, settings-parse error, refusal fallback), siblings of the form
+// that the wrapper host already lifts the buttons clear of (see btnHostSel):
+// hiding for those would drop the buttons for as long as a notice stays up,
+// which for Remote Control is the whole session. When the wrap anchor is gone
+// and the host IS the fieldset, that scope is already implied, so the test
+// drops the prefix rather than nesting a selector that could never match.
+function btnHideCss(
+  input: string,
+  wrap: string | undefined,
+  cls: string,
+): string {
+  const banner = wrap
+    ? `.inputContainer_${input} [class*=banner_]`
+    : "[class*=banner_]";
+  return (
+    `${btnHostSel(input, wrap)}:has([class*=menuPopup_],${banner}) ` +
+    `${cls}[data-show]{opacity:0;pointer-events:none}`
+  );
+}
 function btnHostsJs(
   host: string,
   perm: string | undefined,
@@ -1979,16 +2021,10 @@ function scrollDotBuild(c: string): string | undefined {
     ".ccup-scroll-btn[data-off]:hover{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}" +
     ".ccup-scroll-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-scroll-btn svg{display:block;width:20px;height:20px}" +
-    // The composer's own dropdowns (mention, mode, model, slash, add) all open
-    // above the box (.menuPopup_<hash>, bottom:100%, z-index <= 10) inside the
-    // same wrapper the button mounts on, and neither has a z-index of its own:
-    // wrapper, popups, and button all flatten into the composer's z:20 context,
-    // where the button's z:21 paints THROUGH the popup. Hide the button while
-    // any popup is mounted rather than chase a z-index below every popup (one
-    // is z:auto, so that means negative). Matched by the stable menuPopup_
-    // class-name substring, no per-build hash; scoped to this composer so a
-    // popup in one chat view never blanks another's.
-    `${host}:has([class*=menuPopup_]) .ccup-scroll-btn[data-show]{opacity:0;pointer-events:none}` +
+    // While one of the composer's own dropdowns or the fieldset's overlay
+    // banners holds the button's strip, the button hides so it neither paints
+    // through nor blocks what opened there (see btnHideCss).
+    btnHideCss(input, wrap, ".ccup-scroll-btn") +
     btnHostCss(wrap, perm, preq) +
     dimCss(chat, preq) +
     HOVER_TIP_CSS;
@@ -2208,12 +2244,11 @@ function jumpMsgBuild(c: string): string | undefined {
     ".ccup-nav-btn[data-off]:hover{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}" +
     ".ccup-nav-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-nav-btn svg{display:block;width:20px;height:20px}" +
-    // Hide both nav buttons while any composer dropdown is open: they mount in
-    // the composer wrapper (no stacking context of its own), so their z:21
-    // would paint through the popups that open above the box. See
-    // scrollDotBuild for the full stacking rationale; matched by the
-    // menuPopup_ class substring.
-    `${host}:has([class*=menuPopup_]) .ccup-nav-btn[data-show]{opacity:0;pointer-events:none}` +
+    // Hide both nav buttons while a composer dropdown or one of the fieldset's
+    // overlay banners holds their strip; they mount in the composer wrapper (no
+    // stacking context of its own), so their z:21 would otherwise paint through
+    // whatever opened above the box, and block it (see btnHideCss).
+    btnHideCss(input, wrap, ".ccup-nav-btn") +
     btnHostCss(wrap, perm, preq) +
     dimCss(chat, preq) +
     HOVER_TIP_CSS;

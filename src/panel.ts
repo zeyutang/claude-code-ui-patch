@@ -447,10 +447,10 @@ function previewHtml(hasChat: boolean, hasPlan: boolean): string {
       <div class="pv-cap">Code block <span class="pv-cap-val" data-val="planCode"></span></div>
       <pre class="pv-pre pv-plan-code"><code>def load_config(path):\n    with open(path) as f:\n        return json.load(f)</code></pre>
       <div class="pv-cap">Comment badge <span class="pv-cap-val" data-val="planBadge"></span></div>
-      <div class="pv-bubble"><div class="pv-plan-text">This is <mark class="pv-mark">the plan text you selected</mark><span class="pv-badge">1</span></div></div>
+      <div class="pv-bubble"><div class="pv-plan-text">This is <mark class="pv-mark">the text you selected to comment on<span class="pv-badge">1</span></mark> in the Plan Mode</div></div>
       <div class="pv-cap">Comment quote <span class="pv-cap-val" data-val="planQuote"></span> | Comment input box <span class="pv-cap-val" data-val="planComment"></span></div>
       <div class="pv-popup" aria-hidden="true">
-        <div class="pv-plan-quote">the plan text you selected</div>
+        <div class="pv-plan-quote">the text you selected to comment on</div>
         <textarea class="pv-plan-comment" readonly tabindex="-1">This is the comment you type...</textarea>
         <div class="pv-actions">
           <button class="pv-cancel" tabindex="-1">Cancel</button>

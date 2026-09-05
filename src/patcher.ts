@@ -1901,12 +1901,11 @@ function dimCss(chat: string, preq: string | undefined): string {
 }
 
 // Permission-popup auto-scroll guard (rides the scroll-to-bottom toggle): the
-// chat view's render effect scrolls the history to the bottom UNCONDITIONALLY
-// whenever a permission request or AskUserQuestion popup is pending (the
-// branch if(e.permissionRequests.value.length>0){PD(r,!0);return}), yanking
-// the view down while reading history (every other branch of that effect
-// defers to the stick-to-bottom flag, recomputed each render as "within 50px
-// of the bottom").
+// chat view's render effect has one branch that scrolls the history to the
+// bottom whenever a permission request or AskUserQuestion popup is pending,
+// yanking the view down while reading history. It is the one branch of that
+// effect that does not defer to the stick-to-bottom flag (recomputed each
+// render as "within 50px of the bottom").
 // With the button ON the yank is pointless (the button is one click away), so
 // the branch gets the same stickiness condition inline: an arrow IIFE reads the
 // live scroll position off the container ref (introducing no bindings into the
@@ -1922,27 +1921,51 @@ function dimCss(chat: string, preq: string | undefined): string {
 // the old bottom and the view is left short by the height delta, reading as "it
 // just stayed where it was". The call therefore prefers window.__ccupPermGlide,
 // the button's own glide with a settle pass (see scrollDotBuild), and keeps the
-// native helper as the fallback for a bundle whose injected line failed. Both
-// take (ref, smooth), so the site is a one-token widening of the callee.
-// All three minified names (session, scroll helper, container ref) are captured
-// and re-emitted, as is the rest of the branch's condition, which this build
-// extends with an `&&!<teleport flag>` conjunct (capture 2, empty on a build
-// that tests the pending count alone). So restore is byte-identical and the
-// guard rides whatever else the branch tests without reading it, and the marker
-// makes the guarded state detectable. The edit is best-effort: on a drifted
-// bundle where the branch is gone the toggle still applies (buttons only), and
-// permYankGuardOk treats "no native site" as satisfied so the state machinery
-// never loops on it.
+// native helper as the fallback for a bundle whose injected line failed. The
+// site is a one-token widening of the callee: the argument list is re-emitted
+// as it stood, which the glide reads as (ref) and ignores the rest of, so the
+// smooth flag only ever reaches the native fallback.
+// The branch itself is matched structurally rather than by what it tests,
+// because what it tests keeps changing: 2.1.245 appended an `&&!<teleport flag>`
+// conjunct, and 2.1.261 dropped the pending-count read entirely for
+// `if((<req>&&<untouched>.current||<answered>)&&!<teleport>)`, where
+// <untouched> is a native ref cleared by wheel/touch/pointer/nav-key input
+// (a coarser cousin of this guard: it suppresses the yank once you interact
+// AFTER the popup arrives, but a fresh popup re-arms it, so scrolling up while
+// Claude works still gets yanked and answering one still jumps). The whole
+// condition is therefore one capture (1) and the smooth flag another (4, `!0`
+// until 2.1.261 made it `!<answered>`), both re-emitted verbatim, and what
+// pins the site is the shape of the body plus a lookahead for the
+// "first messages arrived" branch that follows and reuses the same helper and
+// ref. So restore is byte-identical, the guard rides whatever the branch tests
+// without reading it, and the marker makes the guarded state detectable. The
+// edit is best-effort: on a drifted bundle where the branch is gone the toggle
+// still applies (buttons only), and permYankGuardOk treats "no native site" as
+// satisfied so the state machinery never loops on it.
 const PERM_YANK_MARKER = "/*ccup:permYankGuard*/";
-const PERM_YANK_COND = String.raw`if\(([\w$]+)\.permissionRequests\.value\.length>0((?:&&!?[\w$.]+)*)\)\{`;
+// Condition and smooth flag: brace- and semicolon-free spans, which bounds the
+// greedy run to the one statement and lets the condition carry its own parens.
+const PERM_YANK_COND = String.raw`if\(([^{};]*)\)\{`;
+const PERM_YANK_SMOOTH = String.raw`([^;{}]*)`;
+// The `if(<first messages>){<helper>(<ref>),<stick>.current=!0;return}` branch
+// sitting just past this one, as a lookahead so it stays outside the match.
+// Native-only: \2 and \3 are the helper and ref captured by the native regex
+// below, so this must stay appended to exactly that prefix.
+const PERM_YANK_NEXT = String.raw`(?=[^{}]*if\([^{}]*\)\{\2\(\3\),[\w$]+\.current=!0;return\})`;
 const PERM_YANK_NATIVE_RE = new RegExp(
-  PERM_YANK_COND + String.raw`([\w$]+)\(([\w$]+),!0\);return\}`,
+  PERM_YANK_COND +
+    String.raw`([\w$]+)\(([\w$]+),` +
+    PERM_YANK_SMOOTH +
+    String.raw`\);return\}` +
+    PERM_YANK_NEXT,
 );
 const PERM_YANK_GUARD_HEAD = String.raw`\/\*ccup:permYankGuard\*\/if\(\(\(n\)=>!n\|\|n\.scrollHeight-n\.scrollTop-n\.clientHeight<50\)\(([\w$]+)\.current\)\)`;
 const PERM_YANK_GUARDED_RE = new RegExp(
   PERM_YANK_COND +
     PERM_YANK_GUARD_HEAD +
-    String.raw`\(window\.__ccupPermGlide\|\|([\w$]+)\)\(\3,!0\);return\}`,
+    String.raw`\(window\.__ccupPermGlide\|\|([\w$]+)\)\(\2,` +
+    PERM_YANK_SMOOTH +
+    String.raw`\);return\}`,
 );
 // The 1.3.2-1.3.6 guard, which called the native helper directly. Stripping it
 // is what lets an in-place upgrade rebuild the branch instead of stranding the
@@ -1950,37 +1973,39 @@ const PERM_YANK_GUARDED_RE = new RegExp(
 const PERM_YANK_LEGACY_RE = new RegExp(
   PERM_YANK_COND +
     PERM_YANK_GUARD_HEAD +
-    String.raw`([\w$]+)\(\3,!0\);return\}`,
+    String.raw`([\w$]+)\(\2,` +
+    PERM_YANK_SMOOTH +
+    String.raw`\);return\}`,
 );
 function permYankGuardedText(
-  e: string,
   cond: string,
   fn: string,
   ref: string,
+  smooth: string,
 ): string {
   return (
-    `if(${e}.permissionRequests.value.length>0${cond}){${PERM_YANK_MARKER}` +
+    `if(${cond}){${PERM_YANK_MARKER}` +
     `if(((n)=>!n||n.scrollHeight-n.scrollTop-n.clientHeight<50)(${ref}.current))` +
-    `(window.__ccupPermGlide||${fn})(${ref},!0);return}`
+    `(window.__ccupPermGlide||${fn})(${ref},${smooth});return}`
   );
 }
 // Strip any guard (current or legacy) back to the native branch, then re-apply
-// when on.
+// when on. Both guarded forms spell the ref before the helper (the stickiness
+// check reads it first), so the strip callback takes them in that order.
 function permYankGuardSet(c: string, on: boolean): string {
   const native = (
     _m: string,
-    e: string,
     cond: string,
     ref: string,
     fn: string,
-  ): string =>
-    `if(${e}.permissionRequests.value.length>0${cond}){${fn}(${ref},!0);return}`;
+    smooth: string,
+  ): string => `if(${cond}){${fn}(${ref},${smooth});return}`;
   const off = c
     .replace(PERM_YANK_GUARDED_RE, native)
     .replace(PERM_YANK_LEGACY_RE, native);
   if (!on) return off;
-  return off.replace(PERM_YANK_NATIVE_RE, (_m, e, cond, fn, ref) =>
-    permYankGuardedText(e, cond, fn, ref),
+  return off.replace(PERM_YANK_NATIVE_RE, (_m, cond, fn, ref, smooth) =>
+    permYankGuardedText(cond, fn, ref, smooth),
   );
 }
 // The guard's ON-state health: guarded in the current form, or nothing left to
@@ -3721,9 +3746,12 @@ const UCE_Q_KEY_RE =
 const UCE_Q_KEY_ON_RE =
   /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;\/\*ccup-uce\*\/var ccupOn=ccupQCtx&&ccupQCtx\.useCtrlEnterToSend;if\(!ccupOn\|\|\1\.metaKey\|\|\1\.ctrlKey\)\{if\(ccupOn\)\1\.stopPropagation\(\);if\(\1\.preventDefault\(\),([\w$]+)\.questions&&([\w$]+)<\2\.questions\.length-1\)([\w$]+)\(\3\+1\)\}\}\}/;
 // The permission component's signature (yields the context param's minified
-// name) and its feedback box's Enter-submits keydown handler.
+// name) and its feedback box's Enter-submits keydown handler. The props after
+// onPermissionModeChange are an open-ended tail (2.1.261 added folded,
+// onFoldedChange and onAnswered), so the destructure is matched to its closing
+// brace instead of being pinned to the three props this needs to see.
 const UCE_PERM_SIG_RE =
-  /function [\w$]+\(\{request:[\w$]+,context:([\w$]+),onPermissionModeChange:[\w$]+\}\)\{/;
+  /function [\w$]+\(\{request:[\w$]+,context:([\w$]+),onPermissionModeChange:[\w$]+[^{}]*\}\)\{/;
 const UCE_PERM_TE_RE =
   /(=async\(([\w$]+)\)=>\{if\(\2\.key==="Enter"&&!\2\.shiftKey\)\{if\(\2\.nativeEvent\.isComposing\)return;)(\2\.preventDefault\(\),[\w$]+\(\)\})/;
 const UCE_PERM_TE_ON_RE =

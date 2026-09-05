@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.10
+
+- `useCtrlEnterToSendEverywhere` applies again on Claude Code 2.1.261, where the AskUserQuestion `Other` box and the permission feedback box had gone back to submitting on a plain `Enter`.
+- With `chatScrollToBottomDot` or `chatJumpToMessageButtons` on, an arriving permission prompt again leaves the chat where it is while you read back through history on Claude Code 2.1.261, and answering one no longer jumps you to the bottom.
+
 ## 1.4.9
 
 - The previous/next turn and scroll-to-bottom buttons now step aside while a banner opens over the input box (the session feedback survey, the review prompt), instead of covering its buttons and its dismiss control.

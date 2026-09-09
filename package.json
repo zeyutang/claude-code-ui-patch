@@ -295,6 +295,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "anchor-audit": "node scripts/anchor-audit.mjs",
+    "patch-doctor": "node scripts/patch-doctor.mjs",
     "update-katex": "node scripts/update-katex.js",
     "vscode:prepublish": "npm run compile"
   },

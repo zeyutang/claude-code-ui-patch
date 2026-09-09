@@ -2,6 +2,10 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.11
+
+- Settings changes no longer rewrite Claude Code's chat bundle when it is already in the state your settings ask for, so a change with nothing to apply now leaves the files on disk untouched.
+
 ## 1.4.10
 
 - `useCtrlEnterToSendEverywhere` applies again on Claude Code 2.1.261, where the AskUserQuestion `Other` box and the permission feedback box had gone back to submitting on a plain `Enter`.

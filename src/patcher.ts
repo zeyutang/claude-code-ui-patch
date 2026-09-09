@@ -681,25 +681,30 @@ function diffLinesPresent(c: string): boolean {
   DIFF_LN_BASE_RE.lastIndex = 0;
   return DIFF_LN_BASE_RE.test(c);
 }
+// Same patch, EOF helper POSITION factored out: the inline fragments match and
+// the helper's own bytes match, wherever the helper happens to sit. Other
+// toggles (scroll dot, jump buttons, math) also append EOF lines and can land
+// after the helper, so whole-file equality would read as drifted forever once
+// any of them does, while the fragments and the helper's bytes are what
+// actually matter. Shared by the readback and the transform below, which keeps
+// the two from disagreeing (and, since the transform cannot call the readback
+// without recursing, is the only place the rule can live).
+function absLnSameModuloHelper(a: string, b: string): boolean {
+  const stripHelper = (s: string) => s.replace(ABS_LN_HELPER_LINE_RE, "");
+  return (
+    stripHelper(a) === stripHelper(b) &&
+    cssMarkedLine(a, ABS_LN_HELPER_MARKER) ===
+      cssMarkedLine(b, ABS_LN_HELPER_MARKER)
+  );
+}
 // ON means base swap on AND the enhancement in exactly this build's form: an
 // older layout (e.g. the fixed minChars:2 build, or stale fragments) compares
-// unequal, reads as off, and the next apply rebuilds it in place. The compare
-// factors the EOF helper line out and checks it separately, because other
-// toggles (scroll dot, jump buttons, math) also append EOF lines and re-anchor
-// them on each apply: whole-file equality would read as drifted forever once
-// any of them lands after the helper, while the inline fragments and the
-// helper's own bytes are what actually matter.
+// unequal, reads as off, and the next apply rebuilds it in place.
 function diffLinesCurrentOn(c: string): boolean | undefined {
   const m = absLnExec(DIFF_LN_BASE_RE, c);
   if (!m) return undefined;
   if (!m[2].includes('"on"')) return false;
-  const want = diffLinesSet(c, true);
-  const stripHelper = (s: string) => s.replace(ABS_LN_HELPER_LINE_RE, "");
-  return (
-    stripHelper(c) === stripHelper(want) &&
-    cssMarkedLine(c, ABS_LN_HELPER_MARKER) ===
-      cssMarkedLine(want, ABS_LN_HELPER_MARKER)
-  );
+  return absLnSameModuloHelper(c, diffLinesSet(c, true));
 }
 // One toggle click re-evaluates diffLinesSet(c, true) several times over the
 // ~5MB bundle (applyPatch reads current then sets, the pending-reload
@@ -725,6 +730,11 @@ function diffLinesSet(c: string, on: boolean): string {
   );
   if (!on) return out;
   out = absLnApply(out);
+  // Position-stable: a rebuild that differs from the input only in where the
+  // EOF helper sits keeps the input, so an already-correct bundle is never
+  // rewritten just to migrate the helper back to the end of the file. Without
+  // this, every pass rewrote the ~5MB bundle with all points reading current.
+  if (out !== c && absLnSameModuloHelper(c, out)) out = c;
   diffLnMemoOn = { input: c, output: out };
   return out;
 }
@@ -2132,6 +2142,7 @@ function scrollDotCurrentOn(c: string): boolean | undefined {
   return want === undefined ? undefined : false;
 }
 function scrollDotSet(c: string, on: boolean): string {
+  if (on && scrollDotCurrentOn(c) === true) return c; // stable: no EOF reshuffle
   const stripped = permYankGuardSet(c.replace(SCROLL_DOT_LINE_RE, ""), false);
   if (!on) return stripped;
   const line = scrollDotBuild(stripped);
@@ -2359,6 +2370,7 @@ function jumpMsgCurrentOn(c: string): boolean | undefined {
   return want === undefined ? undefined : false;
 }
 function jumpMsgSet(c: string, on: boolean): string {
+  if (on && jumpMsgCurrentOn(c) === true) return c; // stable: no EOF reshuffle
   const stripped = c.replace(JUMP_MSG_LINE_RE, "");
   if (!on) return stripped;
   const line = jumpMsgBuild(stripped);

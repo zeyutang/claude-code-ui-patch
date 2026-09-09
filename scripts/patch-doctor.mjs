@@ -353,7 +353,13 @@ for (const { rel, mtime } of mtimes(target.dir)) {
 }
 
 const st = states(P, ext);
-const notCurrent = st.filter((s) => s.status !== "current");
+// "native" is satisfied, not a finding: this build ships the feature, so there
+// is no anchor to patch and no edit owed. It is listed anyway, without failing
+// the run, because a point going native is worth noticing after an update.
+const native = st.filter((s) => s.status === "native");
+const notCurrent = st.filter(
+  (s) => s.status !== "current" && s.status !== "native",
+);
 line(
   `status       ${st.length - notCurrent.length} current of ${st.length}`,
   !notCurrent.length,
@@ -362,6 +368,9 @@ for (const s of notCurrent) {
   console.log(
     `    ${s.status.toUpperCase()} ${s.kind} ${s.id}: ${s.label ?? ""}`,
   );
+}
+for (const s of native) {
+  console.log(`    NATIVE ${s.kind} ${s.id}: ${s.label ?? ""} (built in here)`);
 }
 if (notCurrent.length) failed = true;
 
@@ -399,9 +408,15 @@ console.log(
   "  actually running; all undefined means the webview loaded an older",
 );
 console.log("  copy and only a reload (or a forced rewrite) will help.");
+// A point reporting "native" injects nothing, so its global is absent by design
+// and probing for it would read as a false negative against the "all undefined"
+// diagnosis above.
+const nativeKeys = new Set(
+  st.filter((s) => s.status === "native").map((s) => s.key),
+);
 for (const [key, global, late] of PROBES) {
   const on = config[`claudeCodeUiPatch.${key}`];
-  if (!on) continue;
+  if (!on || nativeKeys.has(key)) continue;
   console.log(
     `    ${global}${late ? "   (only after a diff card renders)" : ""}`,
   );

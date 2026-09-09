@@ -185,6 +185,15 @@ function expectedMarkers() {
   return markers;
 }
 
+// Markers a point emits only while it still has to patch the feature in. When a
+// Claude Code build absorbs the feature the point reports "native" (see nativeOn
+// in the patcher) and emits nothing, so these are expected to be absent on that
+// install and must not count as drift. Keyed by point id; add an entry whenever
+// a point gains a nativeOn.
+const NATIVE_MARKERS = {
+  diffThemeSync: ["/*ccup-theme*/"],
+};
+
 // "<file> <marker>" -> occurrences. Counts, not just presence, so a block that
 // loses some of its fragments shows up in the version-to-version diff.
 function inventory(dir) {
@@ -230,15 +239,29 @@ function auditInstall(P, install, expected) {
     const unpatchable = states.filter((s) => s.status === "missing");
 
     P.applyPatch(ext, P.readSizes(), P.readToggles(), {});
+    const applied = pointStates(P, ext);
     // Anything the apply left off its target, missing anchors aside: the point
-    // was patchable and still did not reach the requested state.
-    const stale = pointStates(P, ext).filter(
-      (s) => s.status !== "current" && s.status !== "missing",
+    // was patchable and still did not reach the requested state. "native" is on
+    // target by definition: this build ships the feature, so there is no edit.
+    const stale = applied.filter(
+      (s) =>
+        s.status !== "current" &&
+        s.status !== "missing" &&
+        s.status !== "native",
+    );
+    const native = applied.filter((s) => s.status === "native");
+    // A native point emits none of its markers, legitimately, so they drop out
+    // of this install's expected set and out of the regression diff below.
+    // Otherwise absorbing a feature upstream would read as anchor drift forever.
+    const exempt = new Set(
+      native.flatMap((s) => NATIVE_MARKERS[s.id] ?? []).map((m) => m),
     );
 
     const counts = inventory(work);
     const landed = new Set([...counts.keys()].map((k) => k.split(" ")[1]));
-    const missing = [...expected].filter((m) => !landed.has(m));
+    const missing = [...expected].filter(
+      (m) => !landed.has(m) && !exempt.has(m),
+    );
     const broken = [];
     for (const rel of FILES.filter((f) => f.endsWith(".js"))) {
       try {
@@ -252,6 +275,8 @@ function auditInstall(P, install, expected) {
       total: states.length,
       unpatchable,
       stale,
+      native,
+      exempt,
       missing,
       landed: landed.size,
       counts,
@@ -269,6 +294,9 @@ function regressions(older, newer) {
   const lost = [];
   for (const [key, was] of older.counts) {
     const now = newer.counts.get(key) ?? 0;
+    // Not drift when the newer build ships the feature itself: the marker is
+    // absent because nothing needed injecting.
+    if (newer.exempt.has(key.split(" ")[1])) continue;
     if (now < was) lost.push({ key, was, now });
   }
   return lost;
@@ -283,6 +311,9 @@ if (!installs.length) {
   process.exit(2);
 }
 
+// Status column at 47, but never flush against a label that outgrew it.
+const pad = (s) => s.padEnd(46) + (s.length >= 46 ? "  " : "");
+
 const notices = [];
 const P = loadPatcher(everythingOn(), notices);
 const expected = expectedMarkers();
@@ -292,9 +323,11 @@ let failed = false;
 for (const r of results) {
   console.log(`\nClaude Code ${r.version}  ${r.dir}`);
   const bad = r.unpatchable.length;
+  const nat = r.native.length;
   console.log(
-    `  points     ${r.total - bad} patchable, ${bad} unpatchable`.padEnd(46) +
-      (bad ? "FAIL" : "ok"),
+    pad(
+      `  points     ${r.total - bad - nat} patchable, ${bad} unpatchable${nat ? `, ${nat} native` : ""}`,
+    ) + (bad ? "FAIL" : "ok"),
   );
   for (const s of r.unpatchable) {
     console.log(`    ${s.kind} ${s.id}: ${s.label}`);
@@ -304,8 +337,14 @@ for (const r of results) {
       `    ${s.kind} ${s.id} did not apply (${s.status}): ${s.label}`,
     );
   }
+  for (const s of r.native) {
+    console.log(`    ${s.kind} ${s.id} built in here: ${s.label}`);
+  }
+  // Exempted markers are not owed on this install, so they leave the denominator
+  // rather than sitting in it as a permanent shortfall.
+  const want = [...expected].filter((m) => !r.exempt.has(m)).length;
   console.log(
-    `  markers    ${r.landed} landed of ${expected.size} expected`.padEnd(46) +
+    `  markers    ${r.landed} landed of ${want} expected`.padEnd(46) +
       (r.missing.length ? "FAIL" : "ok"),
   );
   for (const m of r.missing) console.log(`    never landed: ${m}`);

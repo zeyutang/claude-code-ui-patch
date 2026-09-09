@@ -52,6 +52,7 @@ Chat Panel and Tab                     # chat history only, private to Claude Co
           ├── chatDiffCardFontSize     # diff code size
           ├── chatDiffCardLineNumbers  # true file line numbers (when known) if On
           └── chatDiffCardThemeSync    # follow VS Code light/dark theme if On
+                                       #   (Claude Code 2.1.267+ does this itself)
 
 Plan Mode Markdown Preview
    ├── planPreviewFontSize             # preview text (headings scale with it)

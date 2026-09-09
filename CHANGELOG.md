@@ -2,6 +2,12 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.4.12
+
+- `chatDiffCardThemeSync` no longer reports as broken on Claude Code 2.1.267, which syncs diff cards to the VS Code light/dark theme on its own.
+  The panel now shows that row as `Native` with a green dot instead of a red "unavailable on this Claude Code version" one, and no longer offers an apply that would change nothing.
+  On Claude Code 2.1.266 and earlier the setting still works as before.
+
 ## 1.4.11
 
 - Settings changes no longer rewrite Claude Code's chat bundle when it is already in the state your settings ask for, so a change with nothing to apply now leaves the files on disk untouched.

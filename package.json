@@ -132,7 +132,7 @@
         "claudeCodeUiPatch.chatDiffCardThemeSync": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Sync the diff card theme to the VS Code light/dark theme instead of forcing dark."
+          "markdownDescription": "Sync the diff card theme to the VS Code light/dark theme instead of forcing dark. Claude Code 2.1.267 and later do this on their own, so this setting no longer applies there and the panel shows the row as `Native`."
         },
         "claudeCodeUiPatch.chatMathRendering": {
           "type": "boolean",

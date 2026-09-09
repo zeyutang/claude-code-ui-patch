@@ -113,10 +113,19 @@ export class PatchPanel {
     const { cls: dotClass, title: dotTitle } = dotInfo(k);
     const dot = `<span class="dot-slot"><span class="dot ${dotClass}" title="${dotTitle}">●</span></span>`;
     if (k.kind === "toggle") {
+      // A version that ships the feature leaves the setting with nothing to
+      // switch, so the row reports "Native" instead of an On/Off control that
+      // would look live and do nothing. No data-cmd makes it inert to the click
+      // handler, and the class deliberately is not .btn-toggle, which is the
+      // selector the sync handler uses to write On/Off back into a row.
+      const control =
+        k.state === "native"
+          ? `<span class="btn-native" title="This Claude Code version does it itself, so the setting no longer applies">Native</span>`
+          : `<button class="btn-toggle ${k.on ? "on" : "off"}" data-cmd="toggle" role="switch" aria-checked="${k.on}">${k.on ? "On" : "Off"}</button>`;
       return `      <div class="knob" data-id="${k.id}" data-kind="toggle">
         ${dot}
         <span class="label">${k.label}</span>
-        <span class="controls"><button class="btn-toggle ${k.on ? "on" : "off"}" data-cmd="toggle" role="switch" aria-checked="${k.on}">${k.on ? "On" : "Off"}</button></span>
+        <span class="controls">${control}</span>
       </div>`;
     }
     const cmd = k.native ? "nativeAdjust" : "adjust";
@@ -364,12 +373,19 @@ function shapeOf(snap: Snapshot | undefined): string {
 
 // The per-knob "traffic light": green when the patch is in effect, yellow when a
 // window reload is due, red when the setting is wanted but its anchor is gone on
-// this Claude Code version (so it can't apply until a build restores it).
+// this Claude Code version (so it can't apply until a build restores it). Green
+// again when the version does the job itself, since the behavior is there either
+// way and there is no edit left to be pending on.
 function dotInfo(k: Knob): { cls: string; title: string } {
   if (k.lost)
     return {
       cls: "dot-lost",
       title: "unavailable on this Claude Code version",
+    };
+  if (k.state === "native")
+    return {
+      cls: "dot-ok",
+      title: "built into this Claude Code version, no patch needed",
     };
   if (k.native) return { cls: "dot-ok", title: "live" };
   return k.pendingReload
@@ -514,6 +530,7 @@ const baseCss = `
   .knob .btn-toggle.off { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
   .knob .btn-toggle.on:hover { background: var(--vscode-button-hoverBackground); }
   .knob .btn-toggle.off:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  .knob .btn-native { display: block; width: 100%; text-align: center; border-radius: 2px; padding: 3px 0; font-size: inherit; font-weight: 600; cursor: default; background: transparent; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
   .actions { margin-top: 12px; display: flex; flex-direction: row; justify-content: space-between; align-items: center; gap: 10px; }
   .divider { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 9px 0; }
   /* Every header status is a full-width banner so the strip never changes height

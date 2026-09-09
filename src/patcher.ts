@@ -355,6 +355,30 @@ const PATCH_POINTS: PatchPoint[] = [
 const THEME_SYNC_ON =
   '/*ccup-theme*/(function(){function p(){var l=document.body.classList;return l.contains("vscode-high-contrast")?(l.contains("vscode-high-contrast-light")?"hc-light":"hc-black"):(l.contains("vscode-light")?"vs":"vs-dark")}try{if(!window.__ccupThemeObs){window.__ccupThemeObs=1;new MutationObserver(function(){try{Cd.setTheme(p())}catch(e){}}).observe(document.body,{attributes:true,attributeFilter:["class"]})}}catch(e){}return p()}())';
 
+// Claude Code 2.1.267 absorbed this feature, so there is nothing left to patch:
+// it dropped the theme option from both createDiffEditor calls and now wires a
+// hook into each diff surface (the card and the expand modal) that maps <body>'s
+// class to a Monaco theme, pushes it through monaco.editor.setTheme on mount,
+// and re-pushes it from a MutationObserver on <body>'s class. That is the same
+// behavior THEME_SYNC_ON injected, plus an observer teardown the patch lacked. On such
+// a bundle the point reports "native" rather than "missing": the feature is on,
+// no edit is owed, and the setting has nothing to disagree with.
+//
+// Both halves are required so a chance match cannot silently switch the patch
+// off on a build that still needs it. Neither captures a minified identifier
+// (those get reshuffled every release), and neither can match THEME_SYNC_ON's
+// own injected copy: the patch writes the mapper as a nested ternary and calls
+// setTheme with an argument, so a pristine or a patched 2.1.266 scores zero on
+// both. Verified against pristine 2.1.266, patched 2.1.266, and 2.1.267.
+const THEME_SYNC_NATIVE_RES = [
+  // The classList -> Monaco theme mapper, as an if/return chain.
+  /contains\("vscode-high-contrast-light"\)\)return"hc-light"/,
+  // The hook wired to monaco's global setTheme by reference, e.g. ci(c3.setTheme).
+  /[\w$]+\([\w$]+\.setTheme\)/,
+];
+const themeSyncNative = (c: string): boolean =>
+  THEME_SYNC_NATIVE_RES.every((re) => re.test(c));
+
 // Gutter cleanup appended to webview/index.css when line numbers are ON. The diff
 // card marks changed lines with codicon glyphs (codicon-diff-insert = the "+"
 // icon, codicon-diff-remove = the "-" icon), but this bundle's codicon subset
@@ -3866,6 +3890,10 @@ interface TogglePoint {
   fnPresent?: (c: string) => boolean;
   fnCurrentOn?: (c: string) => boolean | undefined; // undefined => anchor gone
   fnSet?: (c: string, on: boolean) => string;
+  // This build implements the feature itself, so there is no anchor to patch and
+  // no setting value to disagree with. Checked before the anchor, and it makes
+  // the point report "native": satisfied, never "missing", never actionable.
+  nativeOn?: (c: string) => boolean;
   // Optional secondary CSS side-effect (a different file) applied when ON.
   cssFile?: string;
   cssMarker?: string; // comment tagging the appended rule
@@ -3902,6 +3930,9 @@ const TOGGLE_POINTS: TogglePoint[] = [
     onValue: THEME_SYNC_ON,
     offValue: '"vs-dark"',
     isOn: (v) => v.includes("ccup-theme"),
+    // 2.1.267 and later do this themselves; the anchor above serves 2.1.266
+    // and earlier, where the bundle hardcoded theme:"vs-dark".
+    nativeOn: themeSyncNative,
   },
   {
     id: "effortSyncFix",
@@ -5515,11 +5546,21 @@ export function analyze(
   });
 }
 
-export type ToggleStatus = "current" | "stock" | "custom" | "missing";
+// "native" = this build ships the feature itself (see nativeOn), so the point is
+// satisfied with no edit owed and the setting is inert. It is deliberately NOT
+// "missing": a missing anchor means a wanted customization silently can't apply
+// and the panel should say so, whereas here the user gets the behavior anyway.
+export type ToggleStatus =
+  | "current"
+  | "stock"
+  | "custom"
+  | "missing"
+  | "native";
 export interface ToggleState {
   id: string;
   label: string;
   section: Section;
+  key: string; // public settings sub-key, so tooling can report without knowing ids
   status: ToggleStatus;
   wantOn: boolean; // the setting value (what the panel shows and apply targets)
 }
@@ -5534,8 +5575,13 @@ export function analyzeToggles(
 ): ToggleState[] {
   const read = cacheReader(ext, cache);
   return TOGGLE_POINTS.map((t): ToggleState => {
-    const base = { id: t.id, label: t.label, section: t.section };
+    const base = { id: t.id, label: t.label, section: t.section, key: t.key };
     const wantOn = toggles[t.id];
+    // Before the anchor: on a build that ships the feature the anchor is gone by
+    // design, and reading that as "missing" would flag a healthy install.
+    const js = read(t.file);
+    if (js !== undefined && t.nativeOn?.(js))
+      return { ...base, status: "native", wantOn };
     const cur = toggleStateStr(read, t);
     if (cur === undefined) return { ...base, status: "missing", wantOn };
     if (cur === toggleWantStr(t, wantOn))
@@ -5838,7 +5884,7 @@ export interface Knob {
   step: number; // increment per ▲/▼ click (px sizes step finer than weights)
   unit: string; // suffix rendered after the value ("px", or "" for a weight)
   native: boolean;
-  state: "current" | "stock" | "custom" | "missing";
+  state: "current" | "stock" | "custom" | "missing" | "native";
   pendingReload: boolean; // this row's bundle was written but window not reloaded
   lost: boolean; // wanted (non-native) but its anchor is absent on this version
   nativeKey?: string;
@@ -6125,7 +6171,12 @@ export class Patcher {
     }));
     const allCurrent =
       presentSizes.every((s) => s.status === "current") &&
-      presentToggles.every((s) => s.status === "current") &&
+      // "native" counts as satisfied: nothing to apply, so leaving it out here
+      // would strand the panel on a permanent "apply" prompt that changes
+      // nothing, and this toggle defaults to off, so that would be everyone.
+      presentToggles.every(
+        (s) => s.status === "current" || s.status === "native",
+      ) &&
       presentInjects.every((s) => s.status === "current") &&
       // No row of their own, but a missing always-on fix still leaves the
       // bundle out of sync, so the panel should offer to apply.

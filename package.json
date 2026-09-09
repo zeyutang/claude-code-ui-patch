@@ -2,7 +2,7 @@
   "name": "claude-code-ui-patch",
   "displayName": "Claude Code UI Patch",
   "description": "Patch Claude Code with finegrained UI settings for font sizes, code blocks, diff cards, and more.",
-  "version": "1.4.10",
+  "version": "1.4.11",
   "publisher": "zeyutang",
   "icon": "icon.png",
   "license": "MIT",

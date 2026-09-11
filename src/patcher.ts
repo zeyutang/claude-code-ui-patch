@@ -3750,12 +3750,24 @@ const PLAN_COMMENT_SEND_RE =
 //   wrapping this box selects/toggles "Other" on any bubbled Enter without
 //   checking modifiers (natively reachable via Cmd/Ctrl+Enter, where it
 //   re-toggles the multi-select checkbox), and the send chord must not do that.
+// - Advancing is all the box can do on its own, so the chord used to dead end
+//   on the last question, and on a single-question popup, where there is no
+//   next question at all. The answers are submitted by the container's primary
+//   button, whose own Enter branch requires no modifier and which the gate's
+//   stopPropagation deliberately keeps the chord away from, so the accept path
+//   is threaded down as a `ccupSubmit` prop on the options object the component
+//   already receives. It is built at the content render site out of the primary
+//   button's props and mirrors that button's disabled condition (still arming,
+//   or some question unanswered) by returning false instead of submitting, so
+//   the chord submits a complete form and otherwise falls back to advancing.
 //
-// The rewrites are all-or-nothing: each of the five anchors must match exactly
+// The rewrites are all-or-nothing: each of the seven anchors must match exactly
 // once (they are unique in the current bundle) or the file is left native, so a
 // drifted bundle can never end up half-threaded with a dangling identifier.
-// Restore strips each patched form independently. The /*ccup-uce*/ tag marks
-// the on state. The plan preview's comment box lives in a different webview
+// Restore strips each patched form independently, including the 1.4.x-1.5.0 on
+// form that threaded no submit: that one reads as off, so the next apply
+// rebuilds it rather than stranding it. The /*ccup-uce*/ tag marks the on
+// state. The plan preview's comment box lives in a different webview
 // with no access to this config, so it follows via the commentCtrlEnter toggle
 // instead: readToggles() folds (ctrlEnterEverywhere && the native setting's
 // value at apply time) into that toggle, and a native-setting change re-runs
@@ -3779,6 +3791,11 @@ const UCE_Q_SIG_ON_RE =
 const UCE_Q_KEY_RE =
   /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;if\(\1\.preventDefault\(\),([\w$]+)\.questions&&([\w$]+)<\2\.questions\.length-1\)([\w$]+)\(\3\+1\)\}\}/;
 const UCE_Q_KEY_ON_RE =
+  /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;\/\*ccup-uce\*\/var ccupOn=ccupQCtx&&ccupQCtx\.useCtrlEnterToSend;if\(!ccupOn\|\|\1\.metaKey\|\|\1\.ctrlKey\)\{if\(ccupOn\)\1\.stopPropagation\(\);if\(\1\.preventDefault\(\),ccupOn&&([\w$]+)&&\2\.ccupSubmit&&\2\.ccupSubmit\(\)\)return;if\(([\w$]+)\.questions&&([\w$]+)<\3\.questions\.length-1\)([\w$]+)\(\4\+1\)\}\}\}/;
+// The 1.4.x-1.5.0 on form, which advanced but never submitted. Stripping it is
+// what lets an in-place upgrade rebuild the handler instead of stranding the
+// old form (the native regex no longer matches an already-gated branch).
+const UCE_Q_KEY_ON_LEGACY_RE =
   /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;\/\*ccup-uce\*\/var ccupOn=ccupQCtx&&ccupQCtx\.useCtrlEnterToSend;if\(!ccupOn\|\|\1\.metaKey\|\|\1\.ctrlKey\)\{if\(ccupOn\)\1\.stopPropagation\(\);if\(\1\.preventDefault\(\),([\w$]+)\.questions&&([\w$]+)<\2\.questions\.length-1\)([\w$]+)\(\3\+1\)\}\}\}/;
 // The permission component's signature (yields the context param's minified
 // name) and its feedback box's Enter-submits keydown handler. The props after
@@ -3791,12 +3808,69 @@ const UCE_PERM_TE_RE =
   /(=async\(([\w$]+)\)=>\{if\(\2\.key==="Enter"&&!\2\.shiftKey\)\{if\(\2\.nativeEvent\.isComposing\)return;)(\2\.preventDefault\(\),[\w$]+\(\)\})/;
 const UCE_PERM_TE_ON_RE =
   /(=async\(([\w$]+)\)=>\{if\(\2\.key==="Enter"&&!\2\.shiftKey\)\{if\(\2\.nativeEvent\.isComposing\)return;)\/\*ccup-uce\*\/if\([\w$]+\.useCtrlEnterToSend&&!\2\.metaKey&&!\2\.ctrlKey\)return;/;
+// The primary button's props, which name the three pieces of the submit: the
+// accept call, the still-arming flag, and the every-question-answered memo (the
+// last two are exactly its disabled condition). Read-only, so this anchor stays
+// native in both states and only has to be present to patch.
+const UCE_PRIMARY_RE =
+  /\{ref:[\w$]+,className:`\$\{([\w$]+)\.button\} \$\{\1\.primary\}`,onClick:([\w$]+),disabled:([\w$]+)\|\|!([\w$]+),/;
+// The options literal handed to the permission content renderer, which passes it
+// on as the question component's `options` prop. Matched to the literal's
+// closing brace so a build that adds another prop still threads (2.1.261 added
+// three to the permission destructure), and ccupSubmit goes on the end. The
+// arrow's own braces are why this native form cannot match an already-threaded
+// literal: [^{}]* stops at the `{` of the injected body.
+const UCE_CONTENT_RE =
+  /(\([\w$]+,([\w$]+),[\w$]+,\{onClose:[\w$]+,channelId:\2\.channelId,fold:[\w$]+,foldButtonRef:[\w$]+[^{}]*)\}\)/;
+const UCE_CONTENT_ON_RE =
+  /(\([\w$]+,([\w$]+),[\w$]+,\{onClose:[\w$]+,channelId:\2\.channelId,fold:[\w$]+,foldButtonRef:[\w$]+[^{}]*),ccupSubmit:\(\)=>\{\/\*ccup-uce\*\/if\([\w$]+\|\|![\w$]+\)return!1;return [\w$]+\(\),!0\}\}\)/;
+
+// The submit the "Other" box borrows: the primary button's disabled condition
+// first, then its accept call. Returns whether it submitted, so the keydown can
+// fall back to advancing when the form is not complete yet.
+function uceSubmitProp(
+  accept: string,
+  pending: string,
+  answered: string,
+): string {
+  return `,ccupSubmit:()=>{${UCE_TAG}if(${pending}||!${answered})return!1;return ${accept}(),!0}`;
+}
+
+function uceQKeyNativeText(
+  k: string,
+  props: string,
+  idx: string,
+  setIdx: string,
+): string {
+  return (
+    `onKeyDown:(${k})=>{if(!${k}.metaKey&&!${k}.ctrlKey)${k}.stopPropagation();` +
+    `if(${k}.key==="Enter"&&!${k}.shiftKey){if(${k}.nativeEvent.isComposing)return;` +
+    `if(${k}.preventDefault(),${props}.questions&&${idx}<${props}.questions.length-1)${setIdx}(${idx}+1)}}`
+  );
+}
+
+function uceQKeyOnText(
+  k: string,
+  opts: string,
+  props: string,
+  idx: string,
+  setIdx: string,
+): string {
+  return (
+    `onKeyDown:(${k})=>{if(!${k}.metaKey&&!${k}.ctrlKey)${k}.stopPropagation();` +
+    `if(${k}.key==="Enter"&&!${k}.shiftKey){if(${k}.nativeEvent.isComposing)return;` +
+    `${UCE_TAG}var ccupOn=ccupQCtx&&ccupQCtx.useCtrlEnterToSend;` +
+    `if(!ccupOn||${k}.metaKey||${k}.ctrlKey){if(ccupOn)${k}.stopPropagation();` +
+    `if(${k}.preventDefault(),ccupOn&&${opts}&&${opts}.ccupSubmit&&${opts}.ccupSubmit())return;` +
+    `if(${props}.questions&&${idx}<${props}.questions.length-1)${setIdx}(${idx}+1)}}}`
+  );
+}
 
 function countMatches(c: string, re: RegExp): number {
   return (c.match(new RegExp(re.source, "g")) ?? []).length;
 }
 
-// All five native anchors, each exactly once, so the rewrites can only land as
+// All seven native anchors, each exactly once, so the rewrites can only land as
 // a complete, mutually consistent set.
 function uceNativeAnchorsPresent(c: string): boolean {
   return [
@@ -3805,50 +3879,37 @@ function uceNativeAnchorsPresent(c: string): boolean {
     UCE_Q_KEY_RE,
     UCE_PERM_SIG_RE,
     UCE_PERM_TE_RE,
+    UCE_PRIMARY_RE,
+    UCE_CONTENT_RE,
+  ].every((re) => countMatches(c, re) === 1);
+}
+
+// The on state in the current form. The tag alone will not do: a 1.4.x-1.5.0
+// bundle carries it on a handler that never submits, and reading that as on
+// would keep the apply from ever rebuilding it.
+function uceOnFormsPresent(c: string): boolean {
+  return [
+    UCE_Q_RENDER_ON_RE,
+    UCE_Q_SIG_ON_RE,
+    UCE_Q_KEY_ON_RE,
+    UCE_CONTENT_ON_RE,
+    UCE_PERM_TE_ON_RE,
   ].every((re) => countMatches(c, re) === 1);
 }
 
 function uceCurrentOn(c: string): boolean | undefined {
-  if (c.includes(UCE_TAG)) return true;
-  return uceNativeAnchorsPresent(c) ? false : undefined;
+  if (uceOnFormsPresent(c)) return true;
+  // Off, or on in an older form: patchable either way exactly when the anchors
+  // are all there once that older form is stripped back to native.
+  return uceNativeAnchorsPresent(uceOff(c)) ? false : undefined;
 }
 
 function ucePresent(c: string): boolean {
   return uceCurrentOn(c) !== undefined;
 }
 
-function uceSet(c: string, on: boolean): string {
-  if (on) {
-    if (c.includes(UCE_TAG)) return c; // already on
-    if (!uceNativeAnchorsPresent(c)) return c; // anchors drifted: stay native
-    const ctx = c.match(UCE_PERM_SIG_RE)![1];
-    let out = c;
-    out = out.replace(
-      UCE_Q_RENDER_RE,
-      (_w, p1, p2, p3, p4, fac, comp) =>
-        `permissionRequest(${p1},${p2},${p3},${p4}){return ${fac}(${comp},{input:${p2},onInputChange:${p3},options:${p4},ccupCtx:${p1}})}`,
-    );
-    out = out.replace(
-      UCE_Q_SIG_RE,
-      (_w, name, input, onChange, options) =>
-        `function ${name}({input:${input},onInputChange:${onChange},options:${options},ccupCtx:ccupQCtx}){`,
-    );
-    out = out.replace(
-      UCE_Q_KEY_RE,
-      (_w, k, props, idx, setIdx) =>
-        `onKeyDown:(${k})=>{if(!${k}.metaKey&&!${k}.ctrlKey)${k}.stopPropagation();` +
-        `if(${k}.key==="Enter"&&!${k}.shiftKey){if(${k}.nativeEvent.isComposing)return;` +
-        `${UCE_TAG}var ccupOn=ccupQCtx&&ccupQCtx.useCtrlEnterToSend;` +
-        `if(!ccupOn||${k}.metaKey||${k}.ctrlKey){if(ccupOn)${k}.stopPropagation();` +
-        `if(${k}.preventDefault(),${props}.questions&&${idx}<${props}.questions.length-1)${setIdx}(${idx}+1)}}}`,
-    );
-    out = out.replace(
-      UCE_PERM_TE_RE,
-      (_w, head, ev, tail) =>
-        `${head}${UCE_TAG}if(${ctx}.useCtrlEnterToSend&&!${ev}.metaKey&&!${ev}.ctrlKey)return;${tail}`,
-    );
-    return out;
-  }
+// Strip every on form, current or legacy, back to native.
+function uceOff(c: string): string {
   let out = c;
   out = out.replace(
     UCE_Q_RENDER_ON_RE,
@@ -3860,14 +3921,48 @@ function uceSet(c: string, on: boolean): string {
     (_w, name, input, onChange, options) =>
       `function ${name}({input:${input},onInputChange:${onChange},options:${options}}){`,
   );
-  out = out.replace(
-    UCE_Q_KEY_ON_RE,
-    (_w, k, props, idx, setIdx) =>
-      `onKeyDown:(${k})=>{if(!${k}.metaKey&&!${k}.ctrlKey)${k}.stopPropagation();` +
-      `if(${k}.key==="Enter"&&!${k}.shiftKey){if(${k}.nativeEvent.isComposing)return;` +
-      `if(${k}.preventDefault(),${props}.questions&&${idx}<${props}.questions.length-1)${setIdx}(${idx}+1)}}`,
+  out = out.replace(UCE_Q_KEY_ON_RE, (_w, k, _opts, props, idx, setIdx) =>
+    uceQKeyNativeText(k, props, idx, setIdx),
   );
+  out = out.replace(UCE_Q_KEY_ON_LEGACY_RE, (_w, k, props, idx, setIdx) =>
+    uceQKeyNativeText(k, props, idx, setIdx),
+  );
+  out = out.replace(UCE_CONTENT_ON_RE, (_w, head) => `${head}})`);
   out = out.replace(UCE_PERM_TE_ON_RE, (_w, head) => head);
+  return out;
+}
+
+function uceSet(c: string, on: boolean): string {
+  if (on && uceOnFormsPresent(c)) return c; // already on, current form
+  const off = uceOff(c);
+  if (!on) return off;
+  if (!uceNativeAnchorsPresent(off)) return c; // anchors drifted: stay native
+  const ctx = off.match(UCE_PERM_SIG_RE)![1];
+  const opts = off.match(UCE_Q_SIG_RE)![4];
+  const [, , accept, pending, answered] = off.match(UCE_PRIMARY_RE)!;
+  let out = off;
+  out = out.replace(
+    UCE_Q_RENDER_RE,
+    (_w, p1, p2, p3, p4, fac, comp) =>
+      `permissionRequest(${p1},${p2},${p3},${p4}){return ${fac}(${comp},{input:${p2},onInputChange:${p3},options:${p4},ccupCtx:${p1}})}`,
+  );
+  out = out.replace(
+    UCE_Q_SIG_RE,
+    (_w, name, input, onChange, options) =>
+      `function ${name}({input:${input},onInputChange:${onChange},options:${options},ccupCtx:ccupQCtx}){`,
+  );
+  out = out.replace(UCE_Q_KEY_RE, (_w, k, props, idx, setIdx) =>
+    uceQKeyOnText(k, opts, props, idx, setIdx),
+  );
+  out = out.replace(
+    UCE_CONTENT_RE,
+    (_w, head) => `${head}${uceSubmitProp(accept, pending, answered)}})`,
+  );
+  out = out.replace(
+    UCE_PERM_TE_RE,
+    (_w, head, ev, tail) =>
+      `${head}${UCE_TAG}if(${ctx}.useCtrlEnterToSend&&!${ev}.metaKey&&!${ev}.ctrlKey)return;${tail}`,
+  );
   return out;
 }
 

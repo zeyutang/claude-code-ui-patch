@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.5.1
+
+- With `useCtrlEnterToSendEverywhere` on, `Cmd`/`Ctrl`+`Enter` in the AskUserQuestion `Other` box now sends your answers.
+  It sends once every question has an answer and moves to the next question until then, instead of doing nothing on a single-question popup or on the last question.
+
 ## 1.5.0
 
 - Pending changes no longer always cost a window reload.

@@ -109,14 +109,15 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
 ### Get Claude Code patched
 
 - **Panel controls:** Press `Cmd+Shift+P` / `Ctrl+Shift+P` (or `F1`) to open the Command Palette, then run **Claude Code UI Patch: Open Panel**. Or alternatively, click the `aA` item at the far right of the status bar.
-  Use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect), yellow (reload needed), or red (unavailable on this Claude Code version).
-  When changes are pending, the header banner turns amber and becomes the reload button: click it to reload the window.
-- **Direct edits:** Font families, the math size (`chatMathFontSizeEm`), the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply upon a window reload.
+  Use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect), yellow (restart needed), or red (unavailable on this Claude Code version).
+  When changes are pending, the header banner turns amber and becomes the apply button, labelled with the lightest restart that will do: **Reload Webviews** for chat changes (your Claude Code session stays up), **Restart Extensions** when a Plan Mode Preview change needs a fresh extension host, or **Reload Window** when neither is safe.
+- **Direct edits:** Font families, the math size (`chatMathFontSizeEm`), the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply on the next restart the banner offers.
 
 ## Caveats
 
 - **The patch reverts when Claude Code updates.**
-  The next window reload re-applies it and prompts for one more **Reload Window**.
+  The next window reload re-applies it and prompts for one more restart.
+  Right after an update that is always **Reload Window**: until the window re-scans its extensions, restarting the extension host alone would relaunch Claude Code from the version directory it has just replaced.
 - **`chatDiffCardLineNumbers` shows true file positions for live-session edits only.**
   Cards replayed from history (reload, resume), failed edits, and `replace_all` edits number from 1 (Claude Code re-emits conversation history without the absolute line numbers).
 - **`chatHistoryBoldWeight` applies to bold runs, not headings.**

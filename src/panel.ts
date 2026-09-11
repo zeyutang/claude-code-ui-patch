@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import {
+  APPLY_COMMAND,
   Patcher,
   Snapshot,
   Knob,
@@ -62,11 +63,24 @@ export class PatchPanel {
       this.shape = shape;
       this.panel.webview.html = this.html(snap);
     } else if (snap) {
-      void this.panel.webview.postMessage({
-        type: "sync",
-        ...syncPayload(snap),
-      });
+      this.sync(snap);
     }
+  }
+
+  // Push current state without re-rendering.
+  private sync(snap: Snapshot | undefined = this.patcher.snapshot()): void {
+    if (!snap) return;
+    void this.panel.webview.postMessage({
+      type: "sync",
+      ...syncPayload(snap),
+    });
+  }
+
+  // Close before a restart that would orphan this panel: the workbench leaves a
+  // live webview editor in place when the extension host goes away, so the tab
+  // would sit there frozen with nothing behind it.
+  static closeIfOpen(): void {
+    PatchPanel.current?.panel.dispose();
   }
 
   private async onMessage(msg: {
@@ -96,7 +110,12 @@ export class PatchPanel {
         await this.patcher.restore();
         break;
       case "reload":
-        void vscode.commands.executeCommand("workbench.action.reloadWindow");
+        void vscode.commands.executeCommand(APPLY_COMMAND);
+        break;
+      case "ready":
+        // The webview came up (first paint, or a Reload Webviews pass rebuilt
+        // it from the HTML we last set, which drops every in-place sync since).
+        this.sync();
         break;
       case "openSettings":
         void vscode.commands.executeCommand(
@@ -199,7 +218,7 @@ ${csp}
 ${sections}
       <hr class="divider">
       <div class="actions">
-        <button class="btn btn-green${snap.needsReload ? "" : " quiet"}" data-cmd="discard" title="Revert to the values on disk at the last window reload">Restore Last Applied</button>
+        <button class="btn btn-green${snap.needsReload ? "" : " quiet"}" data-cmd="discard" title="Revert to the values the running Claude Code UI is currently showing">Restore Last Applied</button>
         <button class="btn btn-red" data-cmd="restore" title="Reset every setting to Claude Code's native values">Factory Reset</button>
       </div>
       <a class="link" data-cmd="openSettings">&#9881; Open Settings</a>
@@ -353,6 +372,10 @@ ${preview}  </div>
       if (disc) disc.classList.toggle('quiet', !m.reloadPending);
       if (m.preview) applyPreview(m.preview);
     });
+
+    // Ask for a fresh sync on load: a Reload Webviews pass rebuilds this iframe
+    // from the HTML the host set last, so every in-place update since is gone.
+    vscode.postMessage({ command: 'ready' });
   </script>
 </body>
 </html>`;
@@ -403,7 +426,7 @@ function statusInner(snap: Snapshot): string {
   if (snap.partialLoss)
     return `<span class="status-banner lost">Some settings can't be applied on this version</span>`;
   if (snap.needsReload)
-    return `<button class="status-banner warn status-action" data-cmd="reload" title="Reload the window to apply the pending changes">&#8635; CLICK HERE to Reload Window and Apply Changes</button>`;
+    return `<button class="status-banner warn status-action" data-cmd="reload" title="${snap.apply.detail}">&#8635; CLICK HERE to ${snap.apply.label} and Apply Changes</button>`;
   return `<span class="status-banner ok">All Patches Applied</span>`;
 }
 

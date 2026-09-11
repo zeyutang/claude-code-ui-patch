@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import {
+  APPLY_COMMAND,
   Patcher,
   initFindKeys,
   initMathAssets,
@@ -72,6 +73,15 @@ export async function activate(
     vscode.commands.registerCommand("claudeCodeUiPatch.panel", () =>
       PatchPanel.show(patcher),
     ),
+    // The apply control behind the panel banner, the status-bar tooltip link,
+    // and the activation toast. It lives here rather than on the Patcher
+    // because a host restart or a window reload would orphan our own panel,
+    // and importing PatchPanel into patcher.ts would be a cycle.
+    vscode.commands.registerCommand(APPLY_COMMAND, async () => {
+      const action = patcher.applyAction();
+      if (action.scope !== "webview") PatchPanel.closeIfOpen();
+      await patcher.runApplyAction(action);
+    }),
   );
 }
 

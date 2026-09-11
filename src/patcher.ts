@@ -47,9 +47,7 @@ export const WEIGHT_STEP = 100;
 export const NATIVE_BOLD_WEIGHT = 700;
 
 export type Section =
-  | "Chat Panel or Tab"
-  | "Plan Mode Markdown Preview"
-  | "Behavior";
+  "Chat Panel or Tab" | "Plan Mode Markdown Preview" | "Behavior";
 export const SECTION_ORDER: Section[] = [
   "Chat Panel or Tab",
   "Plan Mode Markdown Preview",
@@ -1047,7 +1045,8 @@ const QUESTIONS_CONTAINER_RULE_RE =
   /\.questionsContainer_([-\w]+)\{[^{}]*?overflow-y:auto[^{}]*?\}/;
 const OTHER_INPUT_RULE_RE =
   /\.otherInput_([-\w]+)\{[^{}]*?border:(\d+(?:\.\d+)?)px solid[^{}]*?padding:(\d+(?:\.\d+)?)px \d+(?:\.\d+)?px[^{}]*?\}/;
-const OPTION_ROW_RULE_RE = /\.option_([-\w]+)\{[^{}]*?padding:(\d+(?:\.\d+)?)px\}/;
+const OPTION_ROW_RULE_RE =
+  /\.option_([-\w]+)\{[^{}]*?padding:(\d+(?:\.\d+)?)px\}/;
 
 function questionRevealBuild(c: string): string | undefined {
   const qHash = c.match(QUESTIONS_CONTAINER_RULE_RE)?.[1];
@@ -4644,7 +4643,11 @@ const POPUP_INPUT_EM_RE =
 // undefined when the module is gone or reshaped (leave native).
 function popupInputAnchor(c: string): RegExpMatchArray | undefined {
   const m = c.match(POPUP_INPUT_RULE_RE);
-  if (!m || !c.includes(`.wrapper_${m[1]}{`) || !c.includes(`.placeholder_${m[1]}{`))
+  if (
+    !m ||
+    !c.includes(`.wrapper_${m[1]}{`) ||
+    !c.includes(`.placeholder_${m[1]}{`)
+  )
     return undefined;
   return m;
 }
@@ -5551,11 +5554,7 @@ export function analyze(
 // "missing": a missing anchor means a wanted customization silently can't apply
 // and the panel should say so, whereas here the user gets the behavior anyway.
 export type ToggleStatus =
-  | "current"
-  | "stock"
-  | "custom"
-  | "missing"
-  | "native";
+  "current" | "stock" | "custom" | "missing" | "native";
 export interface ToggleState {
   id: string;
   label: string;
@@ -5871,6 +5870,131 @@ export function restorePatch(
   return { version: ext.version, changed };
 }
 
+// --- Apply actions -------------------------------------------------------
+
+// The command that runs the cheapest apply for whatever is pending. Registered
+// in activate() (it has to close this extension's own panel first, which the
+// patcher can't import without a cycle), and referenced by the panel banner,
+// the status-bar tooltip link, and the activation toast.
+export const APPLY_COMMAND = "claudeCodeUiPatch.applyPending";
+
+// Where a patch point lands decides what has to restart for it to take effect.
+// webview/index.{css,js} are fetched by the chat webview's iframe, so rebuilding
+// that iframe is enough; extension.js is required by the extension host process,
+// so only a fresh host picks it up.
+const HOST_FILE = "extension.js";
+
+// Point id -> the bundle files it writes (a toggle can carry a CSS side-effect
+// in a second file). Built once at load, below every point array.
+const POINT_FILES: ReadonlyMap<string, readonly string[]> = (() => {
+  const m = new Map<string, string[]>();
+  const add = (id: string, ...files: (string | undefined)[]) =>
+    m.set(
+      id,
+      files.filter((f): f is string => f !== undefined),
+    );
+  for (const p of PATCH_POINTS) add(p.id, p.file);
+  for (const t of TOGGLE_POINTS) add(t.id, t.file, t.cssFile);
+  for (const ip of INJECT_POINTS) add(ip.id, ip.file);
+  for (const a of ALWAYS_POINTS) add(a.id, a.file);
+  return m;
+})();
+
+// True when this point's edits stay inside the webview bundle.
+function isWebviewPoint(id: string): boolean {
+  const files = POINT_FILES.get(id);
+  return !!files && !files.includes(HOST_FILE);
+}
+
+export type ApplyScope = "webview" | "host" | "window";
+
+export interface ApplyAction {
+  scope: ApplyScope;
+  command: string; // the VS Code command that performs it
+  label: string; // button / link text, reused in the activation toast
+  icon: string; // codicon for the status-bar tooltip link
+  detail: string; // hover text
+}
+
+const WEBVIEW_APPLY: ApplyAction = {
+  scope: "webview",
+  command: "workbench.action.webview.reloadWebviewAction",
+  label: "Reload Webviews",
+  icon: "$(refresh)",
+  detail:
+    "Reload the chat webview to apply the pending changes (the extension host and the Claude Code session stay up)",
+};
+
+const HOST_APPLY: ApplyAction = {
+  scope: "host",
+  command: "workbench.action.restartExtensionHost",
+  label: "Restart Extensions",
+  icon: "$(debug-restart)",
+  detail:
+    "Restart the extension host to apply the pending changes (the window stays up)",
+};
+
+const WINDOW_APPLY: ApplyAction = {
+  scope: "window",
+  command: "workbench.action.reloadWindow",
+  label: "Reload Window",
+  icon: "$(refresh)",
+  detail: "Reload the window to apply the pending changes",
+};
+
+// workbench.action.restartExtensionHost calls startExtensionHosts() with no
+// delta, so the new host relaunches the extension descriptions this window
+// already resolved rather than a fresh scan of disk. (The Extensions view's
+// "Restart Extensions" button differs exactly there: it passes the newly
+// scanned versions as toAdd/toRemove.) When Claude Code has updated since this
+// window started, the running description still points at the previous version
+// directory, which VS Code deletes once it is obsolete, so a host restart would
+// relaunch Claude Code from a path that is gone. Only a window reload re-scans.
+function registryMatchesDisk(ext: ClaudeExt): boolean {
+  const running = vscode.extensions?.getExtension("anthropic.claude-code")
+    ?.extensionUri?.fsPath;
+  return !!running && path.resolve(running) === path.resolve(ext.dir);
+}
+
+// A Claude Code chat opened as an editor tab does not survive a host restart:
+// the workbench never disposes a live webview editor when the host goes away,
+// and only re-resolves inputs that were awaiting revival, so the tab is left
+// showing its pre-restart DOM behind a dead message channel. A window reload
+// disposes it and revives it through Claude Code's panel serializer. Duck-typed
+// on viewType (a webview tab reports it prefixed with "mainThreadWebview-") so
+// this also works where TabInputWebview is absent.
+function claudeEditorTabOpen(): boolean {
+  for (const group of vscode.window.tabGroups?.all ?? []) {
+    for (const tab of group.tabs) {
+      const viewType = (tab.input as { viewType?: string } | undefined)
+        ?.viewType;
+      if (
+        typeof viewType === "string" &&
+        viewType.includes("claudeVSCodePanel")
+      )
+        return true;
+    }
+  }
+  return false;
+}
+
+// The cheapest restart that puts every pending point in effect. Webview-only
+// edits just need the iframe rebuilt; anything touching extension.js needs a new
+// host process, which is only safe when the registry still matches disk and no
+// Claude Code editor tab would be orphaned. With nothing pending this stays the
+// plain window reload, so the status-bar link keeps working as a general escape
+// hatch.
+export function resolveApplyAction(
+  ext: ClaudeExt | undefined,
+  pending: Iterable<string>,
+): ApplyAction {
+  const ids = [...pending];
+  if (!ext || ids.length === 0) return WINDOW_APPLY;
+  if (ids.every(isWebviewPoint)) return WEBVIEW_APPLY;
+  if (registryMatchesDisk(ext) && !claudeEditorTabOpen()) return HOST_APPLY;
+  return WINDOW_APPLY;
+}
+
 // Cheap, cached view for the hover popup.
 export interface Knob {
   id: string;
@@ -5899,6 +6023,7 @@ export interface Snapshot {
   actionable: boolean;
   needsReload: boolean; // bundle written this session but window not reloaded
   partialLoss: boolean; // a wanted setting can't be applied: its anchor is gone here
+  apply: ApplyAction; // cheapest restart that applies what is pending
   preview: PreviewModel; // effective font / size / spacing values for the live preview
 }
 
@@ -6194,6 +6319,7 @@ export class Patcher {
       actionable: !allCurrent,
       needsReload: this.pendingReload.size > 0,
       partialLoss,
+      apply: resolveApplyAction(this.ext, this.pendingReload),
       preview: previewModel(),
     };
   }
@@ -6328,22 +6454,74 @@ export class Patcher {
     void this.autoApply();
   }
 
-  // Toast shown after the activation-time re-apply, prompting the reload the
+  // The cheapest restart for what is pending right now (see resolveApplyAction).
+  applyAction(): ApplyAction {
+    return resolveApplyAction(this.ext, this.pendingReload);
+  }
+
+  // Run it, then re-baseline whatever it actually reloaded. A host restart or a
+  // window reload takes this extension down with it, so the next activation
+  // re-captures the baseline by itself. A webview reload leaves us running, so
+  // the webview-side points have to be re-based here or their dots stay amber
+  // forever; the extension.js points stay pending, because the live host is
+  // still running the code it required at startup.
+  async runApplyAction(action: ApplyAction): Promise<void> {
+    await vscode.commands.executeCommand(action.command);
+    if (action.scope === "webview") this.rebaselineWebviewPoints();
+  }
+
+  // Re-read the webview-side points and treat what is on disk as what the UI is
+  // now showing. reconcilePendingReload then clears exactly those ids, leaving
+  // any extension.js point pending.
+  private rebaselineWebviewPoints(): void {
+    if (!this.ext) return;
+    const cache = new Map<string, string | undefined>();
+    const read = (rel: string) => {
+      if (!cache.has(rel)) cache.set(rel, readFileSafe(this.ext!, rel));
+      return cache.get(rel);
+    };
+    for (const p of PATCH_POINTS) {
+      if (!isWebviewPoint(p.id)) continue;
+      const content = read(p.file);
+      this.activationPx.set(
+        p.id,
+        content ? pointCurrentPx(content, p) : undefined,
+      );
+    }
+    for (const t of TOGGLE_POINTS) {
+      if (isWebviewPoint(t.id))
+        this.activationPx.set(t.id, toggleStateStr(read, t));
+    }
+    for (const ip of INJECT_POINTS) {
+      if (isWebviewPoint(ip.id))
+        this.activationPx.set(ip.id, injectStateStr(read(ip.file), ip));
+    }
+    for (const a of ALWAYS_POINTS) {
+      if (isWebviewPoint(a.id))
+        this.activationPx.set(a.id, alwaysStateStr(read(a.file), a));
+    }
+    this.reconcilePendingReload();
+    this.refresh();
+  }
+
+  // Toast shown after the activation-time re-apply, prompting the restart the
   // re-applied patch needs to take effect in the still-stale running window.
-  // Mirrors the amber status-bar / panel reload cue with an actionable button.
+  // Mirrors the amber status-bar / panel cue with an actionable button, and
+  // names the same cheapest action those two offer. The button re-resolves at
+  // click time (via APPLY_COMMAND), so a Claude Code tab opened between the
+  // toast appearing and the click still downgrades it to a window reload.
   private notifyReapplied(updated: boolean): void {
     if (!this.ext) return;
     const version = this.ext.version;
+    const label = this.applyAction().label;
     const message = updated
-      ? `Claude Code UI Patch: Claude Code updated to v${version}. Reload the window for UI patches to take effect.`
-      : `Claude Code UI Patch: Applied UI patch to Claude Code v${version}. Reload the window for it to take effect.`;
-    void vscode.window
-      .showInformationMessage(message, "Reload Window")
-      .then((choice) => {
-        if (choice === "Reload Window") {
-          void vscode.commands.executeCommand("workbench.action.reloadWindow");
-        }
-      });
+      ? `Claude Code UI Patch: Claude Code updated to v${version}. ${label} for UI patches to take effect.`
+      : `Claude Code UI Patch: Applied UI patch to Claude Code v${version}. ${label} for it to take effect.`;
+    void vscode.window.showInformationMessage(message, label).then((choice) => {
+      if (choice === label) {
+        void vscode.commands.executeCommand(APPLY_COMMAND);
+      }
+    });
   }
 
   private reconcilePendingReload(cache?: ReadCache): void {
@@ -6589,7 +6767,7 @@ export function tooltipLines(snap: Snapshot | undefined): string[] {
     "",
     "---",
     "",
-    `${cmdLink("$(gear) Open Settings", "workbench.action.openSettings", ["claudeCodeUiPatch"])}  ·  ${cmdLink("$(refresh) Reload Window", "workbench.action.reloadWindow")}`,
+    `${cmdLink("$(gear) Open Settings", "workbench.action.openSettings", ["claudeCodeUiPatch"])}  ·  ${cmdLink(`${snap.apply.icon} ${snap.apply.label}`, APPLY_COMMAND)}`,
   );
 
   if (!snap.supported) {

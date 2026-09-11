@@ -2,11 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 1.5.0
 
 - Pending changes no longer always cost a window reload.
-  The panel banner, the status-bar link, and the update toast now offer the lightest restart that applies what is pending: **Reload Webviews** for chat changes, which keeps your Claude Code session running, **Restart Extensions** when a Plan Mode Preview change needs a fresh extension host, and **Reload Window** when neither is safe (right after a Claude Code update, or with a Claude Code chat open in an editor tab).
-- After a **Reload Webviews** apply, the chat rows go green on their own instead of staying amber until the next window reload.
+  The panel banner, the status-bar link, and the update toast now offer the lightest restart that applies what is pending: **Refresh Webviews** for chat changes, which keeps your Claude Code session running, **Restart Extensions** when a Plan Mode Preview change needs a fresh extension host, and **Reload Window** when neither is safe (right after a Claude Code update, or with a Claude Code chat open in an editor tab).
+- After a **Refresh Webviews** apply, the chat rows go green on their own instead of staying amber until the next window reload.
 
 ## 1.4.12
 

@@ -110,7 +110,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
 
 - **Panel controls:** Press `Cmd+Shift+P` / `Ctrl+Shift+P` (or `F1`) to open the Command Palette, then run **Claude Code UI Patch: Open Panel**. Or alternatively, click the `aA` item at the far right of the status bar.
   Use `▼`/`▲`, toggles an On/Off switch, and each row's sync dot shows green (in effect), yellow (restart needed), or red (unavailable on this Claude Code version).
-  When changes are pending, the header banner turns amber and becomes the apply button, labelled with the lightest restart that will do: **Reload Webviews** for chat changes (your Claude Code session stays up), **Restart Extensions** when a Plan Mode Preview change needs a fresh extension host, or **Reload Window** when neither is safe.
+  When changes are pending, the header banner turns amber and becomes the apply button, labelled with the lightest restart that will do: **Refresh Webviews** for chat changes (your Claude Code session stays up), **Restart Extensions** when a Plan Mode Preview change needs a fresh extension host, or **Reload Window** when neither is safe.
 - **Direct edits:** Font families, the math size (`chatMathFontSizeEm`), the input-box line cap, comment-box rows, and the "Show more/less" button alignment have no panel control, set them in VS Code Settings via direct edits. `claudeCodeUiPatch.*` settings apply on the next restart the banner offers.
 
 ## Caveats

@@ -113,7 +113,7 @@ export class PatchPanel {
         void vscode.commands.executeCommand(APPLY_COMMAND);
         break;
       case "ready":
-        // The webview came up (first paint, or a Reload Webviews pass rebuilt
+        // The webview came up (first paint, or a Refresh Webviews pass rebuilt
         // it from the HTML we last set, which drops every in-place sync since).
         this.sync();
         break;
@@ -373,7 +373,7 @@ ${preview}  </div>
       if (m.preview) applyPreview(m.preview);
     });
 
-    // Ask for a fresh sync on load: a Reload Webviews pass rebuilds this iframe
+    // Ask for a fresh sync on load: a Refresh Webviews pass rebuilds this iframe
     // from the HTML the host set last, so every in-place update since is gone.
     vscode.postMessage({ command: 'ready' });
   </script>

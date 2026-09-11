@@ -5919,10 +5919,10 @@ export interface ApplyAction {
 const WEBVIEW_APPLY: ApplyAction = {
   scope: "webview",
   command: "workbench.action.webview.reloadWebviewAction",
-  label: "Reload Webviews",
+  label: "Refresh Webviews",
   icon: "$(refresh)",
   detail:
-    "Reload the chat webview to apply the pending changes (the extension host and the Claude Code session stay up)",
+    "Refresh the chat webview to apply the pending changes (the extension host and the Claude Code session stay up)",
 };
 
 const HOST_APPLY: ApplyAction = {

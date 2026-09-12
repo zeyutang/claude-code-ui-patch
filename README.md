@@ -73,6 +73,7 @@ Behavior
    ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
    ├── chatPopupInputMaxLines          # question "Other" + permission box: N lines, 0 -> native
    ├── chatJumpToMessageButtons        # prev/next above input/permission box: jump turns, if On
+   ├── chatRawMarkdownButton           # response hover button: show its markdown source, if On
    ├── chatScrollToBottomDot           # button above input/permission box: scroll to newest, if On
    │                                   #   also auto-scrolls on a permission/question box only when
    │                                   #   already at the bottom, then follows the box as it settles
@@ -128,4 +129,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   Your own sent messages are styled by `chatInputHistoryFontSize` / `chatInputHistoryFontFamily`.
 - **`chatMathRendering` bundles KaTeX into the chat webview** (MIT code, SIL OFL 1.1 fonts; licenses ship in `assets/katex/`) and removes it fully when the toggle turns off.
   Rendering covers the chat only: the Plan Mode preview's content-security policy allows no font loading.
+- **`chatRawMarkdownButton` reveals the source of agent responses only.**
+  Thinking blocks, tool output, compact summaries, and slash-command results render through the same markdown component but get no button.
+  Each response switches on its own, and all of them are back to rendered after a webview reload.
 - **`chatFindBar` replaces native `Cmd`/`Ctrl`+`F` widget inside the chat webview** (tab and sidebar alike).

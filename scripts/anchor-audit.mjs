@@ -166,8 +166,13 @@ function everythingOn() {
 function expectedMarkers() {
   const src = readFileSync(join(root, "out", "patcher.js"), "utf8");
   const markers = new Set();
+  // A marker anything can emit is a plain comment literal, /*ccup:<word>*/.
+  // This scan also turns up forms that are not one: an interpolated template
+  // (rebuilt per concrete tag below) and the alternations that read a whole
+  // family of markers back out of a bundle, e.g. /*ccup:rawMd(?:Hook|Pre)*/.
+  const LITERAL = /^\/\*(?:ccup|cc-ui-patch)[\w:-]*\*\/$/;
   const add = (m) => {
-    if (!m.includes("${")) markers.add(m);
+    if (LITERAL.test(m)) markers.add(m);
     return m;
   };
   const quoted = /["'`]\/\*(?:ccup|cc-ui-patch)[^"'`]*?\*\//g;

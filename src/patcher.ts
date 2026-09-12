@@ -77,6 +77,7 @@ const KNOB_ORDER: string[] = [
   "findBar", // in-chat find bar (Cmd/Ctrl+F)
   "histKeys", // input history recall on Cmd/Ctrl+Up/Down
   "jumpMsg", // jump to previous/next message
+  "rawMd", // raw markdown of a response
   "scrollDot", // scroll-to-bottom dot
   "permCode",
   "permNoWrap",
@@ -3966,6 +3967,228 @@ function uceSet(c: string, on: boolean): string {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Raw markdown of an agent response (ON): the chat renders every agent text
+// block through one shared markdown component, so what Claude actually wrote
+// (table pipes, link targets, list markers, a fence's language tag, the literal
+// TeX behind a formula) is only ever visible as rendered output. When ON each
+// response grows a button at its top-right corner, on hover, that swaps the
+// rendered tree for the markdown source and back. The state is per block, so
+// one response can read as source while the rest of the transcript stays
+// rendered, and it resets to rendered when the webview reloads.
+//
+// The source needs no reconstruction: the component takes
+// `{content,context,isPartialText}`, and `content` is the markdown string as it
+// arrived. Four inline fragments do the work, all React-rendered so React keeps
+// owning the DOM it produced (the discipline the math patch follows too: no
+// post-hoc mutation of a rendered tree, which React can crash on):
+//
+//   hook   a useState pair appended to the component's own hook chain, holding
+//          this block's raw/rendered flag (appending keeps hook order stable)
+//   wrapA  opens a position:relative <div> host around the component's root
+//          <span>. The host is what the button anchors to: the root span is
+//          inline (its width and overflow-x declarations are inert on an inline
+//          box), so it can never be a containing block itself, and its
+//          `>:first-child{margin-top:0}` rule means a button placed inside it
+//          would steal that reset from the response's first paragraph.
+//   pre    a ternary at the head of the root span's children: raw mode renders
+//          <pre><code>{content}</code></pre> in place of the markdown element
+//   wrapB  the button, then the host's closing bracket
+//
+// Reading the `content` prop rather than the initialized local is what keeps
+// this composable with chatMathRendering: that patch routes the local through
+// the KaTeX preprocessor, so the local carries base64 marker spans while the
+// prop still holds the bytes Claude sent. The anchors do not overlap either
+// (math wraps the initializer; the hook fragment lands after the next useState
+// call), so the two apply in either order.
+//
+// <pre><code> is deliberate. Inside the markdown root the stock sheet already
+// carries `.root_<hash> pre code{background:0 0;padding:0}` and
+// `.root_<hash> code{font-family:...;font-size:.9em}`, so the raw view lands on
+// the chat's code font and size (including whatever codeFontFamily and
+// chatCodeBlockFontSize are set to), with none of a code block's panel chrome.
+// Our own CSS only has to drop the UA <pre> margin and let long source lines
+// wrap.
+//
+// Scope: the button is CSS-gated to responses, via
+// `[data-testid="assistant-message"]>.ccup-rawmd-host>.ccup-rawmd-btn`.
+// Thinking blocks, tool-result text, compact summaries, banner copy and
+// slash-command output all render through the same component but sit deeper in
+// the tree, so the selector passes them over and their flag never leaves
+// "rendered". That testid joins the anchor set: without it the button can never
+// paint, so the point reports missing rather than writing in a feature nothing
+// can reach.
+// ---------------------------------------------------------------------------
+
+const RAWMD_HOOK_MARKER = "/*ccup:rawMdHook*/";
+const RAWMD_WRAPA_MARKER = "/*ccup:rawMdWrapA*/";
+const RAWMD_PRE_MARKER = "/*ccup:rawMdPre*/";
+const RAWMD_WRAPB_MARKER = "/*ccup:rawMdWrapB*/";
+const RAWMD_FRAG_END = "/*ccup:rawMdEnd*/";
+const RAWMD_FRAG_RE =
+  /\/\*ccup:rawMd(?:Hook|WrapA|Pre|WrapB)\*\/[\s\S]*?\/\*ccup:rawMdEnd\*\//g;
+const RAWMD_CSS_MARKER = "/*ccup:rawMdCss*/";
+
+const RAWMD_HOST_CLASS = "ccup-rawmd-host";
+const RAWMD_BTN_CLASS = "ccup-rawmd-btn";
+const RAWMD_PRE_CLASS = "ccup-rawmd";
+// Injected locals. The bundle is minified to short identifiers and vendors
+// nothing prefixed "ccup", so these cannot shadow anything.
+const RAWMD_ON = "ccupRawOn";
+const RAWMD_SET = "ccupRawSet";
+
+const rawMdFrag = (marker: string, code: string): string =>
+  `${marker}${code}${RAWMD_FRAG_END}`;
+
+// hook: the markdown component's hook chain, from its destructured signature
+// through the link-context-menu useState, `({content:$,context:J,
+// isPartialText:Z}){let Y=Z?wL0($):$,[X,Q]=l(null)` + `,` (captures: 1=head,
+// 2=content prop, 3=isPartialText prop, 4=useState alias, 5=chain comma). The
+// head tolerates the math patch's own fragments sitting in the initializer
+// (they carry no `;`), which is what lets the two compose in either order.
+const RAWMD_HOOK_RE =
+  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)\}\)\{let [\w$]+=[^;]{0,600}?,\[[\w$]+,[\w$]+\]=([\w$]+)\(null\))(,)/;
+
+// ret: the component's returned root span, `return R("span",{className:
+// PM.root,children:[` with the markdown element's factory in a lookahead
+// (captures: 1=`return `, 2=span opener, 3=multi-child factory, 4=single-child
+// factory, left unconsumed).
+const RAWMD_RET_RE =
+  /(return )(([\w$]+)\("span",\{className:[\w$]+\.root,children:\[)(?=([\w$]+)\()/;
+
+// tail: the link context menu that closes the root span's children, `,X&&F(Sf1,
+// {href:X.href,x:X.x,y:X.y,onClose:z})]})` + the component's closing brace
+// (captures: 1=the tail, 2=menu state, 3=single-child factory, 4=brace).
+const RAWMD_TAIL_RE =
+  /(,([\w$]+)&&([\w$]+)\([\w$]+,\{href:\2\.href,x:\2\.x,y:\2\.y,onClose:[\w$]+\}\)\]\}\))(\})/;
+
+// The attribute the CSS gate keys on, so a build that drops it reports missing.
+const RAWMD_TESTID_RE = /"data-testid":"assistant-message"/;
+
+// The markdown mark (rounded tag, M, descending arrow), drawn in currentColor
+// with single-quoted attributes so the markup embeds in a double-quoted JS
+// string without escaping.
+const RAWMD_ICON =
+  "<svg viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.3' " +
+  "stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'>" +
+  "<rect x='1.4' y='3.4' width='13.2' height='9.2' rx='1.8'/>" +
+  "<path d='M4.1 10.3V5.9l1.95 2.4 1.95-2.4v4.4'/>" +
+  "<path d='M11.4 5.9v4.4'/><path d='M9.9 8.6l1.5 1.7 1.5-1.7'/></svg>";
+
+const RAWMD_TIP = "Show raw markdown";
+const RAWMD_TIP_ON = "Show rendered response";
+
+function rawMdAnchorsPresent(c: string): boolean {
+  return (
+    RAWMD_TESTID_RE.test(c) &&
+    RAWMD_HOOK_RE.test(c) &&
+    RAWMD_RET_RE.test(c) &&
+    RAWMD_TAIL_RE.test(c)
+  );
+}
+function rawMdMarksPresent(c: string): boolean {
+  RAWMD_FRAG_RE.lastIndex = 0;
+  return RAWMD_FRAG_RE.test(c);
+}
+function rawMdStrip(c: string): string {
+  return c.replace(RAWMD_FRAG_RE, "");
+}
+// Insert all four fragments into a STRIPPED bundle (the caller has verified the
+// anchors; each is unique, so the non-global replaces hit exactly one site).
+function rawMdApplyInline(c: string): string {
+  const content = c.match(RAWMD_HOOK_RE)?.[2];
+  if (content === undefined) return c;
+  let out = c.replace(
+    RAWMD_HOOK_RE,
+    (_w, head, _content, _partial, useState, comma) =>
+      `${head}${rawMdFrag(
+        RAWMD_HOOK_MARKER,
+        `,[${RAWMD_ON},${RAWMD_SET}]=${useState}(!1)`,
+      )}${comma}`,
+  );
+  out = out.replace(RAWMD_RET_RE, (_w, ret, span, multi, single) =>
+    [
+      ret,
+      rawMdFrag(
+        RAWMD_WRAPA_MARKER,
+        `${multi}("div",{className:"${RAWMD_HOST_CLASS}",children:[`,
+      ),
+      span,
+      rawMdFrag(
+        RAWMD_PRE_MARKER,
+        `${RAWMD_ON}?${single}("pre",{className:"${RAWMD_PRE_CLASS}",` +
+          `children:${single}("code",{children:${content}})}):`,
+      ),
+    ].join(""),
+  );
+  out = out.replace(
+    RAWMD_TAIL_RE,
+    (_w, tail, _menu, single, brace) =>
+      `${tail}${rawMdFrag(
+        RAWMD_WRAPB_MARKER,
+        `,${single}("button",{type:"button",className:"${RAWMD_BTN_CLASS}",` +
+          `title:${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
+          `"aria-label":${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
+          `"aria-pressed":${RAWMD_ON},` +
+          `onClick:function(){${RAWMD_SET}(!${RAWMD_ON})},` +
+          `dangerouslySetInnerHTML:{__html:"${RAWMD_ICON}"}})]})`,
+      )}${brace}`,
+  );
+  return out;
+}
+
+function rawMdPresent(c: string): boolean {
+  return rawMdMarksPresent(c) || rawMdAnchorsPresent(c);
+}
+// true = ON in exactly this build's form (also when marked but no longer
+// rebuildable, so an orphaned patch still reads as ON and stays removable),
+// false = OFF or stale, undefined = neither marks nor anchors. Compared by
+// re-deriving the fragments onto the stripped bundle, never by whole-file
+// equality, so other toggles' edits elsewhere in the file are not drift.
+function rawMdCurrentOn(c: string): boolean | undefined {
+  if (!rawMdMarksPresent(c)) return rawMdAnchorsPresent(c) ? false : undefined;
+  const stripped = rawMdStrip(c);
+  if (!rawMdAnchorsPresent(stripped)) return true;
+  return c === rawMdApplyInline(stripped);
+}
+function rawMdSet(c: string, on: boolean): string {
+  if (!on) return rawMdStrip(c);
+  if (rawMdCurrentOn(c) === true) return c; // stable: no rewrite on re-apply
+  const stripped = rawMdStrip(c);
+  if (!rawMdAnchorsPresent(stripped)) return c; // can't build here
+  return rawMdApplyInline(stripped);
+}
+
+// The css side-effect: the host's positioning context, the raw block's own
+// (deliberately short) rules, and the button. Layout for the button is
+// unconditional, its `display` is not: only a text block that is a direct child
+// of an assistant turn gets one, which is what keeps the button off thinking
+// blocks, tool-result text and the other surfaces the component serves. The
+// host stretches inside a turn so the button sits at the message's right edge
+// rather than drifting with each response's longest line.
+function rawMdCssBuild(_css: string): string | undefined {
+  const btn =
+    "box-sizing:border-box;display:none;position:absolute;top:0;right:0;" +
+    "align-items:center;justify-content:center;width:22px;height:22px;margin:0;padding:0;" +
+    "border:1px solid var(--app-input-border);border-radius:5px;" +
+    "background:var(--app-input-secondary-background);color:var(--app-secondary-foreground);" +
+    "box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;pointer-events:none;" +
+    "transition:opacity .15s ease";
+  const lit = "opacity:1;pointer-events:auto";
+  const on = `color:var(--app-primary-foreground);border-color:var(--app-secondary-foreground)`;
+  return (
+    `${RAWMD_CSS_MARKER}.${RAWMD_HOST_CLASS}{position:relative}` +
+    `[data-testid="assistant-message"]>.${RAWMD_HOST_CLASS}{align-self:stretch}` +
+    `.${RAWMD_PRE_CLASS}{margin:0;white-space:pre-wrap;overflow-wrap:break-word;tab-size:4}` +
+    `.${RAWMD_BTN_CLASS}{${btn}}` +
+    `[data-testid="assistant-message"]>.${RAWMD_HOST_CLASS}>.${RAWMD_BTN_CLASS}{display:flex}` +
+    `.${RAWMD_HOST_CLASS}:hover>.${RAWMD_BTN_CLASS},.${RAWMD_BTN_CLASS}:focus-visible,` +
+    `.${RAWMD_BTN_CLASS}[aria-pressed=true]{${lit}}` +
+    `.${RAWMD_BTN_CLASS}:hover,.${RAWMD_BTN_CLASS}[aria-pressed=true]{${on}}` +
+    `.${RAWMD_BTN_CLASS} svg{display:block;width:14px;height:14px}`
+  );
+}
+
 interface TogglePoint {
   id: string;
   section: Section;
@@ -4096,6 +4319,20 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: jumpMsgPresent,
     fnCurrentOn: jumpMsgCurrentOn,
     fnSet: jumpMsgSet,
+  },
+  {
+    id: "rawMd",
+    section: "Behavior",
+    label: "Chat panel or tab: show an agent response as raw markdown",
+    key: "chatRawMarkdownButton",
+    defaultOn: false,
+    file: "webview/index.js",
+    fnPresent: rawMdPresent,
+    fnCurrentOn: rawMdCurrentOn,
+    fnSet: rawMdSet,
+    cssFile: "webview/index.css",
+    cssMarker: RAWMD_CSS_MARKER,
+    cssBuild: rawMdCssBuild,
   },
   {
     id: "histKeys",

@@ -166,6 +166,11 @@
           "default": false,
           "markdownDescription": "Show previous/next buttons above the chat input box's top-right corner that jump between turns (each user message pins to the top as a sticky header). A direction with nowhere to go dims, and the pair sits on the permission/question box when one replaces the input box, which dims the history unless the find bar is open. With `#claudeCodeUiPatch.chatScrollToBottomDot#` on, the pair lines up on its left."
         },
+        "claudeCodeUiPatch.chatRawMarkdownButton": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show a button at each agent response's top-right corner, on hover, that swaps the rendered markdown for its source. The raw view follows `#claudeCodeUiPatch.codeFontFamily#` and `#claudeCodeUiPatch.chatCodeBlockFontSize#`."
+        },
         "claudeCodeUiPatch.chatInputCtrlUpDownToHistory": {
           "type": "boolean",
           "default": false,

@@ -1058,28 +1058,63 @@ function questionRevealBuild(c: string): string | undefined {
   return `${QUESTION_REVEAL_MARKER}.questionsContainer_${qHash}{scroll-padding:${pad}px 0 ${pad}px}`;
 }
 
-// Expanded prompt header (always on): every user message is the sticky header
-// of its turn (.message_<h>.stickyHeader_<h>, position:sticky;top:0), clamped
-// at 250px behind a "Show more" button. "Show more" lifts the clamp and changes
-// nothing about the pinning, so a prompt taller than the chat pins over the
-// whole scrollport: the response scrolls by hidden underneath it, and the only
-// thing that ever surfaces is the next turn's header, right under the expanded
-// one, until "Show less" collapses it again. The "Show less" button is rendered
-// only in the expanded state, so `:has(.collapseButton_<h>)` is the expanded
-// header, and this line returns it to the base .message_ positioning
-// (relative): it scrolls with the chat like any content, and "Show less" hands
-// it back to sticky. Specificity (0,3,0) beats the native (0,2,0) rule without
-// !important. An always-on fix rather than a knob: a header covering the chat
-// is never the wanted behavior, and a collapsed header pins exactly as before.
-// Two of the stylesheet's rules are the anchors: the sticky rule itself, so the
-// fix travels with the pinning it corrects, and the button's. The
-// jump-to-message stops are natural positions, which an unstuck header keeps,
-// and the raw-markdown pin line reads a scrolled-past header as nothing stuck,
-// so both stay right.
+// Expanded prompt header (always on, two halves): every user message is the
+// sticky header of its turn (.message_<h>.stickyHeader_<h>, position:sticky;
+// top:0), clamped at 250px behind a "Show more" button. "Show more" lifts the
+// clamp and changes nothing about the pinning, so a prompt taller than the chat
+// pins over the whole scrollport: the response scrolls by hidden underneath it,
+// and the only thing that ever surfaces is the next turn's header, right under
+// the expanded one, until "Show less" collapses it again.
+//
+// The CSS half (expandedHeader) takes an open header off sticky. The "Show
+// less" button is rendered only in the expanded state, so
+// `:has(.collapseButton_<h>)` is the open header, and the line returns it to
+// the base .message_ positioning (relative), where it scrolls with the chat
+// like any content, and "Show less" hands it back to sticky. Specificity
+// (0,3,0) beats the native (0,2,0) rule without !important.
+//
+// The JS half (expandedView) keeps the view sensible around the two clicks,
+// from a capture-phase click listener on the document, which runs before
+// React's own handler and so still sees the pre-toggle state:
+//   Show more on a prompt stuck to the top (or sitting there after a jump):
+//     once the CSS half unsticks it, the header would snap to its natural
+//     position, far above, and the view would land somewhere in the response.
+//     The click instead scrolls the chat to that natural top (measured with
+//     the sticky neutralized for one read, the jumpMsg trick) once React has
+//     re-rendered (a rAF): the open prompt starts at the top of the view and
+//     reading continues down it into the response.
+//   Show more on a prompt further down the view: nothing to do, it opens in
+//     place and pushes what follows down.
+//   Show less, either way: back to the scroll offset "Show more" saved on the
+//     header, so a prompt that was stuck is stuck again over the same response
+//     position, and one that opened in place springs back with what follows
+//     where it was.
+// Chromium's scroll anchoring does not fight either write: a stuck prompt has
+// a response paragraph for its anchor, which the growth would carry the view
+// down after, but a programmatic scroll clears the anchor, and the rAF lands
+// before that layout (the repro's stuck case is the proof).
+//
+// An always-on fix rather than a knob: a header covering the chat is never the
+// wanted behavior, and a collapsed header pins exactly as before. Anchors: the
+// stylesheet's sticky rule and collapse-button rule for the CSS half, and for
+// the JS half the expandable's whole class map (one hash from
+// expandableContainer through collapseButton, since another module also names
+// an expandButton) plus the messagesContainer and stickyHeader keys; either
+// half skips on its own when its anchors are gone. The jump-to-message stops
+// are natural positions, which an unstuck header keeps, and the raw-markdown
+// pin line reads a scrolled-past header as nothing stuck, so both stay right.
 const EXPANDED_HEADER_MARKER = "/*cc-ui-patch:expandedHeader*/";
+const EXPANDED_VIEW_MARKER = "/*cc-ui-patch:expandedView*/";
 const STICKY_HEADER_RULE_RE =
   /\.message_([-\w]+)\.stickyHeader_([-\w]+)\{[^{}]*?position:sticky[^{}]*?\}/;
 const COLLAPSE_BUTTON_RULE_RE = /\.collapseButton_([-\w]+)\{/;
+const EXPANDABLE_MAP_RE =
+  /expandableContainer:"expandableContainer_([-\w]+)",content:"content_\1",collapsed:"collapsed_\1",truncationGradient:"truncationGradient_\1",expandButton:"expandButton_\1",buttonContainer:"buttonContainer_\1",collapseButton:"collapseButton_\1"/;
+const EXPANDED_CHAT_HASH_RE = /messagesContainer:"messagesContainer_([-\w]+)"/;
+const EXPANDED_STICKY_HASH_RE = /stickyHeader:"stickyHeader_([-\w]+)"/;
+// The JS half's once-only guard on window, doubling as the expando that holds
+// the saved scroll offset on a header between its two clicks.
+const EXPANDED_VIEW_FLAG = "__ccupExpandedView";
 
 function expandedHeaderBuild(c: string): string | undefined {
   const sticky = c.match(STICKY_HEADER_RULE_RE);
@@ -1089,6 +1124,33 @@ function expandedHeaderBuild(c: string): string | undefined {
     `${EXPANDED_HEADER_MARKER}.message_${sticky[1]}.stickyHeader_${sticky[2]}` +
     `:has(.collapseButton_${collapse}){position:relative}`
   );
+}
+
+function expandedViewBuild(c: string): string | undefined {
+  const box = c.match(EXPANDABLE_MAP_RE)?.[1];
+  const chat = c.match(EXPANDED_CHAT_HASH_RE)?.[1];
+  const sticky = c.match(EXPANDED_STICKY_HASH_RE)?.[1];
+  if (!box || !chat || !sticky) return undefined; // anchor gone: leave native
+  const js =
+    `(function(){try{` +
+    `if(window.${EXPANDED_VIEW_FLAG})return;window.${EXPANDED_VIEW_FLAG}=1;` +
+    `var K="${EXPANDED_VIEW_FLAG}";` +
+    // Natural (unstuck) top of a header inside its scroller: neutralize the
+    // sticky for one synchronous read and restore it, nothing paints between.
+    `function nat(h,t){var p=h.style.position;h.style.position="static";` +
+    `var y=h.getBoundingClientRect().top-t.getBoundingClientRect().top+t.scrollTop;h.style.position=p;return y}` +
+    `document.addEventListener("click",function(e){` +
+    `var el=e.target,b=el&&el.closest?el.closest(".expandButton_${box},.collapseButton_${box}"):null;if(!b)return;` +
+    `var h=b.closest(".stickyHeader_${sticky}"),t=h&&h.closest(".messagesContainer_${chat}");if(!t)return;` +
+    // Show more: save the view; a header at the top scrolls to its natural top
+    // once React has opened it.
+    `if(b.classList.contains("expandButton_${box}")){h[K]=t.scrollTop;` +
+    `if(h.getBoundingClientRect().top<=t.getBoundingClientRect().top+1){var y=nat(h,t);requestAnimationFrame(function(){t.scrollTop=y})}}` +
+    // Show less: back to the saved view once React has collapsed it.
+    `else if(h[K]!==void 0){var s=h[K];delete h[K];requestAnimationFrame(function(){t.scrollTop=s})}` +
+    `},!0)` +
+    `}catch(e){}})();`;
+  return `${EXPANDED_VIEW_MARKER}${js}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -4694,6 +4756,13 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: "webview/index.css",
     marker: EXPANDED_HEADER_MARKER,
     build: expandedHeaderBuild,
+  },
+  {
+    id: "expandedView",
+    label: "expanded prompt header view",
+    file: "webview/index.js",
+    marker: EXPANDED_VIEW_MARKER,
+    build: expandedViewBuild,
   },
 ];
 

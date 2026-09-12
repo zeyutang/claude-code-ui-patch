@@ -1058,6 +1058,39 @@ function questionRevealBuild(c: string): string | undefined {
   return `${QUESTION_REVEAL_MARKER}.questionsContainer_${qHash}{scroll-padding:${pad}px 0 ${pad}px}`;
 }
 
+// Expanded prompt header (always on): every user message is the sticky header
+// of its turn (.message_<h>.stickyHeader_<h>, position:sticky;top:0), clamped
+// at 250px behind a "Show more" button. "Show more" lifts the clamp and changes
+// nothing about the pinning, so a prompt taller than the chat pins over the
+// whole scrollport: the response scrolls by hidden underneath it, and the only
+// thing that ever surfaces is the next turn's header, right under the expanded
+// one, until "Show less" collapses it again. The "Show less" button is rendered
+// only in the expanded state, so `:has(.collapseButton_<h>)` is the expanded
+// header, and this line returns it to the base .message_ positioning
+// (relative): it scrolls with the chat like any content, and "Show less" hands
+// it back to sticky. Specificity (0,3,0) beats the native (0,2,0) rule without
+// !important. An always-on fix rather than a knob: a header covering the chat
+// is never the wanted behavior, and a collapsed header pins exactly as before.
+// Two of the stylesheet's rules are the anchors: the sticky rule itself, so the
+// fix travels with the pinning it corrects, and the button's. The
+// jump-to-message stops are natural positions, which an unstuck header keeps,
+// and the raw-markdown pin line reads a scrolled-past header as nothing stuck,
+// so both stay right.
+const EXPANDED_HEADER_MARKER = "/*cc-ui-patch:expandedHeader*/";
+const STICKY_HEADER_RULE_RE =
+  /\.message_([-\w]+)\.stickyHeader_([-\w]+)\{[^{}]*?position:sticky[^{}]*?\}/;
+const COLLAPSE_BUTTON_RULE_RE = /\.collapseButton_([-\w]+)\{/;
+
+function expandedHeaderBuild(c: string): string | undefined {
+  const sticky = c.match(STICKY_HEADER_RULE_RE);
+  const collapse = c.match(COLLAPSE_BUTTON_RULE_RE)?.[1];
+  if (!sticky || !collapse) return undefined; // anchor gone: leave native
+  return (
+    `${EXPANDED_HEADER_MARKER}.message_${sticky[1]}.stickyHeader_${sticky[2]}` +
+    `:has(.collapseButton_${collapse}){position:relative}`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Chat math rendering (ON): the chat webview renders agent markdown through
 // react-markdown with no math support, so TeX like $\mathcal{G}$ shows as raw
@@ -4654,6 +4687,13 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: "webview/index.css",
     marker: QUESTION_REVEAL_MARKER,
     build: questionRevealBuild,
+  },
+  {
+    id: "expandedHeader",
+    label: "expanded prompt header",
+    file: "webview/index.css",
+    marker: EXPANDED_HEADER_MARKER,
+    build: expandedHeaderBuild,
   },
 ];
 

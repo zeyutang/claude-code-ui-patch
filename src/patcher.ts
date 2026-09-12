@@ -3983,9 +3983,10 @@ function uceSet(c: string, on: boolean): string {
 //
 // The source needs no reconstruction: the component takes
 // `{content,context,isPartialText}`, and `content` is the markdown string as it
-// arrived. Four inline fragments do the work, all React-rendered so React keeps
-// owning the DOM it produced (the discipline the math patch follows too: no
-// post-hoc mutation of a rendered tree, which React can crash on):
+// arrived. Four inline fragments and one EOF line do the work, the fragments all
+// React-rendered so React keeps owning the DOM it produced (the discipline the
+// math patch follows too: no post-hoc mutation of a rendered tree, which React
+// can crash on):
 //
 //   hook   a useState pair appended to the component's own hook chain, holding
 //          this block's raw/rendered flag (appending keeps hook order stable)
@@ -3998,23 +3999,30 @@ function uceSet(c: string, on: boolean): string {
 //   pre    a ternary at the head of the root span's children: raw mode renders
 //          <pre><code>{content}</code></pre> in place of the markdown element
 //   wrapB  the button inside its rail, then the host's closing bracket
+//   pin    a marked IIFE line appended to the file (the jumpMsg pattern) that
+//          measures the header stuck to the top of the chat, see below
 //
 // The rail is what lets the button ride: a layout-inert position:absolute strip
 // (top:0;bottom:0;right:0, pointer-events:none) down the block's right edge,
 // with the button position:sticky inside it. Sticky measures from the
-// scrollport, so the offset has to clear whatever user turn header is pinned
-// there, and that height is no constant (a header is a user message, wrapping
-// to as many lines as it needs). The rail's ref callback therefore parks one
-// ResizeObserver on its own turn's header, reached by the same
-// `closest(.turn)>.stickyHeader` hop the bundle's own scroll-into-view helpers
-// take, and writes the measured border-box height into --ccup-rawmd-top on the
-// turn, where every rail inside inherits it, with the CSS adding a 6px gap.
-// Nothing is measured during React's commit: the observer's first delivery carries the
-// size, so no ref forces a layout, and a rail mounting later (a second text
-// block, a re-render) inherits the turn's var with no work at all. The observer
-// is parked on the header it watches, so the two fall out of reach together.
-// With no pinned header (the transcript preview, non-sticky layouts) the var
-// stays unset and the button sticks to the scrollport top.
+// scrollport, so the offset has to clear whatever user turn header is stuck
+// there, and that is a scroll-time question with no constant answer: a header
+// is a user message, wrapping to as many lines as it needs, and the one on top
+// of the pile is not always the block's own turn header, since a message sent
+// while Claude is busy is folded into the running turn (foldedIntoTurn) as a
+// second sticky header that takes the top over once its natural position
+// scrolls past. The pin line therefore watches the chat itself: on every
+// scroll, resize, or DOM change, coalesced to one rAF, it finds the header
+// stuck to the top of each chat scroller and publishes that header's
+// border-box height as --ccup-rawmd-top on the scroller, where every rail
+// inside inherits it, with the CSS adding a 6px gap. Headers pin at top:0 and
+// pile, and their natural positions only grow in document order, so the stuck
+// ones are a document-order prefix and a binary search on rect.top finds the
+// last of them, the one painted on top; with none stuck (scrolled to the very
+// start, the transcript preview, non-sticky layouts) the value is 0 and the
+// button sticks to the scrollport top. The line writes only on a change, and
+// its observer drops the record that write produces, so it never re-queues
+// itself.
 //
 // Reading the `content` prop rather than the initialized local is what keeps
 // this composable with chatMathRendering: that patch routes the local through
@@ -4038,9 +4046,10 @@ function uceSet(c: string, on: boolean): string {
 // the tree, so the selector passes them over and their flag never leaves
 // "rendered". That testid joins the anchor set: without it the button can never
 // paint, so the point reports missing rather than writing in a feature nothing
-// can reach. The turn and stickyHeader class-map hashes join it for the same
-// reason: with no header to measure the button would pin behind the one stuck
-// to the top, so a build that renames either key reports missing too.
+// can reach. The messagesContainer and stickyHeader class-map hashes join it
+// for the same reason: with no way to find the header stuck to the top, the
+// button would pin over it, so a build that renames either key reports missing
+// too.
 // ---------------------------------------------------------------------------
 
 const RAWMD_HOOK_MARKER = "/*ccup:rawMdHook*/";
@@ -4051,21 +4060,24 @@ const RAWMD_FRAG_END = "/*ccup:rawMdEnd*/";
 const RAWMD_FRAG_RE =
   /\/\*ccup:rawMd(?:Hook|WrapA|Pre|WrapB)\*\/[\s\S]*?\/\*ccup:rawMdEnd\*\//g;
 const RAWMD_CSS_MARKER = "/*ccup:rawMdCss*/";
+const RAWMD_PIN_MARKER = "/*ccup:rawMdPin*/";
+const RAWMD_PIN_LINE_RE = /\n?\/\*ccup:rawMdPin\*\/[^\n]*/g;
 
 const RAWMD_HOST_CLASS = "ccup-rawmd-host";
 const RAWMD_RAIL_CLASS = "ccup-rawmd-rail";
 const RAWMD_BTN_CLASS = "ccup-rawmd-btn";
 const RAWMD_PRE_CLASS = "ccup-rawmd";
-// The pinned header's height, written on the turn by the rail's ref callback.
+// The stuck header's height, written on the chat scroller by the pin line.
 const RAWMD_TOP_VAR = "--ccup-rawmd-top";
 // Gap between that header's bottom edge and the pinned button.
 const RAWMD_GAP = 6;
 // The jump pair's square, so the two read as one family.
 const RAWMD_BTN_SIZE = 26;
 const RAWMD_ICON_SIZE = 16;
-// Expando on the sticky header: its own size observer, parked there so header
-// and observer become unreachable together.
-const RAWMD_RO_PROP = "__ccupRawMdRo";
+// The pin line's once-only guard on window, and its last-written value on each
+// scroller (an expando, so a no-change frame costs no style write).
+const RAWMD_PIN_FLAG = "__ccupRawMdPin";
+const RAWMD_TOP_PROP = "__ccupRawMdTop";
 // Injected locals. The bundle is minified to short identifiers and vendors
 // nothing prefixed "ccup", so these cannot shadow anything.
 const RAWMD_ON = "ccupRawOn";
@@ -4099,9 +4111,9 @@ const RAWMD_TAIL_RE =
 // The attribute the CSS gate keys on, so a build that drops it reports missing.
 const RAWMD_TESTID_RE = /"data-testid":"assistant-message"/;
 
-// The two class-map hashes the rail's ref callback needs to find the turn
-// header whose height sets the pinned offset.
-const RAWMD_TURN_HASH_RE = /turn:"turn_([-\w]+)"/;
+// The two class-map hashes the pin line needs: the chat scroller, and the
+// header class whose stuck member sets the offset.
+const RAWMD_CHAT_HASH_RE = /messagesContainer:"messagesContainer_([-\w]+)"/;
 const RAWMD_STICKY_HASH_RE = /stickyHeader:"stickyHeader_([-\w]+)"/;
 
 // The markdown mark (rounded tag, M, descending arrow), drawn in currentColor
@@ -4117,31 +4129,45 @@ const RAWMD_ICON =
 const RAWMD_TIP = "Show raw markdown";
 const RAWMD_TIP_ON = "Show rendered response";
 
-// The rail's ref callback: park one ResizeObserver on this turn's sticky
-// header and let it publish the header's border-box height on the turn, where
-// every rail inside inherits it as the pinned offset. Reading the entry's own
-// borderBoxSize keeps the measurement out of React's commit and off the layout
-// path; offsetHeight is the fallback for an entry without it. An inline ref
-// churns (React detaches and reattaches it on every render of the block), which
-// is what re-arms this if React ever replaces the header node under it.
-function rawMdRailRef(turn: string, sticky: string): string {
-  return (
-    `ref:function(e){try{if(!e)return;` +
-    `var t=e.closest(".turn_${turn}");if(!t)return;` +
-    `var h=t.querySelector(".stickyHeader_${sticky}");` +
-    `if(!h||h.${RAWMD_RO_PROP}||!window.ResizeObserver)return;` +
-    `h.${RAWMD_RO_PROP}=new ResizeObserver(function(s){` +
-    `var b=s[0].borderBoxSize,v=b&&b[0]?b[0].blockSize:h.offsetHeight,` +
-    `q=h.closest(".turn_${turn}");` +
-    `if(q)q.style.setProperty("${RAWMD_TOP_VAR}",v+"px")});` +
-    `h.${RAWMD_RO_PROP}.observe(h)}catch(x){}}`
-  );
+// The pin line for this bundle, or undefined when a class-map anchor is gone.
+// Deterministic given the bundle content, so equality against the on-disk line
+// doubles as the staleness check (see rawMdCurrentOn).
+function rawMdPinBuild(c: string): string | undefined {
+  const chat = c.match(RAWMD_CHAT_HASH_RE)?.[1];
+  const sticky = c.match(RAWMD_STICKY_HASH_RE)?.[1];
+  if (!chat || !sticky) return undefined;
+  const js =
+    `(function(){try{` +
+    `if(window.${RAWMD_PIN_FLAG})return;window.${RAWMD_PIN_FLAG}=1;` +
+    `var raf=0;` +
+    // Per chat scroller: the headers at or above the top are a document-order
+    // prefix, so a binary search on rect.top (1px of tolerance for sub-pixel
+    // drift) finds the last of them, the one painted on top of the pile. It
+    // still has to sit AT the top: one scrolled clean past (an expanded header,
+    // which the expandedHeader fix unsticks, or a turn's end with nothing
+    // pinned after it) means nothing is stuck, and that reads 0.
+    `function upd(){raf=0;var cs=document.querySelectorAll(".messagesContainer_${chat}");` +
+    `for(var k=0;k<cs.length;k++){var t=cs[k],hs=t.querySelectorAll(".stickyHeader_${sticky}"),` +
+    `top=t.getBoundingClientRect().top+1,lo=0,hi=hs.length-1,i=-1,v=0;` +
+    `while(lo<=hi){var m=(lo+hi)>>1;if(hs[m].getBoundingClientRect().top<=top){i=m;lo=m+1}else hi=m-1}` +
+    `if(i>=0){var r=hs[i].getBoundingClientRect();if(r.top>=top-3)v=r.height}` +
+    `if(t.${RAWMD_TOP_PROP}!==v){t.${RAWMD_TOP_PROP}=v;t.style.setProperty("${RAWMD_TOP_VAR}",v+"px")}}}` +
+    `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
+    `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
+    // Drop the record our own write on a scroller produces; anything else (a
+    // turn arriving, a header growing, another toggle's style probes) refreshes.
+    `new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var r=rs[i],tg=r.target;` +
+    `if(r.type!=="attributes"||r.attributeName!=="style"||!tg.classList||!tg.classList.contains("messagesContainer_${chat}")){que();return}}})` +
+    `.observe(document.body,{childList:!0,subtree:!0,attributes:!0,attributeFilter:["class","style"]});` +
+    `que()` +
+    `}catch(e){}})();`;
+  return `${RAWMD_PIN_MARKER}${js}`;
 }
 
 function rawMdAnchorsPresent(c: string): boolean {
   return (
     RAWMD_TESTID_RE.test(c) &&
-    RAWMD_TURN_HASH_RE.test(c) &&
+    RAWMD_CHAT_HASH_RE.test(c) &&
     RAWMD_STICKY_HASH_RE.test(c) &&
     RAWMD_HOOK_RE.test(c) &&
     RAWMD_RET_RE.test(c) &&
@@ -4150,18 +4176,17 @@ function rawMdAnchorsPresent(c: string): boolean {
 }
 function rawMdMarksPresent(c: string): boolean {
   RAWMD_FRAG_RE.lastIndex = 0;
-  return RAWMD_FRAG_RE.test(c);
+  return RAWMD_FRAG_RE.test(c) || c.includes(RAWMD_PIN_MARKER);
 }
 function rawMdStrip(c: string): string {
-  return c.replace(RAWMD_FRAG_RE, "");
+  return c.replace(RAWMD_FRAG_RE, "").replace(RAWMD_PIN_LINE_RE, "");
 }
-// Insert all four fragments into a STRIPPED bundle (the caller has verified the
-// anchors; each is unique, so the non-global replaces hit exactly one site).
+// Insert the four inline fragments into a STRIPPED bundle (the caller has
+// verified the anchors; each is unique, so the non-global replaces hit exactly
+// one site). The pin line is appended separately, see rawMdSet.
 function rawMdApplyInline(c: string): string {
   const content = c.match(RAWMD_HOOK_RE)?.[2];
-  const turn = c.match(RAWMD_TURN_HASH_RE)?.[1];
-  const sticky = c.match(RAWMD_STICKY_HASH_RE)?.[1];
-  if (content === undefined || !turn || !sticky) return c;
+  if (content === undefined) return c;
   let out = c.replace(
     RAWMD_HOOK_RE,
     (_w, head, _content, _partial, useState, comma) =>
@@ -4190,8 +4215,7 @@ function rawMdApplyInline(c: string): string {
     (_w, tail, _menu, single, brace) =>
       `${tail}${rawMdFrag(
         RAWMD_WRAPB_MARKER,
-        `,${single}("div",{className:"${RAWMD_RAIL_CLASS}",` +
-          `${rawMdRailRef(turn, sticky)},children:` +
+        `,${single}("div",{className:"${RAWMD_RAIL_CLASS}",children:` +
           `${single}("button",{type:"button",className:"${RAWMD_BTN_CLASS}",` +
           `title:${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
           `"aria-label":${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
@@ -4208,21 +4232,28 @@ function rawMdPresent(c: string): boolean {
 }
 // true = ON in exactly this build's form (also when marked but no longer
 // rebuildable, so an orphaned patch still reads as ON and stays removable),
-// false = OFF or stale, undefined = neither marks nor anchors. Compared by
-// re-deriving the fragments onto the stripped bundle, never by whole-file
-// equality, so other toggles' edits elsewhere in the file are not drift.
+// false = OFF or stale, undefined = neither marks nor anchors. The inline
+// fragments are compared by re-deriving them onto the stripped bundle and the
+// pin line by rebuilding it, each on its own and never by whole-file equality:
+// other toggles' edits elsewhere in the file are not drift, and neither is the
+// order several toggles' EOF lines end up in.
 function rawMdCurrentOn(c: string): boolean | undefined {
   if (!rawMdMarksPresent(c)) return rawMdAnchorsPresent(c) ? false : undefined;
   const stripped = rawMdStrip(c);
   if (!rawMdAnchorsPresent(stripped)) return true;
-  return c === rawMdApplyInline(stripped);
+  return (
+    c.replace(RAWMD_PIN_LINE_RE, "") === rawMdApplyInline(stripped) &&
+    cssMarkedLine(c, RAWMD_PIN_MARKER) === rawMdPinBuild(stripped)
+  );
 }
 function rawMdSet(c: string, on: boolean): string {
   if (!on) return rawMdStrip(c);
   if (rawMdCurrentOn(c) === true) return c; // stable: no rewrite on re-apply
   const stripped = rawMdStrip(c);
   if (!rawMdAnchorsPresent(stripped)) return c; // can't build here
-  return rawMdApplyInline(stripped);
+  const line = rawMdPinBuild(stripped);
+  if (line === undefined) return c;
+  return `${rawMdApplyInline(stripped)}\n${line}`;
 }
 
 // The css side-effect: the host's positioning context, the raw block's own
@@ -4234,7 +4265,7 @@ function rawMdSet(c: string, on: boolean): string {
 // text it covers, and the host stretches inside a turn so it hangs at the
 // message's right edge rather than drifting with each response's longest line.
 // The button pins inside it, clearing the turn header stuck at the top of the
-// chat by the height the rail's ref callback measures. z-index puts it in the
+// chat by the height the pin line measures. z-index puts it in the
 // header's own layer, where tree order paints it on top: should an offset ever
 // go stale the button overlaps the header instead of vanishing under it.
 function rawMdCssBuild(_css: string): string | undefined {

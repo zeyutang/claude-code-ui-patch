@@ -10,8 +10,8 @@
 //   node scripts/cdp-driver.mjs scripts/repro/raw-markdown.mjs 900 700
 //
 // The CSS mirrors rawMdCssBuild in src/patcher.ts, the DOM mirrors the shape
-// its four inline fragments produce, and measureTurns mirrors what the rail's
-// ref callback publishes; keep all of it in sync. The anchor checks parse the
+// its four inline fragments produce, and pinJs mirrors the IIFE of its pin
+// line, which runs here for real; keep all of it in sync. The anchor checks parse the
 // live bundle, so they double as a drift canary for the point. The live bundle
 // is found under ~/.vscode/extensions (newest Claude Code install) or via
 // $CCUP_BUNDLE (the webview directory).
@@ -41,10 +41,10 @@ const MSGS_RE = /messagesContainer:"messagesContainer_([-\w]+)"/;
 const STICKY_MODE_RE = /stickyMode:"stickyMode_([-\w]+)"/;
 const TOOL_RESULT_RE = /toolResult:"toolResult_([-\w]+)"/;
 const THINKING_RE = /thinkingContent:"thinkingContent_([-\w]+)"/;
-// The two the rail's ref callback walks to find the header it measures; both
-// are anchors of the point, so a rename has to show up here as well.
-const TURN_RE = /turn:"turn_([-\w]+)"/;
+// The pin line's two class-map anchors (MSGS_RE above is the other): a rename
+// has to show up here as well. TURN_RE only shapes the replica.
 const STICKY_RE = /stickyHeader:"stickyHeader_([-\w]+)"/;
+const TURN_RE = /turn:"turn_([-\w]+)"/;
 const USER_MSG_RE = /userMessage:"userMessage_([-\w]+)"/;
 const USER_CONT_RE = /userMessageContainer:"userMessageContainer_([-\w]+)"/;
 // The native paragraph rule the spacing knob rewrites, whose `>:first-child`
@@ -92,6 +92,28 @@ function rawMdCss() {
     ".ccup-rawmd-btn:hover,.ccup-rawmd-btn[aria-pressed=true]" +
     "{color:var(--app-primary-foreground);border-color:var(--app-secondary-foreground)}" +
     ".ccup-rawmd-btn svg{display:block;width:16px;height:16px}"
+  );
+}
+
+// rawMdPinBuild's IIFE, minus the marker comment.
+function pinJs(chat, sticky) {
+  return (
+    "(function(){try{" +
+    "if(window.__ccupRawMdPin)return;window.__ccupRawMdPin=1;" +
+    "var raf=0;" +
+    `function upd(){raf=0;var cs=document.querySelectorAll(".messagesContainer_${chat}");` +
+    `for(var k=0;k<cs.length;k++){var t=cs[k],hs=t.querySelectorAll(".stickyHeader_${sticky}"),` +
+    "top=t.getBoundingClientRect().top+1,lo=0,hi=hs.length-1,i=-1,v=0;" +
+    "while(lo<=hi){var m=(lo+hi)>>1;if(hs[m].getBoundingClientRect().top<=top){i=m;lo=m+1}else hi=m-1}" +
+    "if(i>=0){var r=hs[i].getBoundingClientRect();if(r.top>=top-3)v=r.height}" +
+    'if(t.__ccupRawMdTop!==v){t.__ccupRawMdTop=v;t.style.setProperty("--ccup-rawmd-top",v+"px")}}}' +
+    "function que(){if(!raf)raf=requestAnimationFrame(upd)}" +
+    'document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);' +
+    "new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var r=rs[i],tg=r.target;" +
+    `if(r.type!=="attributes"||r.attributeName!=="style"||!tg.classList||!tg.classList.contains("messagesContainer_${chat}")){que();return}}})` +
+    '.observe(document.body,{childList:!0,subtree:!0,attributes:!0,attributeFilter:["class","style"]});' +
+    "que()" +
+    "}catch(e){}})();"
   );
 }
 
@@ -235,12 +257,15 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
 
   try {
     await ctx.navigate(`http://127.0.0.1:${port}/`);
-    // Three turns in a real scroller. Turn one holds one .message_ per case:
+    // Four turns in a real scroller. Turn one holds one .message_ per case:
     // `native` is the shape the bundle renders on its own; `patched` is the
     // same content behind the host div; `counter` puts the button inside the
     // root span instead, which is what the host div exists to avoid. Turn two
-    // is the pinning case (a two-line header, a response taller than the
-    // scrollport), turn three only gives turn two something to scroll past.
+    // is the pinning case (a multi-line header, a response taller than the
+    // scrollport). Turn three is the folded case the bundle produces for a
+    // message sent while Claude is busy: two sticky headers in one turn, the
+    // later and taller one taking the top over. Turn four only gives the
+    // others something to scroll past.
     const built = await ctx.evaluate(`(() => {
       const md = ${JSON.stringify(md)}, msg = ${JSON.stringify(msg)};
       const cont = ${JSON.stringify(cont)}, mode = ${JSON.stringify(mode)};
@@ -285,6 +310,19 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
             'so that the header it pins is plainly taller than a one-liner and ' +
             'no hardcoded offset could have stood in for measuring it.') +
           resp('long', host(root(long), false))) +
+        asTurn('turn-fold',
+          header('head-fold1', 'A short prompt.') +
+          resp('fold-a', host(root(prose), false)) +
+          header('head-fold2', 'A follow-up sent while Claude was still working, ' +
+            'long enough to wrap onto several lines, folded into the same turn as a ' +
+            'second sticky header that takes the top over once it scrolls past.') +
+          resp('fold-b', host(root(long), false))) +
+        asTurn('turn-open',
+          header('head-open', Array.from({ length: 30 }, (_, i) =>
+            'Line ' + (i + 1) + ' of a prompt opened with Show more, which the ' +
+            'expandedHeader fix unsticks so it scrolls away like content.').join('<br>'))
+            .replace('id="head-open"', 'id="head-open" style="position:relative"') +
+          resp('open', host(root(long), false))) +
         asTurn('turn-tail',
           header('head-tail', 'A later prompt.') +
           resp('tail', host(root(long), false))) +
@@ -302,25 +340,18 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       return true;
     })()`);
 
-    // Mirror of the rail's ref callback: each turn publishes its own header's
-    // border-box height, which the rails inside inherit as their pinned offset.
-    const measureTurns = () =>
-      ctx.evaluate(`(() => {
-        const out = {};
-        for (const t of document.querySelectorAll('.turn_${turn}')) {
-          const h = t.querySelector('.stickyHeader_${sticky}');
-          if (!h) continue;
-          const v = h.getBoundingClientRect().height;
-          t.style.setProperty('--ccup-rawmd-top', v + 'px');
-          out[t.id] = +v.toFixed(2);
-        }
-        return out;
-      })()`);
-    const heads = await measureTurns();
+    // The point's own pin line, run for real: it publishes the stuck header's
+    // height on the scroller as --ccup-rawmd-top from here on.
+    await ctx.evaluate(pinJs(cont, sticky));
+    await ctx.sleep(80);
+    const heads = await ctx.evaluate(`(() => {
+      const h = (id) => +document.getElementById(id).getBoundingClientRect().height.toFixed(2);
+      return { cases: h('head-cases'), long: h('head-long'), fold1: h('head-fold1'), fold2: h('head-fold2') };
+    })()`);
     check(
-      "each turn publishes its own header height",
-      heads["turn-cases"] > 20 && heads["turn-long"] > heads["turn-cases"],
-      `cases=${heads["turn-cases"]} long=${heads["turn-long"]}`,
+      "the replica's headers differ in height",
+      heads.cases > 20 && heads.long > heads.cases && heads.fold2 > heads.fold1,
+      JSON.stringify(heads),
     );
 
     const probe = async () =>
@@ -361,7 +392,7 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
               scrollW: pre.scrollWidth, clientW: pre.clientWidth } : null,
           };
         };
-        const ids = ['native','patched','rawon','nested','thinking','counter','long','tail'];
+        const ids = ['native','patched','rawon','nested','thinking','counter','long','fold-a','fold-b','open','tail'];
         const out = {};
         for (const id of ids) { try { out[id] = read(id); } catch (e) { out[id] = String(e); } }
         out.native = (() => { const t = document.getElementById('native');
@@ -373,10 +404,19 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
         out.scroller = { ...box(sc), scrollTop: num(sc.scrollTop),
                          scrollH: sc.scrollHeight, clientH: sc.clientHeight };
         out.headLong = box(document.getElementById('head-long'));
+        out.headFold1 = box(document.getElementById('head-fold1'));
+        out.headFold2 = box(document.getElementById('head-fold2'));
+        out.headOpen = box(document.getElementById('head-open'));
+        out.pinned = parseFloat(getComputedStyle(sc).getPropertyValue('--ccup-rawmd-top')) || 0;
         return out;
       })()`);
 
     let r = await probe();
+    check(
+      "nothing stuck at the very start reads 0",
+      r.pinned === 0 && r.scroller.scrollTop === 0,
+      `var=${r.pinned} scrollTop=${r.scroller.scrollTop}`,
+    );
     // --- scope: only a response's own text block gets a rail --------------
     check(
       "response rail is laid out",
@@ -526,16 +566,21 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     });
     await ctx.sleep(250);
     r = await probe();
-    const wantTop = r.scroller.y + heads["turn-long"] + GAP;
+    const wantTop = r.scroller.y + heads.long + GAP;
     check(
       "the long response's own top is above the scrollport",
       r.long.host.y < r.scroller.y - 100,
       `host top=${r.long.host.y} scrollport top=${r.scroller.y} scrollTop=${midway}`,
     );
     check(
+      "the pin line publishes the stuck header's height",
+      Math.abs(r.pinned - heads.long) < 0.6,
+      `var=${r.pinned} header=${heads.long}`,
+    );
+    check(
       "button pins under the header stuck to the top of the chat",
       Math.abs(r.long.btn.y - wantTop) < 1,
-      `btn top=${r.long.btn.y} want=${wantTop} (header=${heads["turn-long"]} + gap=${GAP})`,
+      `btn top=${r.long.btn.y} want=${wantTop} (header=${heads.long} + gap=${GAP})`,
     );
     check(
       "the gap is measured off the pinned header, not guessed",
@@ -576,8 +621,87 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     );
     check(
       "the next turn's own button pins under its own header",
-      r.tail.btn.y >= r.scroller.y - 0.5,
-      `tail btn top=${r.tail.btn.y} scrollport top=${r.scroller.y}`,
+      r["fold-a"].btn.y >= r.scroller.y - 0.5,
+      `fold-a btn top=${r["fold-a"].btn.y} scrollport top=${r.scroller.y}`,
+    );
+
+    // --- the folded case: a second, taller header in the same turn ---------
+    // Scroll into the second response of the folded turn: its own top is above
+    // the scrollport, the folded header is the one stuck to the top, and the
+    // turn's first header is under it in the pile.
+    await ctx.evaluate(`(() => {
+      const sc = document.getElementById('scroller');
+      const host = document.querySelector('#fold-b .ccup-rawmd-host');
+      sc.scrollTop += host.getBoundingClientRect().top - sc.getBoundingClientRect().top + 200;
+      return true;
+    })()`);
+    await ctx.sleep(120);
+    r = await probe();
+    await ctx.cdp("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: r["fold-b"].host.x + 40,
+      y: r.scroller.y + r.scroller.clientH / 2,
+      buttons: 0,
+    });
+    await ctx.sleep(250);
+    r = await probe();
+    check(
+      "folded case: both headers of the turn are stuck at the top",
+      Math.abs(r.headFold1.y - r.scroller.y) < 1 &&
+        Math.abs(r.headFold2.y - r.scroller.y) < 1,
+      `first=${r.headFold1.y} folded=${r.headFold2.y} scrollport=${r.scroller.y}`,
+    );
+    check(
+      "folded case: the pin line picks the later, taller header",
+      Math.abs(r.pinned - heads.fold2) < 0.6,
+      `var=${r.pinned} first=${heads.fold1} folded=${heads.fold2}`,
+    );
+    check(
+      "folded case: the button clears the folded header, not the first",
+      Math.abs(r["fold-b"].btn.y - r.headFold2.bottom - GAP) < 1 &&
+        r["fold-b"].btn.y > r.headFold1.bottom + GAP + 1,
+      `btn top=${r["fold-b"].btn.y} folded bottom=${r.headFold2.bottom} first bottom=${r.headFold1.bottom}`,
+    );
+    check(
+      "folded case: the pinned button is on top and clickable",
+      r["fold-b"].hit === "ccup-rawmd-btn",
+      r["fold-b"].hit,
+    );
+    await ctx.shot("folded");
+
+    // --- an unstuck header (the expandedHeader fix's expanded prompt) ------
+    // It scrolls clean past like content, so inside its response nothing is
+    // stuck to the top and the button pins to the scrollport top itself.
+    await ctx.evaluate(`(() => {
+      const sc = document.getElementById('scroller');
+      const host = document.querySelector('#open .ccup-rawmd-host');
+      sc.scrollTop += host.getBoundingClientRect().top - sc.getBoundingClientRect().top + 200;
+      return true;
+    })()`);
+    await ctx.sleep(120);
+    r = await probe();
+    await ctx.cdp("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: r.open.host.x + 40,
+      y: r.scroller.y + r.scroller.clientH / 2,
+      buttons: 0,
+    });
+    await ctx.sleep(250);
+    r = await probe();
+    check(
+      "unstuck case: the tall header has scrolled clean past",
+      r.headOpen.bottom < r.scroller.y && r.headOpen.h > r.scroller.clientH / 2,
+      `head bottom=${r.headOpen.bottom} h=${r.headOpen.h} chat top=${r.scroller.y}`,
+    );
+    check(
+      "unstuck case: the pin line reads nothing stuck",
+      r.pinned === 0,
+      `var=${r.pinned}`,
+    );
+    check(
+      "unstuck case: the button pins to the scrollport top",
+      Math.abs(r.open.btn.y - r.scroller.y - GAP) < 1,
+      `btn top=${r.open.btn.y} chat top=${r.scroller.y}`,
     );
 
     // --- raw mode ----------------------------------------------------------

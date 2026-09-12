@@ -169,7 +169,7 @@
         "claudeCodeUiPatch.chatRawMarkdownButton": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show a button at each agent response's top-right corner, on hover, that swaps the rendered markdown for its source. The raw view follows `#claudeCodeUiPatch.codeFontFamily#` and `#claudeCodeUiPatch.chatCodeBlockFontSize#`."
+          "markdownDescription": "Show a button on each agent response, on hover, that swaps the rendered markdown for its source. It rides the response's right edge, pinning under the user message stuck to the top of the chat on a long response. The raw view follows `#claudeCodeUiPatch.codeFontFamily#` and `#claudeCodeUiPatch.chatCodeBlockFontSize#`."
         },
         "claudeCodeUiPatch.chatInputCtrlUpDownToHistory": {
           "type": "boolean",

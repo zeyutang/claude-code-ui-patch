@@ -2,9 +2,10 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
-## 1.5.2
+## Unreleased
 
-- New `chatRawMarkdownButton` setting: each agent response grows a button at its top-right corner, on hover, that swaps the rendered markdown for the source Claude wrote and back.
+- New `chatRawMarkdownButton` setting: each agent response grows a button, on hover, that swaps the rendered markdown for the source Claude wrote and back.
+  The button rides the response's right edge, pinning under the user message stuck to the top of the chat once the response's own top scrolls away.
   The raw view follows your chat code font and size, and each response switches on its own.
 
 ## 1.5.1

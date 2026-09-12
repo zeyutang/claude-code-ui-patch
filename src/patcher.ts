@@ -3972,10 +3972,14 @@ function uceSet(c: string, on: boolean): string {
 // block through one shared markdown component, so what Claude actually wrote
 // (table pipes, link targets, list markers, a fence's language tag, the literal
 // TeX behind a formula) is only ever visible as rendered output. When ON each
-// response grows a button at its top-right corner, on hover, that swaps the
-// rendered tree for the markdown source and back. The state is per block, so
-// one response can read as source while the rest of the transcript stays
-// rendered, and it resets to rendered when the webview reloads.
+// response grows a button, on hover, that swaps the rendered tree for the
+// markdown source and back. The button rides the response's right edge: it sits
+// at the block's top-right corner while that corner is in view, and once the
+// block scrolls past it pins just under the turn header stuck to the top of the
+// chat, so a long response keeps the toggle a click away at any scroll depth.
+// It matches the jump pair's 26px square. The state is per block, so one
+// response can read as source while the rest of the transcript stays rendered,
+// and it resets to rendered when the webview reloads.
 //
 // The source needs no reconstruction: the component takes
 // `{content,context,isPartialText}`, and `content` is the markdown string as it
@@ -3986,14 +3990,31 @@ function uceSet(c: string, on: boolean): string {
 //   hook   a useState pair appended to the component's own hook chain, holding
 //          this block's raw/rendered flag (appending keeps hook order stable)
 //   wrapA  opens a position:relative <div> host around the component's root
-//          <span>. The host is what the button anchors to: the root span is
+//          <span>. The host is what the rail anchors to: the root span is
 //          inline (its width and overflow-x declarations are inert on an inline
 //          box), so it can never be a containing block itself, and its
 //          `>:first-child{margin-top:0}` rule means a button placed inside it
 //          would steal that reset from the response's first paragraph.
 //   pre    a ternary at the head of the root span's children: raw mode renders
 //          <pre><code>{content}</code></pre> in place of the markdown element
-//   wrapB  the button, then the host's closing bracket
+//   wrapB  the button inside its rail, then the host's closing bracket
+//
+// The rail is what lets the button ride: a layout-inert position:absolute strip
+// (top:0;bottom:0;right:0, pointer-events:none) down the block's right edge,
+// with the button position:sticky inside it. Sticky measures from the
+// scrollport, so the offset has to clear whatever user turn header is pinned
+// there, and that height is no constant (a header is a user message, wrapping
+// to as many lines as it needs). The rail's ref callback therefore parks one
+// ResizeObserver on its own turn's header, reached by the same
+// `closest(.turn)>.stickyHeader` hop the bundle's own scroll-into-view helpers
+// take, and writes the measured border-box height into --ccup-rawmd-top on the
+// turn, where every rail inside inherits it, with the CSS adding a 6px gap.
+// Nothing is measured during React's commit: the observer's first delivery carries the
+// size, so no ref forces a layout, and a rail mounting later (a second text
+// block, a re-render) inherits the turn's var with no work at all. The observer
+// is parked on the header it watches, so the two fall out of reach together.
+// With no pinned header (the transcript preview, non-sticky layouts) the var
+// stays unset and the button sticks to the scrollport top.
 //
 // Reading the `content` prop rather than the initialized local is what keeps
 // this composable with chatMathRendering: that patch routes the local through
@@ -4010,14 +4031,16 @@ function uceSet(c: string, on: boolean): string {
 // Our own CSS only has to drop the UA <pre> margin and let long source lines
 // wrap.
 //
-// Scope: the button is CSS-gated to responses, via
-// `[data-testid="assistant-message"]>.ccup-rawmd-host>.ccup-rawmd-btn`.
+// Scope: the rail is CSS-gated to responses, via
+// `[data-testid="assistant-message"]>.ccup-rawmd-host>.ccup-rawmd-rail`.
 // Thinking blocks, tool-result text, compact summaries, banner copy and
 // slash-command output all render through the same component but sit deeper in
 // the tree, so the selector passes them over and their flag never leaves
 // "rendered". That testid joins the anchor set: without it the button can never
 // paint, so the point reports missing rather than writing in a feature nothing
-// can reach.
+// can reach. The turn and stickyHeader class-map hashes join it for the same
+// reason: with no header to measure the button would pin behind the one stuck
+// to the top, so a build that renames either key reports missing too.
 // ---------------------------------------------------------------------------
 
 const RAWMD_HOOK_MARKER = "/*ccup:rawMdHook*/";
@@ -4030,8 +4053,19 @@ const RAWMD_FRAG_RE =
 const RAWMD_CSS_MARKER = "/*ccup:rawMdCss*/";
 
 const RAWMD_HOST_CLASS = "ccup-rawmd-host";
+const RAWMD_RAIL_CLASS = "ccup-rawmd-rail";
 const RAWMD_BTN_CLASS = "ccup-rawmd-btn";
 const RAWMD_PRE_CLASS = "ccup-rawmd";
+// The pinned header's height, written on the turn by the rail's ref callback.
+const RAWMD_TOP_VAR = "--ccup-rawmd-top";
+// Gap between that header's bottom edge and the pinned button.
+const RAWMD_GAP = 6;
+// The jump pair's square, so the two read as one family.
+const RAWMD_BTN_SIZE = 26;
+const RAWMD_ICON_SIZE = 16;
+// Expando on the sticky header: its own size observer, parked there so header
+// and observer become unreachable together.
+const RAWMD_RO_PROP = "__ccupRawMdRo";
 // Injected locals. The bundle is minified to short identifiers and vendors
 // nothing prefixed "ccup", so these cannot shadow anything.
 const RAWMD_ON = "ccupRawOn";
@@ -4065,6 +4099,11 @@ const RAWMD_TAIL_RE =
 // The attribute the CSS gate keys on, so a build that drops it reports missing.
 const RAWMD_TESTID_RE = /"data-testid":"assistant-message"/;
 
+// The two class-map hashes the rail's ref callback needs to find the turn
+// header whose height sets the pinned offset.
+const RAWMD_TURN_HASH_RE = /turn:"turn_([-\w]+)"/;
+const RAWMD_STICKY_HASH_RE = /stickyHeader:"stickyHeader_([-\w]+)"/;
+
 // The markdown mark (rounded tag, M, descending arrow), drawn in currentColor
 // with single-quoted attributes so the markup embeds in a double-quoted JS
 // string without escaping.
@@ -4078,9 +4117,32 @@ const RAWMD_ICON =
 const RAWMD_TIP = "Show raw markdown";
 const RAWMD_TIP_ON = "Show rendered response";
 
+// The rail's ref callback: park one ResizeObserver on this turn's sticky
+// header and let it publish the header's border-box height on the turn, where
+// every rail inside inherits it as the pinned offset. Reading the entry's own
+// borderBoxSize keeps the measurement out of React's commit and off the layout
+// path; offsetHeight is the fallback for an entry without it. An inline ref
+// churns (React detaches and reattaches it on every render of the block), which
+// is what re-arms this if React ever replaces the header node under it.
+function rawMdRailRef(turn: string, sticky: string): string {
+  return (
+    `ref:function(e){try{if(!e)return;` +
+    `var t=e.closest(".turn_${turn}");if(!t)return;` +
+    `var h=t.querySelector(".stickyHeader_${sticky}");` +
+    `if(!h||h.${RAWMD_RO_PROP}||!window.ResizeObserver)return;` +
+    `h.${RAWMD_RO_PROP}=new ResizeObserver(function(s){` +
+    `var b=s[0].borderBoxSize,v=b&&b[0]?b[0].blockSize:h.offsetHeight,` +
+    `q=h.closest(".turn_${turn}");` +
+    `if(q)q.style.setProperty("${RAWMD_TOP_VAR}",v+"px")});` +
+    `h.${RAWMD_RO_PROP}.observe(h)}catch(x){}}`
+  );
+}
+
 function rawMdAnchorsPresent(c: string): boolean {
   return (
     RAWMD_TESTID_RE.test(c) &&
+    RAWMD_TURN_HASH_RE.test(c) &&
+    RAWMD_STICKY_HASH_RE.test(c) &&
     RAWMD_HOOK_RE.test(c) &&
     RAWMD_RET_RE.test(c) &&
     RAWMD_TAIL_RE.test(c)
@@ -4097,7 +4159,9 @@ function rawMdStrip(c: string): string {
 // anchors; each is unique, so the non-global replaces hit exactly one site).
 function rawMdApplyInline(c: string): string {
   const content = c.match(RAWMD_HOOK_RE)?.[2];
-  if (content === undefined) return c;
+  const turn = c.match(RAWMD_TURN_HASH_RE)?.[1];
+  const sticky = c.match(RAWMD_STICKY_HASH_RE)?.[1];
+  if (content === undefined || !turn || !sticky) return c;
   let out = c.replace(
     RAWMD_HOOK_RE,
     (_w, head, _content, _partial, useState, comma) =>
@@ -4126,12 +4190,14 @@ function rawMdApplyInline(c: string): string {
     (_w, tail, _menu, single, brace) =>
       `${tail}${rawMdFrag(
         RAWMD_WRAPB_MARKER,
-        `,${single}("button",{type:"button",className:"${RAWMD_BTN_CLASS}",` +
+        `,${single}("div",{className:"${RAWMD_RAIL_CLASS}",` +
+          `${rawMdRailRef(turn, sticky)},children:` +
+          `${single}("button",{type:"button",className:"${RAWMD_BTN_CLASS}",` +
           `title:${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
           `"aria-label":${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
           `"aria-pressed":${RAWMD_ON},` +
           `onClick:function(){${RAWMD_SET}(!${RAWMD_ON})},` +
-          `dangerouslySetInnerHTML:{__html:"${RAWMD_ICON}"}})]})`,
+          `dangerouslySetInnerHTML:{__html:"${RAWMD_ICON}"}})})]})`,
       )}${brace}`,
   );
   return out;
@@ -4160,32 +4226,44 @@ function rawMdSet(c: string, on: boolean): string {
 }
 
 // The css side-effect: the host's positioning context, the raw block's own
-// (deliberately short) rules, and the button. Layout for the button is
-// unconditional, its `display` is not: only a text block that is a direct child
-// of an assistant turn gets one, which is what keeps the button off thinking
-// blocks, tool-result text and the other surfaces the component serves. The
-// host stretches inside a turn so the button sits at the message's right edge
-// rather than drifting with each response's longest line.
+// (deliberately short) rules, the rail, and the button. The rail carries the
+// scope gate: only a text block that is a direct child of an assistant turn
+// grows one, which is what keeps the button off thinking blocks, tool-result
+// text and the other surfaces the component serves. It is absolute and
+// pointer-events:none, so it neither takes flow space nor shadows the column of
+// text it covers, and the host stretches inside a turn so it hangs at the
+// message's right edge rather than drifting with each response's longest line.
+// The button pins inside it, clearing the turn header stuck at the top of the
+// chat by the height the rail's ref callback measures. z-index puts it in the
+// header's own layer, where tree order paints it on top: should an offset ever
+// go stale the button overlaps the header instead of vanishing under it.
 function rawMdCssBuild(_css: string): string | undefined {
+  const rail =
+    "display:none;position:absolute;top:0;right:0;bottom:0;" +
+    `width:${RAWMD_BTN_SIZE}px;pointer-events:none`;
   const btn =
-    "box-sizing:border-box;display:none;position:absolute;top:0;right:0;" +
-    "align-items:center;justify-content:center;width:22px;height:22px;margin:0;padding:0;" +
+    "box-sizing:border-box;display:flex;position:sticky;" +
+    `top:calc(var(${RAWMD_TOP_VAR},0px) + ${RAWMD_GAP}px);` +
+    "align-items:center;justify-content:center;" +
+    `width:${RAWMD_BTN_SIZE}px;height:${RAWMD_BTN_SIZE}px;margin:0;padding:0;` +
     "border:1px solid var(--app-input-border);border-radius:5px;" +
     "background:var(--app-input-secondary-background);color:var(--app-secondary-foreground);" +
     "box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;pointer-events:none;" +
-    "transition:opacity .15s ease";
+    "transition:opacity .15s ease;z-index:2";
   const lit = "opacity:1;pointer-events:auto";
   const on = `color:var(--app-primary-foreground);border-color:var(--app-secondary-foreground)`;
   return (
     `${RAWMD_CSS_MARKER}.${RAWMD_HOST_CLASS}{position:relative}` +
     `[data-testid="assistant-message"]>.${RAWMD_HOST_CLASS}{align-self:stretch}` +
     `.${RAWMD_PRE_CLASS}{margin:0;white-space:pre-wrap;overflow-wrap:break-word;tab-size:4}` +
+    `.${RAWMD_RAIL_CLASS}{${rail}}` +
+    `[data-testid="assistant-message"]>.${RAWMD_HOST_CLASS}>.${RAWMD_RAIL_CLASS}{display:block}` +
     `.${RAWMD_BTN_CLASS}{${btn}}` +
-    `[data-testid="assistant-message"]>.${RAWMD_HOST_CLASS}>.${RAWMD_BTN_CLASS}{display:flex}` +
-    `.${RAWMD_HOST_CLASS}:hover>.${RAWMD_BTN_CLASS},.${RAWMD_BTN_CLASS}:focus-visible,` +
+    `.${RAWMD_HOST_CLASS}:hover .${RAWMD_BTN_CLASS},.${RAWMD_BTN_CLASS}:focus-visible,` +
     `.${RAWMD_BTN_CLASS}[aria-pressed=true]{${lit}}` +
     `.${RAWMD_BTN_CLASS}:hover,.${RAWMD_BTN_CLASS}[aria-pressed=true]{${on}}` +
-    `.${RAWMD_BTN_CLASS} svg{display:block;width:14px;height:14px}`
+    `.${RAWMD_BTN_CLASS} svg{display:block;` +
+    `width:${RAWMD_ICON_SIZE}px;height:${RAWMD_ICON_SIZE}px}`
   );
 }
 

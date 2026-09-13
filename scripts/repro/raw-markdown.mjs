@@ -4,8 +4,9 @@
 // thinking block), that the <div> host the patch wraps around the markdown root
 // and the rail it hangs off are both layout-inert, that the button pins under
 // the turn header stuck to the top of the chat once its response scrolls past,
-// and that the raw block inherits the chat's code font with none of a code
-// block's chrome.
+// that it rides the response's LEFT edge and so leaves a code block's own copy
+// button (absolute at the top right of every fence) clickable, and that the raw
+// block inherits the chat's code font with none of a code block's chrome.
 //
 //   node scripts/cdp-driver.mjs scripts/repro/raw-markdown.mjs 900 700
 //
@@ -36,6 +37,18 @@ const FRAG_RE =
 
 // --- CSS-module hashes the replica needs ------------------------------------
 const MD_ROOT_RE = /\.root_([-\w]+) code\{font-family/; // stylesheet, not js
+// The markdown module ties the root span, a fence's wrapper and the class that
+// positions its copy button to one hash; the shared copy-button module carries
+// that button's own box. Together they are the clearance check's anchor: a
+// build that moves the copy button off the top right has to show up here.
+const MD_MODULE_RE =
+  /root:"root_([-\w]+)",codeBlockWrapper:"codeBlockWrapper_\1",copyButton:"copyButton_\1"/;
+const COPY_MODULE_RE =
+  /copyButton:"copyButton_([-\w]+)",copyIcon:"copyIcon_([-\w]+)"/;
+const COPY_POS_RE = (h) =>
+  new RegExp(
+    `\\.copyButton_${h}\\{position:absolute;top:(\\d+)px;right:(\\d+)px\\}`,
+  );
 const TIMELINE_RE = /timelineMessage:"timelineMessage_([-\w]+)"/;
 const MSGS_RE = /messagesContainer:"messagesContainer_([-\w]+)"/;
 const STICKY_MODE_RE = /stickyMode:"stickyMode_([-\w]+)"/;
@@ -55,6 +68,7 @@ const PARA_RE =
 const PARA_MULT = 3; // an off-native chatHistoryParagraphSpacing, for the reset check
 const GAP = 6; // rawMdCssBuild's RAWMD_GAP
 const SIZE = 26; // rawMdCssBuild's RAWMD_BTN_SIZE
+const DIM = 0.4; // rawMdCssBuild's RAWMD_DIM
 
 function liveBundleDir() {
   if (process.env.CCUP_BUNDLE) return process.env.CCUP_BUNDLE;
@@ -69,7 +83,7 @@ function liveBundleDir() {
 // rawMdCssBuild's output, minus the marker comment.
 function rawMdCss() {
   const rail =
-    "display:none;position:absolute;top:0;right:0;bottom:0;" +
+    "display:none;position:absolute;top:0;left:0;bottom:0;" +
     `width:${SIZE}px;pointer-events:none`;
   const btn =
     "box-sizing:border-box;display:flex;position:sticky;" +
@@ -89,6 +103,9 @@ function rawMdCss() {
     `.ccup-rawmd-btn{${btn}}` +
     ".ccup-rawmd-host:hover .ccup-rawmd-btn,.ccup-rawmd-btn:focus-visible," +
     ".ccup-rawmd-btn[aria-pressed=true]{opacity:1;pointer-events:auto}" +
+    `.ccup-rawmd-btn[aria-pressed=true]{opacity:${DIM}}` +
+    ".ccup-rawmd-host:hover .ccup-rawmd-btn[aria-pressed=true]," +
+    ".ccup-rawmd-btn[aria-pressed=true]:focus-visible{opacity:1;pointer-events:auto}" +
     ".ccup-rawmd-btn:hover,.ccup-rawmd-btn[aria-pressed=true]" +
     "{color:var(--app-primary-foreground);border-color:var(--app-secondary-foreground)}" +
     ".ccup-rawmd-btn svg{display:block;width:16px;height:16px}"
@@ -128,12 +145,20 @@ function paraCss(hash, top, bottom) {
   );
 }
 
+// rawMdApplyInline's RAWMD_ICON, so the shots carry the real mark.
+const ICON =
+  "<svg viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.3' " +
+  "stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'>" +
+  "<rect x='1.4' y='3.4' width='13.2' height='9.2' rx='1.8'/>" +
+  "<path d='M4.1 10.3V5.9l1.95 2.4 1.95-2.4v4.4'/>" +
+  "<path d='M11.4 5.9v4.4'/><path d='M9.9 8.6l1.5 1.7 1.5-1.7'/></svg>";
+
 const PROSE = [
   "<p>Here are the seven calls, each with the principle it rests on and why the read's own text forces it.</p>",
   "<p>Section names refer to <a href='#'>seam-protocol.md</a> throughout.</p>",
 ].join("");
 // A response tall enough to scroll through, so the pinned button has somewhere
-// to ride: its top-right corner leaves the view long before its bottom does.
+// to ride: its top-left corner leaves the view long before its bottom does.
 const LONG = Array.from(
   { length: 14 },
   (_, i) =>
@@ -141,6 +166,14 @@ const LONG = Array.from(
     `out of view while the rest of it is still being read, which is the whole ` +
     `case the pinned button exists for.</p>`,
 ).join("");
+// The case the left edge exists for: a response that opens with a fence, whose
+// own copy button sits at the top right of the very first thing in the block.
+const FENCE = [
+  "Add a button to read a reply's markdown source",
+  "",
+  "* new opt-in setting, off by default",
+  "* splice a toggle beside the copy button",
+].join("\n");
 const RAW = [
   "Here are the seven calls, each with the principle it rests on.",
   "",
@@ -188,6 +221,8 @@ export async function run(ctx) {
   const sticky = js.match(STICKY_RE)?.[1];
   const uMsg = js.match(USER_MSG_RE)?.[1];
   const uCont = js.match(USER_CONT_RE)?.[1];
+  const mdMod = js.match(MD_MODULE_RE)?.[1];
+  const copyMod = js.match(COPY_MODULE_RE)?.[1];
   const para = css.match(PARA_RE);
   if (
     !check(
@@ -203,9 +238,11 @@ export async function run(ctx) {
         sticky &&
         uMsg &&
         uCont &&
+        mdMod &&
+        copyMod &&
         para,
       ),
-      `md=${md} msg=${msg} turn=${turn} sticky=${sticky} tool=${tool} thinking=${think}`,
+      `md=${md} msg=${msg} turn=${turn} sticky=${sticky} tool=${tool} thinking=${think} copy=${copyMod}`,
     )
   ) {
     return false;
@@ -215,6 +252,19 @@ export async function run(ctx) {
     !/display:/.test(
       (css.match(new RegExp(`\\.root_${md}\\{([^}]*)\\}`)) ?? ["", ""])[1],
     ),
+  );
+  check(
+    "a fence's wrapper and copy button share the markdown module's hash",
+    mdMod === md,
+    `module=${mdMod} stylesheet=${md}`,
+  );
+  // Why the button hangs off the left: the right edge of every fence is spoken
+  // for. If this ever stops matching, the rail could go back to the right.
+  const copyPos = css.match(COPY_POS_RE(md));
+  check(
+    "a fence's copy button is absolute at its own top right",
+    Boolean(copyPos),
+    copyPos ? `top:${copyPos[1]}px right:${copyPos[2]}px` : "not at top/right",
   );
   check(
     "turn headers are what pins to the top of the chat",
@@ -273,12 +323,21 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       const turn = ${JSON.stringify(turn)}, sticky = ${JSON.stringify(sticky)};
       const uMsg = ${JSON.stringify(uMsg)}, uCont = ${JSON.stringify(uCont)};
       const prose = ${JSON.stringify(PROSE)}, long = ${JSON.stringify(LONG)};
-      const raw = ${JSON.stringify(RAW)};
+      const raw = ${JSON.stringify(RAW)}, fence = ${JSON.stringify(FENCE)};
+      const copyMod = ${JSON.stringify(copyMod)};
+      const icon = ${JSON.stringify(ICON)};
       const btn = (pressed) =>
         '<button type="button" class="ccup-rawmd-btn"' +
         (pressed ? ' aria-pressed="true"' : ' aria-pressed="false"') +
-        '><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"></svg></button>';
+        '>' + icon + '</button>';
       const root = (inner) => '<span class="root_' + md + '">' + inner + '</span>';
+      // The shape ML0 renders: the copy button first, then the <pre>.
+      const fenceBlock = (src) =>
+        '<div class="codeBlockWrapper_' + md + '">' +
+        '<button type="button" class="copyButton_' + copyMod + ' copyButton_' + md +
+        '" title="Copy code" aria-label="Copy code to clipboard">' +
+        '<svg class="copyIcon_' + copyMod + '" viewBox="0 0 16 16"></svg></button>' +
+        '<pre><code>' + src.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</code></pre></div>';
       const resp = (id, inner) =>
         '<div class="message_' + msg + ' timelineMessage_' + msg +
         '" data-testid="assistant-message" data-transcript-message="" id="' + id + '">' +
@@ -304,6 +363,7 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
             '</div>') +
           resp('thinking', '<div class="thinkingContent_' + think + '">' +
             host(root('<p>A thinking block, same component.</p>'), false) + '</div>') +
+          resp('codelead', host(root(fenceBlock(fence) + prose), false)) +
           resp('counter', '<span class="root_' + md + '">' + btn(false) + prose + '</span>')) +
         asTurn('turn-long',
           header('head-long', 'A prompt long enough to wrap onto several lines, ' +
@@ -361,6 +421,14 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
           return { x: num(r.left), y: num(r.top), w: num(r.width), h: num(r.height),
                    right: num(r.right), bottom: num(r.bottom) }; };
         const pad = (el) => num(getComputedStyle(el).paddingTop);
+        const MD = ${JSON.stringify(md)};
+        const name = (el) => {
+          if (!el) return null;
+          if (el.closest && el.closest('.ccup-rawmd-btn')) return 'ccup-rawmd-btn';
+          if (el.closest && el.closest('.copyButton_' + MD)) return 'copyButton';
+          return typeof el.className === 'string' && el.className ? el.className : el.tagName;
+        };
+        const at = (b) => name(document.elementFromPoint(b.x + b.w / 2, b.y + b.h / 2));
         const read = (id) => {
           const turn = document.getElementById(id);
           const b = turn.querySelector('.ccup-rawmd-btn');
@@ -380,10 +448,13 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
             railDisplay: railEl ? getComputedStyle(railEl).display : null,
             railPe: railEl ? getComputedStyle(railEl).pointerEvents : null,
             para: p ? { box: box(p), marginTop: getComputedStyle(p).marginTop } : null,
-            hit: (() => { const el = document.elementFromPoint(q.x + q.w/2, q.y + q.h/2);
+            hit: at(q),
+            copy: (() => { const el = turn.querySelector('.copyButton_' + MD);
               if (!el) return null;
-              if (el.closest && el.closest('.ccup-rawmd-btn')) return 'ccup-rawmd-btn';
-              return typeof el.className === 'string' && el.className ? el.className : el.tagName; })(),
+              const cb = box(el);
+              return { box: cb, opacity: num(getComputedStyle(el).opacity), hit: at(cb) }; })(),
+            fence: (() => { const el = turn.querySelector('.codeBlockWrapper_' + MD);
+              return el ? box(el) : null; })(),
             code: code ? { family: getComputedStyle(code).fontFamily,
               size: getComputedStyle(code).fontSize,
               bg: getComputedStyle(code).backgroundColor,
@@ -392,7 +463,7 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
               scrollW: pre.scrollWidth, clientW: pre.clientWidth } : null,
           };
         };
-        const ids = ['native','patched','rawon','nested','thinking','counter','long','fold-a','fold-b','open','tail'];
+        const ids = ['native','patched','rawon','nested','thinking','counter','codelead','long','fold-a','fold-b','open','tail'];
         const out = {};
         for (const id of ids) { try { out[id] = read(id); } catch (e) { out[id] = String(e); } }
         out.native = (() => { const t = document.getElementById('native');
@@ -457,8 +528,8 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       `host=${r.patched.host.w} native root=${r.native.rootW}`,
     );
     check(
-      "rail hangs down the host's right edge",
-      Math.abs(r.patched.rail.right - r.patched.host.right) < 0.6 &&
+      "rail hangs down the host's left edge",
+      Math.abs(r.patched.rail.x - r.patched.host.x) < 0.6 &&
         Math.abs(r.patched.rail.h - r.patched.host.h) < 0.6 &&
         r.patched.rail.w === SIZE,
       `rail=${JSON.stringify(r.patched.rail)} host h=${r.patched.host.h}`,
@@ -469,16 +540,22 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       `${r.patched.btn.w}x${r.patched.btn.h}`,
     );
     check(
-      "button sits at the host's top-right corner while that corner is in view",
-      Math.abs(r.patched.btn.right - r.patched.host.right) < 0.6 &&
+      "button sits at the host's top-left corner while that corner is in view",
+      Math.abs(r.patched.btn.x - r.patched.host.x) < 0.6 &&
         Math.abs(r.patched.btn.y - r.patched.host.y) < 0.6,
-      `btn right=${r.patched.btn.right}/${r.patched.host.right} top=${r.patched.btn.y}/${r.patched.host.y}`,
+      `btn left=${r.patched.btn.x}/${r.patched.host.x} top=${r.patched.btn.y}/${r.patched.host.y}`,
     );
     check(
       "button stays inside the turn box",
-      r.patched.btn.right <= r.patched.turn.right + 0.5 &&
+      r.patched.btn.x >= r.patched.turn.x - 0.5 &&
         r.patched.btn.y >= r.patched.turn.y - 0.5,
       `btn=${JSON.stringify(r.patched.btn)} turn=${JSON.stringify(r.patched.turn)}`,
+    );
+    check(
+      "button keeps out of the turn's timeline gutter",
+      r.patched.btn.x >= r.patched.host.x - 0.5 &&
+        r.patched.host.x - r.patched.turn.x > SIZE,
+      `btn left=${r.patched.btn.x} content left=${r.patched.host.x} turn left=${r.patched.turn.x}`,
     );
     check(
       "button is pinned in the header's own paint layer",
@@ -547,8 +624,79 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     );
     await ctx.shot("hover");
 
+    // --- clearance: a response that opens with a fence --------------------
+    // Bring it into view clear of the turn header stuck at the top, so the
+    // button rests at the host's own top-left corner: the fence is the block's
+    // first child, so its copy button then sits in the very same band, which
+    // is the case the right edge could not serve.
+    await ctx.evaluate(`(() => {
+      const sc = document.getElementById('scroller');
+      const host = document.querySelector('#codelead .ccup-rawmd-host');
+      sc.scrollTop += host.getBoundingClientRect().top - sc.getBoundingClientRect().top - 120;
+      return true;
+    })()`);
+    await ctx.sleep(120);
+    r = await probe();
+    // Hover the fence itself, low and centered, so both buttons are lit and
+    // the pointer is over neither of them.
+    await ctx.cdp("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: r.codelead.fence.x + r.codelead.fence.w / 2,
+      y: r.codelead.fence.bottom - 6,
+      buttons: 0,
+    });
+    await ctx.sleep(250);
+    r = await probe();
+    const cl = r.codelead;
+    check(
+      "the fence's copy button sits at its own top right",
+      Math.abs(cl.copy.box.right - (cl.fence.right - 4)) < 1.5 &&
+        Math.abs(cl.copy.box.y - (cl.fence.y + 4)) < 1.5,
+      `copy=${JSON.stringify(cl.copy.box)} fence=${JSON.stringify(cl.fence)}`,
+    );
+    check(
+      "hovering the fence lights both buttons",
+      cl.opacity === 1 && cl.copy.opacity === 1,
+      `ours=${cl.opacity} copy=${cl.copy.opacity}`,
+    );
+    check(
+      "the button rests at the fence's own top-left corner",
+      Math.abs(cl.btn.x - cl.host.x) < 0.6 &&
+        Math.abs(cl.btn.y - cl.host.y) < 0.6,
+      `btn=${cl.btn.x},${cl.btn.y} host=${cl.host.x},${cl.host.y}`,
+    );
+    check(
+      "our button clears the copy button's square",
+      cl.btn.right <= cl.copy.box.x + 0.5,
+      `ours right=${cl.btn.right} copy left=${cl.copy.box.x}`,
+    );
+    check(
+      "the fence's copy button stays clickable",
+      cl.copy.hit === "copyButton",
+      cl.copy.hit,
+    );
+    check(
+      "our own button is clickable over the fence",
+      cl.hit === "ccup-rawmd-btn",
+      cl.hit,
+    );
+    // Why the rail is on the left: at the response's right edge the same
+    // button would have sat on top of that copy button and taken its click.
+    check(
+      "a right-edge button would have covered the copy button",
+      cl.host.right - SIZE < cl.copy.box.right &&
+        cl.copy.box.x < cl.host.right &&
+        cl.btn.y < cl.copy.box.bottom &&
+        cl.copy.box.y < cl.btn.bottom,
+      `right-edge slot x=[${cl.host.right - SIZE},${cl.host.right}] ` +
+        `y=[${cl.btn.y},${cl.btn.bottom}] ` +
+        `copy x=[${cl.copy.box.x},${cl.copy.box.right}] ` +
+        `y=[${cl.copy.box.y},${cl.copy.box.bottom}]`,
+    );
+    await ctx.shot("fence");
+
     // --- pinning: scroll into the long response ---------------------------
-    // Deep enough that the long block's own top-right corner is well above the
+    // Deep enough that the long block's own top-left corner is well above the
     // scrollport, with its bottom still far below it.
     const midway = await ctx.evaluate(`(() => {
       const sc = document.getElementById('scroller');
@@ -588,9 +736,9 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       `btn top=${r.long.btn.y} header bottom=${r.headLong.bottom}`,
     );
     check(
-      "the pinned button keeps the response's right edge",
-      Math.abs(r.long.btn.right - r.long.host.right) < 0.6,
-      `btn right=${r.long.btn.right} host right=${r.long.host.right}`,
+      "the pinned button keeps the response's left edge",
+      Math.abs(r.long.btn.x - r.long.host.x) < 0.6,
+      `btn left=${r.long.btn.x} host left=${r.long.host.x}`,
     );
     check(
       "the pinned button is on top, not behind the header",
@@ -717,9 +865,14 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     await ctx.sleep(250);
     r = await probe();
     check(
-      "a response in raw mode keeps its button lit unhovered",
-      r.rawon.opacity === 1,
-      `opacity=${r.rawon.opacity}`,
+      "a response in raw mode keeps its button visible but translucent",
+      r.rawon.opacity === DIM,
+      `opacity=${r.rawon.opacity} want=${DIM}`,
+    );
+    check(
+      "the translucent button is still the one taking clicks",
+      r.rawon.pe === "auto" && r.rawon.hit === "ccup-rawmd-btn",
+      `pointer-events=${r.rawon.pe} hit=${r.rawon.hit}`,
     );
     check(
       "raw block is monospace",
@@ -743,6 +896,23 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       r.rawon.code.size,
     );
     await ctx.shot("raw");
+
+    // Hovering the response it belongs to takes the ghost solid again, so the
+    // toggle back to rendered is never a click at 40% of a button.
+    await ctx.cdp("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: r.rawon.host.x + 60,
+      y: r.rawon.btn.y + SIZE / 2,
+      buttons: 0,
+    });
+    await ctx.sleep(250);
+    r = await probe();
+    check(
+      "hovering a raw response takes its button solid",
+      r.rawon.opacity === 1,
+      `opacity=${r.rawon.opacity}`,
+    );
+    await ctx.shot("raw-hover");
 
     console.log(ok ? "\nall green" : "\nFAILURES above");
     return ok;

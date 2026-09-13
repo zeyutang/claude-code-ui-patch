@@ -7,8 +7,8 @@ All notable changes to Claude Code UI Patch are documented here. This project fo
 - New `chatRawMarkdownButton` setting: each agent response grows a button, on hover, that swaps the rendered markdown for the source Claude wrote and back.
   The button rides the response's right edge, pinning under the user message stuck to the top of the chat once the response's own top scrolls away.
   The raw view follows your chat code font and size, and each response switches on its own.
-- Opening a message of yours with "Show more" no longer hides the response beneath it.
-  A message stuck to the top opens from its top and reading continues down into the response, one further down opens in place, and "Show less" returns to the view you had before the click.
+- A message of yours opened with "Show more" now stays stuck to the top like a collapsed one, capped at half the chat with its own scrollbar, so a wheel over it reads the message and never moves the response beneath it.
+  "Show less" shows the message's start again.
 
 ## 1.5.1
 

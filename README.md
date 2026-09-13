@@ -90,7 +90,7 @@ Behavior
 Always applied                         # no setting; installing this patch is the opt-in
    ├── permission focus ring           # focused permission/question box gets the input box's ring
    ├── question answer box reveal      # typing keeps the "Other" box's border and padding in view
-   └── expanded prompt header          # "Show more" reads on down the prompt, "Show less" goes back
+   └── expanded prompt header          # "Show more" keeps the prompt on top in its own scroller
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)

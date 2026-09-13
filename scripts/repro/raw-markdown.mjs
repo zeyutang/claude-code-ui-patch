@@ -4,9 +4,10 @@
 // thinking block), that the <div> host the patch wraps around the markdown root
 // and the rail it hangs off are both layout-inert, that the button pins under
 // the turn header stuck to the top of the chat once its response scrolls past,
-// that it rides the response's LEFT edge and so leaves a code block's own copy
-// button (absolute at the top right of every fence) clickable, and that the raw
-// block inherits the chat's code font with none of a code block's chrome.
+// that it rides the turn's timeline gutter centered on the thread line, where
+// it covers neither the response's own text nor the copy button every fence
+// carries at its top right, and that the raw block inherits the chat's code
+// font with none of a code block's chrome.
 //
 //   node scripts/cdp-driver.mjs scripts/repro/raw-markdown.mjs 900 700
 //
@@ -65,6 +66,16 @@ const USER_CONT_RE = /userMessageContainer:"userMessageContainer_([-\w]+)"/;
 const PARA_RE =
   /\.root_([-\w]+) p\{white-space:pre-wrap;margin-top:([\d.]+)em;margin-bottom:([\d.]+)em\}/;
 
+// rawMdRailLeft's anchors: the gutter an assistant message indents by, and the
+// thread line its :after draws through the dots.
+const TL_RE = /\.timelineMessage_([-\w]+)\{([^}]*)\}/;
+const TL_AFTER_RE = (h) =>
+  new RegExp(`\\.timelineMessage_${h}:after\\{([^}]*)\\}`);
+const cssPx = (body, prop) => {
+  const m = body.match(new RegExp(`(?:^|;)${prop}:\\s*([\\d.]+)px`));
+  return m ? parseFloat(m[1]) : undefined;
+};
+
 const PARA_MULT = 3; // an off-native chatHistoryParagraphSpacing, for the reset check
 const GAP = 6; // rawMdCssBuild's RAWMD_GAP
 const SIZE = 26; // rawMdCssBuild's RAWMD_BTN_SIZE
@@ -81,9 +92,9 @@ function liveBundleDir() {
 }
 
 // rawMdCssBuild's output, minus the marker comment.
-function rawMdCss() {
+function rawMdCss(railLeft) {
   const rail =
-    "display:none;position:absolute;top:0;left:0;bottom:0;" +
+    `display:none;position:absolute;top:0;left:${railLeft}px;bottom:0;` +
     `width:${SIZE}px;pointer-events:none`;
   const btn =
     "box-sizing:border-box;display:flex;position:sticky;" +
@@ -266,6 +277,30 @@ export async function run(ctx) {
     Boolean(copyPos),
     copyPos ? `top:${copyPos[1]}px right:${copyPos[2]}px` : "not at top/right",
   );
+  // rawMdRailLeft, recomputed here: the gutter, the thread line's column, and
+  // the offset that centers a 26px square on it (keep in sync).
+  const tl = css.match(TL_RE);
+  const tlAfter = tl && css.match(TL_AFTER_RE(tl[1]));
+  const gutter = tl && cssPx(tl[2], "padding-left");
+  const threadLeft = tlAfter && cssPx(tlAfter[1], "left");
+  const threadW = tlAfter && cssPx(tlAfter[1], "width");
+  if (
+    !check(
+      "the turn's timeline gutter and thread line parse",
+      gutter !== undefined &&
+        threadLeft !== undefined &&
+        threadW !== undefined &&
+        gutter > SIZE,
+      `padding-left=${gutter} thread left=${threadLeft} width=${threadW}`,
+    )
+  ) {
+    return false;
+  }
+  const threadMid = threadLeft + threadW / 2;
+  const railLeft = threadMid - gutter - SIZE / 2;
+  console.log(
+    `  rail left: ${railLeft}px (thread mid ${threadMid}px of a ${gutter}px gutter)`,
+  );
   check(
     "turn headers are what pins to the top of the chat",
     /position:sticky/.test(
@@ -277,7 +312,7 @@ export async function run(ctx) {
   );
 
   // --- serve the live stylesheet plus the point's own line ----------------
-  const sheet = `${css}\n${rawMdCss()}`;
+  const sheet = `${css}\n${rawMdCss(railLeft)}`;
   const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="/index.css">
 <style>
@@ -455,6 +490,12 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
               return { box: cb, opacity: num(getComputedStyle(el).opacity), hit: at(cb) }; })(),
             fence: (() => { const el = turn.querySelector('.codeBlockWrapper_' + MD);
               return el ? box(el) : null; })(),
+            // The thread line and the dot are pseudo-elements, so their column
+            // is only readable as resolved style, not as a box.
+            thread: (() => { const cs = getComputedStyle(turn, '::after');
+              return { left: num(cs.left), width: num(cs.width) }; })(),
+            dot: (() => { const cs = getComputedStyle(turn, '::before');
+              return { left: num(cs.left), width: num(cs.width) }; })(),
             code: code ? { family: getComputedStyle(code).fontFamily,
               size: getComputedStyle(code).fontSize,
               bg: getComputedStyle(code).backgroundColor,
@@ -528,8 +569,8 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       `host=${r.patched.host.w} native root=${r.native.rootW}`,
     );
     check(
-      "rail hangs down the host's left edge",
-      Math.abs(r.patched.rail.x - r.patched.host.x) < 0.6 &&
+      "rail hangs in the turn's timeline gutter",
+      Math.abs(r.patched.rail.x - (r.patched.host.x + railLeft)) < 0.6 &&
         Math.abs(r.patched.rail.h - r.patched.host.h) < 0.6 &&
         r.patched.rail.w === SIZE,
       `rail=${JSON.stringify(r.patched.rail)} host h=${r.patched.host.h}`,
@@ -540,22 +581,39 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       `${r.patched.btn.w}x${r.patched.btn.h}`,
     );
     check(
-      "button sits at the host's top-left corner while that corner is in view",
-      Math.abs(r.patched.btn.x - r.patched.host.x) < 0.6 &&
+      "button sits level with the block's top while that is in view",
+      Math.abs(r.patched.btn.x - (r.patched.host.x + railLeft)) < 0.6 &&
         Math.abs(r.patched.btn.y - r.patched.host.y) < 0.6,
-      `btn left=${r.patched.btn.x}/${r.patched.host.x} top=${r.patched.btn.y}/${r.patched.host.y}`,
+      `btn left=${r.patched.btn.x}/${r.patched.host.x + railLeft} ` +
+        `top=${r.patched.btn.y}/${r.patched.host.y}`,
+    );
+    // The point of the offset: the button's own middle on the line the turn
+    // draws through its dots, measured off the pseudo-elements themselves.
+    const mid = (m) => m.turn.x + m.thread.left + m.thread.width / 2;
+    check(
+      "button centers on the turn's thread line",
+      Math.abs(r.patched.btn.x + r.patched.btn.w / 2 - mid(r.patched)) < 0.6,
+      `btn mid=${r.patched.btn.x + r.patched.btn.w / 2} thread mid=${mid(r.patched)}`,
     );
     check(
-      "button stays inside the turn box",
-      r.patched.btn.x >= r.patched.turn.x - 0.5 &&
+      "the message dot shares that column",
+      Math.abs(
+        r.patched.dot.left +
+          r.patched.dot.width / 2 -
+          (r.patched.thread.left + r.patched.thread.width / 2),
+      ) < 0.6,
+      `dot=${r.patched.dot.left}+${r.patched.dot.width} thread=${r.patched.thread.left}+${r.patched.thread.width}`,
+    );
+    check(
+      "button clears the response's content column entirely",
+      r.patched.btn.right <= r.patched.host.x + 0.5,
+      `btn right=${r.patched.btn.right} content left=${r.patched.host.x}`,
+    );
+    check(
+      "the chat's own padding leaves the gutter square unclipped",
+      r.patched.btn.x >= r.scroller.x - 0.5 &&
         r.patched.btn.y >= r.patched.turn.y - 0.5,
-      `btn=${JSON.stringify(r.patched.btn)} turn=${JSON.stringify(r.patched.turn)}`,
-    );
-    check(
-      "button keeps out of the turn's timeline gutter",
-      r.patched.btn.x >= r.patched.host.x - 0.5 &&
-        r.patched.host.x - r.patched.turn.x > SIZE,
-      `btn left=${r.patched.btn.x} content left=${r.patched.host.x} turn left=${r.patched.turn.x}`,
+      `btn left=${r.patched.btn.x} chat left=${r.scroller.x}`,
     );
     check(
       "button is pinned in the header's own paint layer",
@@ -660,10 +718,10 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       `ours=${cl.opacity} copy=${cl.copy.opacity}`,
     );
     check(
-      "the button rests at the fence's own top-left corner",
-      Math.abs(cl.btn.x - cl.host.x) < 0.6 &&
+      "the button rests level with the fence's own top",
+      Math.abs(cl.btn.x - (cl.host.x + railLeft)) < 0.6 &&
         Math.abs(cl.btn.y - cl.host.y) < 0.6,
-      `btn=${cl.btn.x},${cl.btn.y} host=${cl.host.x},${cl.host.y}`,
+      `btn=${cl.btn.x},${cl.btn.y} want=${cl.host.x + railLeft},${cl.host.y}`,
     );
     check(
       "our button clears the copy button's square",
@@ -736,9 +794,10 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       `btn top=${r.long.btn.y} header bottom=${r.headLong.bottom}`,
     );
     check(
-      "the pinned button keeps the response's left edge",
-      Math.abs(r.long.btn.x - r.long.host.x) < 0.6,
-      `btn left=${r.long.btn.x} host left=${r.long.host.x}`,
+      "the pinned button keeps the gutter column",
+      Math.abs(r.long.btn.x - (r.long.host.x + railLeft)) < 0.6 &&
+        Math.abs(r.long.btn.x + r.long.btn.w / 2 - mid(r.long)) < 0.6,
+      `btn left=${r.long.btn.x} want=${r.long.host.x + railLeft}`,
     );
     check(
       "the pinned button is on top, not behind the header",

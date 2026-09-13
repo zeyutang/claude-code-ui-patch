@@ -4077,20 +4077,21 @@ function uceSet(c: string, on: boolean): string {
 // (table pipes, link targets, list markers, a fence's language tag, the literal
 // TeX behind a formula) is only ever visible as rendered output. When ON each
 // response grows a button, on hover, that swaps the rendered tree for the
-// markdown source and back. The button rides the response's LEFT edge: it sits
-// at the block's top-left corner while that corner is in view, and once the
-// block scrolls past it pins just under the turn header stuck to the top of the
-// chat, so a long response keeps the toggle a click away at any scroll depth.
-// Left, not right, because the right edge is taken: a code block's own copy
-// button is absolute at top:4px;right:4px inside .codeBlockWrapper_<hash>,
-// which spans the full content column, so a pinned button at the right edge
-// covers that copy button's 24px square whenever a fence's top passes under
-// it (a response that opens with one collides immediately), and ours, later in
-// the tree with z-index:2, takes the click. The left edge carries no control of
-// its own: task-list checkboxes there are already pointer-events:none, and the
-// timeline dot and thread line sit further left again, in the turn's own 30px
-// gutter outside the host. The cost is that a lit button covers the first
-// ~26px of the response's first line, which is text, not an affordance.
+// markdown source and back. The button rides the turn's own timeline GUTTER,
+// centered on the thread line that runs down through the message dots: it sits
+// level with the block's top while that is in view, and once the block scrolls
+// past it pins just under the turn header stuck to the top of the chat, so a
+// long response keeps the toggle a click away at any scroll depth.
+// Not the right edge, which is taken: a code block's own copy button is
+// absolute at top:4px;right:4px inside .codeBlockWrapper_<hash>, which spans
+// the full content column, so a button at the right edge covers that copy
+// button's 24px square whenever a fence's top passes under it (a response
+// that opens with one collides immediately), and ours, later in the tree with
+// z-index:2, takes the click. Not the content column's left edge either, where
+// it masked the first ~26px of the response's own first line. The gutter is
+// the one column that carries no text and no control of its own, so the button
+// covers nothing but the message dot it lands on and a 26px slice of the
+// thread line, which is also why raw mode keeps it there translucent.
 // It matches the jump pair's 26px square. The state is per block, so one
 // response can read as source while the rest of the transcript stays rendered,
 // and it resets to rendered when the webview reloads.
@@ -4117,7 +4118,8 @@ function uceSet(c: string, on: boolean): string {
 //          measures the header stuck to the top of the chat, see below
 //
 // The rail is what lets the button ride: a layout-inert position:absolute strip
-// (top:0;bottom:0;left:0, pointer-events:none) down the block's left edge,
+// (top:0;bottom:0, pointer-events:none, a negative `left` measured off the
+// turn's gutter by rawMdRailLeft) down the block's left side,
 // with the button position:sticky inside it. Sticky measures from the
 // scrollport, so the offset has to clear whatever user turn header is stuck
 // there, and that is a scroll-time question with no constant answer: a header
@@ -4189,8 +4191,16 @@ const RAWMD_GAP = 6;
 const RAWMD_BTN_SIZE = 26;
 const RAWMD_ICON_SIZE = 16;
 // Opacity of the button in raw mode with nothing hovered, the one state where
-// it stays visible over the very text it revealed.
+// it stays visible over the gutter art it covers.
 const RAWMD_DIM = 0.4;
+// The turn's timeline gutter in webview/index.css: an assistant message's own
+// padding-left, and the thread line its :after draws down through the dots
+// (left + width/2 is the column the dots share, since :before centers on it
+// too). The button rides that column, so both are read at build time rather
+// than hardcoded, and a build that drops either falls back to the content edge.
+const RAWMD_TL_RE = /\.timelineMessage_([-\w]+)\{([^}]*)\}/;
+const RAWMD_TL_AFTER_RE = (h: string): RegExp =>
+  new RegExp(`\\.timelineMessage_${h}:after\\{([^}]*)\\}`);
 // The pin line's once-only guard on window, and its last-written value on each
 // scroller (an expando, so a no-change frame costs no style write).
 const RAWMD_PIN_FLAG = "__ccupRawMdPin";
@@ -4373,31 +4383,56 @@ function rawMdSet(c: string, on: boolean): string {
   return `${rawMdApplyInline(stripped)}\n${line}`;
 }
 
+// A declaration's px value out of one rule body. The (?:^|;) guard is what
+// keeps a bare `left` from matching `padding-left`.
+function rawMdCssPx(body: string, prop: string): number | undefined {
+  const m = body.match(new RegExp(`(?:^|;)${prop}:\\s*([\\d.]+)px`));
+  return m ? parseFloat(m[1]) : undefined;
+}
+// The rail's `left`, relative to the host's own left edge (the content column):
+// far enough out that the button's 26px square centers on the thread line the
+// turn draws through its dots. 0 when the gutter can't be read, which puts it
+// back at the content edge.
+function rawMdRailLeft(css: string): number {
+  const tl = css.match(RAWMD_TL_RE);
+  if (!tl) return 0;
+  const after = css.match(RAWMD_TL_AFTER_RE(tl[1]));
+  if (!after) return 0;
+  const pad = rawMdCssPx(tl[2], "padding-left");
+  const left = rawMdCssPx(after[1], "left");
+  const width = rawMdCssPx(after[1], "width");
+  if (pad === undefined || left === undefined || width === undefined) return 0;
+  return left + width / 2 - pad - RAWMD_BTN_SIZE / 2;
+}
 // The css side-effect: the host's positioning context, the raw block's own
 // (deliberately short) rules, the rail, and the button. The rail carries the
 // scope gate: only a text block that is a direct child of an assistant turn
 // grows one, which is what keeps the button off thinking blocks, tool-result
 // text and the other surfaces the component serves. It is absolute and
-// pointer-events:none, so it neither takes flow space nor shadows the column of
-// text it covers. The rail hangs at the content column's own left edge, where
-// the host starts whether it stretches or not. The stretch stays for the
-// response's own blocks, which would otherwise shrink to fit their longest line
-// instead of keeping the full column width.
+// pointer-events:none, so it neither takes flow space nor shadows anything it
+// covers. Its `left` is negative, reaching back out of the host and into the
+// turn's padding, where nothing clips it: an assistant message is always a
+// .timelineMessage_ (the class list carrying the testid the gate keys on says
+// so), and the chat scroller's own 20px side padding leaves the 26px square
+// room to sit there. The host's stretch stays for the response's own blocks,
+// which would otherwise shrink to fit their longest line instead of keeping
+// the full column width.
 // The button pins inside it, clearing the turn header stuck at the top of the
 // chat by the height the pin line measures. Raw mode is the one state that
-// keeps the button visible with nothing hovered, and there it sits on the very
-// source it revealed, so it fades to RAWMD_DIM there and goes solid again on
-// hover or keyboard focus. Both halves of that ride on the same appended line,
-// where a later rule of equal specificity wins: the dim rule follows the lit
-// one, and the hover/focus pair follows the dim one at one class more. Element
-// opacity, not a translucent background, so the source shows through the icon
-// and the border too; the pointer-events the lit rule grants are untouched, so
-// the ghost stays clickable. z-index puts it in the
+// keeps the button visible with nothing hovered, sitting on the dot and the
+// thread line for as long as the response reads as source, so it fades to
+// RAWMD_DIM there and goes solid again on hover or keyboard focus. Both halves
+// of that ride on the same appended line, where a later rule of equal
+// specificity wins: the dim rule follows the lit one, and the hover/focus pair
+// follows the dim one at one class more. Element opacity, not a translucent
+// background, so the gutter art shows through the icon and the border too. The
+// pointer-events the lit rule grants are untouched, so the ghost stays
+// clickable. z-index puts it in the
 // header's own layer, where tree order paints it on top: should an offset ever
 // go stale the button overlaps the header instead of vanishing under it.
-function rawMdCssBuild(_css: string): string | undefined {
+function rawMdCssBuild(css: string): string | undefined {
   const rail =
-    "display:none;position:absolute;top:0;left:0;bottom:0;" +
+    `display:none;position:absolute;top:0;left:${rawMdRailLeft(css)}px;bottom:0;` +
     `width:${RAWMD_BTN_SIZE}px;pointer-events:none`;
   const btn =
     "box-sizing:border-box;display:flex;position:sticky;" +

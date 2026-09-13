@@ -131,9 +131,9 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
 - **`chatMathRendering` bundles KaTeX into the chat webview** (MIT code, SIL OFL 1.1 fonts; licenses ship in `assets/katex/`) and removes it fully when the toggle turns off.
   Rendering covers the chat only: the Plan Mode preview's content-security policy allows no font loading.
 - **`chatRawMarkdownButton` reveals the source of agent responses only.**
-  The button rides the response's left edge: at the block's top-left corner while that corner is in view, then pinned just under the user message stuck to the top of the chat, so a long response keeps it within reach.
-  The left edge leaves the copy button on a code block clickable, including a response that opens with one.
+  The button rides the left gutter, centered on the line that runs through the message dots: level with the block's top while that is in view, then pinned just under the user message stuck to the top of the chat, so a long response keeps it within reach.
+  Out there it covers neither the response's own text nor the copy button on a code block, including a response that opens with one.
   Thinking blocks, tool output, compact summaries, and slash-command results render through the same markdown component but get no button.
-  A response reading as source keeps its button in place, faded so the source shows through and solid again as soon as you hover.
+  A response reading as source keeps its button in place, faded until you hover it.
   Each response switches on its own, and all of them are back to rendered after a webview reload.
 - **`chatFindBar` replaces native `Cmd`/`Ctrl`+`F` widget inside the chat webview** (tab and sidebar alike).

@@ -132,6 +132,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   Rendering covers the chat only: the Plan Mode preview's content-security policy allows no font loading.
 - **`chatRawMarkdownButton` reveals the source of agent responses only.**
   The button rides the left gutter, centered on the line that runs through the message dots: level with the block's top while that is in view, then pinned just under the user message stuck to the top of the chat, so a long response keeps it within reach.
+  It appears while the pointer is anywhere at that response's height, the gutter included, so you can travel down the line to reach it.
   Out there it covers neither the response's own text nor the copy button on a code block, including a response that opens with one.
   Thinking blocks, tool output, compact summaries, and slash-command results render through the same markdown component but get no button.
   A response reading as source keeps its button in place, faded until you hover it.

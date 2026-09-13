@@ -6,8 +6,10 @@
 // the turn header stuck to the top of the chat once its response scrolls past,
 // that it rides the turn's timeline gutter centered on the thread line, where
 // it covers neither the response's own text nor the copy button every fence
-// carries at its top right, and that the raw block inherits the chat's code
-// font with none of a code block's chrome.
+// carries at its top right, that the reveal is the response row's own hover
+// band so the button can be approached along that line and across the gap from
+// the text, and that the raw block inherits the chat's code font with none of
+// a code block's chrome.
 //
 //   node scripts/cdp-driver.mjs scripts/repro/raw-markdown.mjs 900 700
 //
@@ -112,10 +114,11 @@ function rawMdCss(railLeft) {
     `.ccup-rawmd-rail{${rail}}` +
     '[data-testid="assistant-message"]>.ccup-rawmd-host>.ccup-rawmd-rail{display:block}' +
     `.ccup-rawmd-btn{${btn}}` +
-    ".ccup-rawmd-host:hover .ccup-rawmd-btn,.ccup-rawmd-btn:focus-visible," +
+    '[data-testid="assistant-message"]:hover .ccup-rawmd-btn,' +
+    ".ccup-rawmd-btn:focus-visible," +
     ".ccup-rawmd-btn[aria-pressed=true]{opacity:1;pointer-events:auto}" +
     `.ccup-rawmd-btn[aria-pressed=true]{opacity:${DIM}}` +
-    ".ccup-rawmd-host:hover .ccup-rawmd-btn[aria-pressed=true]," +
+    '[data-testid="assistant-message"]:hover .ccup-rawmd-btn[aria-pressed=true],' +
     ".ccup-rawmd-btn[aria-pressed=true]:focus-visible{opacity:1;pointer-events:auto}" +
     ".ccup-rawmd-btn:hover,.ccup-rawmd-btn[aria-pressed=true]" +
     "{color:var(--app-primary-foreground);border-color:var(--app-secondary-foreground)}" +
@@ -523,6 +526,27 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
         return out;
       })()`);
 
+    // What sits under one point, named the way probe() names its own hits.
+    const hitAt = (x, y) =>
+      ctx.evaluate(`(() => {
+        const el = document.elementFromPoint(${x}, ${y});
+        if (!el) return null;
+        if (el.closest && el.closest('.ccup-rawmd-btn')) return 'ccup-rawmd-btn';
+        if (el.classList && el.classList.contains('ccup-rawmd-host')) return 'ccup-rawmd-host';
+        return typeof el.className === 'string' && el.className ? el.className : el.tagName;
+      })()`);
+    // Move the pointer and let the .15s fade settle before reading.
+    const hoverAt = async (x, y) => {
+      await ctx.cdp("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x,
+        y,
+        buttons: 0,
+      });
+      await ctx.sleep(250);
+      return probe();
+    };
+
     let r = await probe();
     check(
       "nothing stuck at the very start reads 0",
@@ -681,6 +705,58 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       `nested opacity=${r.nested.opacity}`,
     );
     await ctx.shot("hover");
+
+    // --- the approach: a hover band at the row's height -------------------
+    // The button hangs in the gutter, outside the host it belongs to. Keyed on
+    // that host, the reveal died in the few px between the two: dropping the
+    // hover takes the button's own pointer-events with it, so it faded and
+    // could not be re-hovered on the way in, and only a sweep fast enough to
+    // land in one mousemove reached it. Each step below is a pointer position,
+    // read after the .15s fade would have run.
+    const midX = mid(r.patched);
+    r = await hoverAt(r.patched.host.x - 2, r.patched.btn.y + SIZE / 2);
+    check(
+      "the gap between the text column and the rail keeps it lit",
+      r.patched.opacity === 1 && r.patched.pe === "auto",
+      `opacity=${r.patched.opacity} pointer-events=${r.patched.pe}`,
+    );
+    r = await hoverAt(midX, r.patched.btn.y + SIZE / 2);
+    check(
+      "the button itself stays lit and takes the pointer",
+      r.patched.opacity === 1 && r.patched.hit === "ccup-rawmd-btn",
+      `opacity=${r.patched.opacity} hit=${r.patched.hit}`,
+    );
+    // Cold approach: off the response entirely, then straight down the thread
+    // line well below the button, the move that used to raise nothing at all.
+    r = await hoverAt(5, 5);
+    check(
+      "leaving the row puts the button away",
+      r.patched.opacity === 0 && r.patched.pe === "none",
+      `opacity=${r.patched.opacity} pointer-events=${r.patched.pe}`,
+    );
+    r = await hoverAt(midX, r.patched.host.y + 120);
+    check(
+      "the thread line well below the button raises it",
+      r.patched.opacity === 1 && r.patched.pe === "auto",
+      `opacity=${r.patched.opacity} pointer-events=${r.patched.pe}`,
+    );
+    check(
+      "and the square is then the element under the pointer",
+      (await hitAt(midX, r.patched.btn.y + SIZE / 2)) === "ccup-rawmd-btn",
+    );
+    // The band is the row's full width, so the ragged space past the lines
+    // raises it too, and it stays one row's own business.
+    r = await hoverAt(r.patched.turn.right - 4, r.patched.host.y + 20);
+    check(
+      "the space past the response's lines raises it too",
+      r.patched.opacity === 1,
+      `opacity=${r.patched.opacity}`,
+    );
+    check(
+      "one row's band leaves the other responses alone",
+      r.rawon.opacity === DIM && r.nested.railDisplay === "none",
+      `rawon=${r.rawon.opacity} nested rail=${r.nested.railDisplay}`,
+    );
 
     // --- clearance: a response that opens with a fence --------------------
     // Bring it into view clear of the turn header stuck at the top, so the

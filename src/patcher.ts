@@ -4179,6 +4179,10 @@ const RAWMD_CSS_MARKER = "/*ccup:rawMdCss*/";
 const RAWMD_PIN_MARKER = "/*ccup:rawMdPin*/";
 const RAWMD_PIN_LINE_RE = /\n?\/\*ccup:rawMdPin\*\/[^\n]*/g;
 
+// The assistant turn's own div: the scope gate for the rail, and the box whose
+// hover reveals the button (it stretches the chat's full width, so its hover is
+// a band at the response's height rather than a target to aim at).
+const RAWMD_ROW_SEL = '[data-testid="assistant-message"]';
 const RAWMD_HOST_CLASS = "ccup-rawmd-host";
 const RAWMD_RAIL_CLASS = "ccup-rawmd-rail";
 const RAWMD_BTN_CLASS = "ccup-rawmd-btn";
@@ -4191,7 +4195,7 @@ const RAWMD_GAP = 6;
 const RAWMD_BTN_SIZE = 26;
 const RAWMD_ICON_SIZE = 16;
 // Opacity of the button in raw mode with nothing hovered, the one state where
-// it stays visible over the gutter art it covers.
+// it stays visible, faint enough to let the dot and thread line under it show.
 const RAWMD_DIM = 0.4;
 // The turn's timeline gutter in webview/index.css: an assistant message's own
 // padding-left, and the thread line its :after draws down through the dots
@@ -4417,6 +4421,21 @@ function rawMdRailLeft(css: string): number {
 // room to sit there. The host's stretch stays for the response's own blocks,
 // which would otherwise shrink to fit their longest line instead of keeping
 // the full column width.
+//
+// Out in the gutter the reveal cannot hang off the host. `:hover` follows the
+// DOM rather than the boxes, so the button does keep its own host hovered from
+// out there, but the few px between the rail's right edge and the text column
+// belong to neither box: a pointer crossing them drops the host's hover, which
+// takes the button's own pointer-events with it, so it faded and could not be
+// re-hovered on the way in, and only a sweep fast enough to land in one
+// mousemove ever reached it. The reveal is keyed on the turn's own div instead
+// (RAWMD_ROW_SEL, the same element the scope gate keys on), which stretches
+// the chat's full width: hovering anywhere at the response's height, gutter
+// and text and the ragged space past the lines alike, raises that response's
+// button and holds it up all the way in. That is a band, not a target, and it
+// costs no new box and no new hit area, which a pseudo-element bridging the
+// strip would have. A deeper surface's button cannot leak in through the
+// descendant combinator either, since its rail never leaves display:none.
 // The button pins inside it, clearing the turn header stuck at the top of the
 // chat by the height the pin line measures. Raw mode is the one state that
 // keeps the button visible with nothing hovered, sitting on the dot and the
@@ -4431,8 +4450,9 @@ function rawMdRailLeft(css: string): number {
 // header's own layer, where tree order paints it on top: should an offset ever
 // go stale the button overlaps the header instead of vanishing under it.
 function rawMdCssBuild(css: string): string | undefined {
+  const railLeft = rawMdRailLeft(css);
   const rail =
-    `display:none;position:absolute;top:0;left:${rawMdRailLeft(css)}px;bottom:0;` +
+    `display:none;position:absolute;top:0;left:${railLeft}px;bottom:0;` +
     `width:${RAWMD_BTN_SIZE}px;pointer-events:none`;
   const btn =
     "box-sizing:border-box;display:flex;position:sticky;" +
@@ -4448,15 +4468,15 @@ function rawMdCssBuild(css: string): string | undefined {
   const dim = `opacity:${RAWMD_DIM}`;
   return (
     `${RAWMD_CSS_MARKER}.${RAWMD_HOST_CLASS}{position:relative}` +
-    `[data-testid="assistant-message"]>.${RAWMD_HOST_CLASS}{align-self:stretch}` +
+    `${RAWMD_ROW_SEL}>.${RAWMD_HOST_CLASS}{align-self:stretch}` +
     `.${RAWMD_PRE_CLASS}{margin:0;white-space:pre-wrap;overflow-wrap:break-word;tab-size:4}` +
     `.${RAWMD_RAIL_CLASS}{${rail}}` +
-    `[data-testid="assistant-message"]>.${RAWMD_HOST_CLASS}>.${RAWMD_RAIL_CLASS}{display:block}` +
+    `${RAWMD_ROW_SEL}>.${RAWMD_HOST_CLASS}>.${RAWMD_RAIL_CLASS}{display:block}` +
     `.${RAWMD_BTN_CLASS}{${btn}}` +
-    `.${RAWMD_HOST_CLASS}:hover .${RAWMD_BTN_CLASS},.${RAWMD_BTN_CLASS}:focus-visible,` +
+    `${RAWMD_ROW_SEL}:hover .${RAWMD_BTN_CLASS},.${RAWMD_BTN_CLASS}:focus-visible,` +
     `.${RAWMD_BTN_CLASS}[aria-pressed=true]{${lit}}` +
     `.${RAWMD_BTN_CLASS}[aria-pressed=true]{${dim}}` +
-    `.${RAWMD_HOST_CLASS}:hover .${RAWMD_BTN_CLASS}[aria-pressed=true],` +
+    `${RAWMD_ROW_SEL}:hover .${RAWMD_BTN_CLASS}[aria-pressed=true],` +
     `.${RAWMD_BTN_CLASS}[aria-pressed=true]:focus-visible{${lit}}` +
     `.${RAWMD_BTN_CLASS}:hover,.${RAWMD_BTN_CLASS}[aria-pressed=true]{${on}}` +
     `.${RAWMD_BTN_CLASS} svg{display:block;` +

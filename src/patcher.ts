@@ -1078,14 +1078,16 @@ function questionRevealBuild(c: string): string | undefined {
 // and the response is scrolled by pointing at the response. The contain rule is
 // keyed to a data-ccup-own attribute rather than unconditional because a scroll
 // container with nothing to scroll and contain set swallows the wheel entirely,
-// which would make a short open prompt a dead zone. The native max-height
-// transition now has two lengths to run between, so the box eases open.
+// which would make a short open prompt a dead zone. The content's native
+// max-height transition never ran (250px to none is not interpolable) but
+// would between the clamp and the cap, in both directions; transition:none on
+// the content keeps open and close instant, as they were.
 //
 // The JS half (expandedView) is a capture-phase click listener on the document:
 //   Show more: parks one ResizeObserver on the content that sets or clears
-//     data-ccup-own by whether the content overflows its box, following the
-//     300ms transition and any later resize; the observer is parked on the
-//     content it watches, so the two fall out of reach together.
+//     data-ccup-own by whether the content overflows its box, now and on any
+//     later resize; the observer is parked on the content it watches, so the
+//     two fall out of reach together.
 //   Show less: resets the content's scrollTop to 0 (the offset survives the
 //     collapse, and the preview would show the prompt's end) and drops the
 //     observer and the attribute, so a collapsed prompt never carries contain.
@@ -1130,11 +1132,11 @@ function expandedHeaderBuild(c: string): string | undefined {
   const sticky = c.match(STICKY_HEADER_RULE_RE);
   const box = c.match(EXPANDABLE_CONTENT_RULE_RE)?.[1];
   if (!sticky || !box) return undefined; // anchor gone: leave native
-  const open =
-    `.message_${sticky[1]}.stickyHeader_${sticky[2]} ` +
-    `.content_${box}:not(.collapsed_${box})`;
+  const content = `.message_${sticky[1]}.stickyHeader_${sticky[2]} .content_${box}`;
+  const open = `${content}:not(.collapsed_${box})`;
   return (
-    `${EXPANDED_HEADER_MARKER}${open}{max-height:max(${EXPANDED_FLOOR}px,${EXPANDED_CAP});overflow-y:auto}` +
+    `${EXPANDED_HEADER_MARKER}${content}{transition:none}` +
+    `${open}{max-height:max(${EXPANDED_FLOOR}px,${EXPANDED_CAP});overflow-y:auto}` +
     `${open}[${EXPANDED_OWN_ATTR}]{overscroll-behavior:contain}`
   );
 }

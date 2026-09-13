@@ -63,8 +63,10 @@ function liveBundleDir() {
 
 // expandedHeaderBuild's line, minus the marker comment.
 function fixCss(msg, sticky, box) {
-  const open = `.message_${msg}.stickyHeader_${sticky} .content_${box}:not(.collapsed_${box})`;
+  const content = `.message_${msg}.stickyHeader_${sticky} .content_${box}`;
+  const open = `${content}:not(.collapsed_${box})`;
   return (
+    `${content}{transition:none}` +
     `${open}{max-height:max(${CLAMP}px,${CAP_VH}vh);overflow-y:auto}` +
     `${open}[data-ccup-own]{overscroll-behavior:contain}`
   );
@@ -296,7 +298,7 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
         const y = h.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
         h.style.position = p; return +y.toFixed(2);
       })()`);
-    const settle = 450; // past the content's 300ms max-height transition
+    const settle = 150; // a frame for React and the observer; open and close are instant
     const scrollTo = async (y) => {
       await ctx.evaluate(
         `(() => { document.getElementById('scroller').scrollTop = ${y}; return true })()`,

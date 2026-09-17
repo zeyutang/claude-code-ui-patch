@@ -2,7 +2,7 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 1.5.2
 
 - New `chatRawMarkdownButton` setting: each agent response grows a button, on hover, that swaps the rendered markdown for the source Claude wrote and back.
   The button rides the left gutter on the line through the message dots, clear of both the response's own text and the copy button on a code block, and pins under the user message stuck to the top of the chat once the response's own top scrolls away.

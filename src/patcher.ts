@@ -553,12 +553,16 @@ const ABS_LN_CARD_FX_RE =
 
 // use: the diff component's editor-creation effect, read only for the build's
 // useEffect alias, which the fx fragment needs to declare an effect of its own
-// (captures: 1=useEffect, 2=container ref). Same lookbehind trick as above so
-// the pattern proper starts at the literal `.createDiffEditor(`. This anchor
-// sits a couple of thousand bytes above the models effect in the same
-// component, which absLnThread checks by distance.
+// (captures: 1=useEffect). Same lookbehind trick as above so the pattern proper
+// starts at the literal `.createDiffEditor(`. What the effect does before the
+// call is not read, only that it is brace-free: through 2.1.273 it was
+// `if(!X.current)return;let O=J$`, and 2.1.274 reads the container into a
+// local and derives the initial side-by-side flag from its width first. The
+// expand modal's own create effect matches too, so absLnThread takes the match
+// nearest above the card's models effect and checks it by distance, which is
+// what ties the alias to this component.
 const ABS_LN_USEEFFECT_RE =
-  /(?<=([\w$]+)\(\(\)=>\{if\(!([\w$]+)\.current\)return;let ([\w$]+)=([\w$]+))\.createDiffEditor\(/g;
+  /(?<=([\w$]+)\(\(\)=>\{[^{}]{0,400})\.createDiffEditor\(/g;
 const ABS_LN_USEEFFECT_MAX_GAP = 4000;
 
 // mprop: the card's expand click, openModal({original,modified,language,
@@ -585,6 +589,18 @@ const ABS_LN_GAP_RE =
 function absLnExec(re: RegExp, c: string): RegExpExecArray | null {
   re.lastIndex = 0;
   return re.exec(c);
+}
+
+// The last match of a global regex that starts before `end`.
+function absLnLastBefore(
+  re: RegExp,
+  c: string,
+  end: number,
+): RegExpExecArray | null {
+  re.lastIndex = 0;
+  let last: RegExpExecArray | null = null;
+  for (let m = re.exec(c); m && m.index < end; m = re.exec(c)) last = m;
+  return last;
 }
 
 // Remove every trace of the enhancement (inline fragments + helper line),
@@ -616,7 +632,9 @@ function absLnThread(c: string): string {
   const mProp = absLnExec(ABS_LN_PROP_RE, c);
   const mArg = absLnExec(ABS_LN_ARG_RE, c);
   const mCardFx = absLnExec(ABS_LN_CARD_FX_RE, c);
-  const mUse = absLnExec(ABS_LN_USEEFFECT_RE, c);
+  const mUse = mCardFx
+    ? absLnLastBefore(ABS_LN_USEEFFECT_RE, c, mCardFx.index)
+    : null;
   const mModalProp = absLnExec(ABS_LN_MODAL_PROP_RE, c);
   const mModalFx = absLnExec(ABS_LN_MODAL_FX_RE, c);
   if (
@@ -2080,6 +2098,26 @@ function dimCss(chat: string, preq: string | undefined): string {
 // edit is best-effort: on a drifted bundle where the branch is gone the toggle
 // still applies (buttons only), and permYankGuardOk treats "no native site" as
 // satisfied so the state machinery never loops on it.
+//
+// 2.1.275 rebuilt the effect around a settle-glide of its own, and split the
+// one branch in two: an answered popup jumps to the bottom
+// (`if(<answered>){<away>.current=!1,<settle>.current=null,<helper>(<ref>);
+// return}`), and a pending, untouched one clears the scrolled-away flag and,
+// when the view sits 50px or more above the bottom, starts a smooth glide there
+// that a scrollend listener keeps re-aiming for 2s as the spacer grows. That
+// glide is the yank itself, and it now closes the spacer gap natively, so this
+// form needs neither the stickiness IIFE nor __ccupPermGlide. Instead each of
+// the two conditions gains `&&<atBottom>.current`, the effect's own ref that
+// render sets to "within 50px of the bottom" before the commit, which is the
+// same stick zone measured before the popup changed anything. At the bottom
+// both branches then run exactly as native (glide and settle included). Away
+// from it neither does, and the effect falls through to its general
+// follow-the-bottom decision, which leaves a scrolled-away view where it is.
+// The atBottom ref is read off the "first messages arrived" branch that
+// follows, which sets it to true and reuses the same away and settle refs,
+// helper and container ref (in a lookahead, as before). Each insertion is
+// self-delimiting (marker, identifier, `.current`, then the condition's own
+// closing paren), so stripping them restores the stock bytes.
 const PERM_YANK_MARKER = "/*ccup:permYankGuard*/";
 // Condition and smooth flag: brace- and semicolon-free spans, which bounds the
 // greedy run to the one statement and lets the condition carry its own parens.
@@ -2115,6 +2153,34 @@ const PERM_YANK_LEGACY_RE = new RegExp(
     PERM_YANK_SMOOTH +
     String.raw`\);return\}`,
 );
+// The 2.1.275 form: the answered branch (captures: 1=its head through the
+// condition, 3=away ref, 4=settle ref, 5=helper, 6=container ref), running on
+// into the pending branch's head (2 ends at its condition), then that branch's
+// body (7) and the atBottom ref (8) off the branch after them. The conditions
+// are opaque spans, so this also matches the guarded form: it must only ever
+// run on a stripped bundle.
+const PERM_YANK_SETTLE_NATIVE_RE = new RegExp(
+  String.raw`(if\([^{};]*)` +
+    String.raw`(\)\{([\w$]+)\.current=!1,([\w$]+)\.current=null,([\w$]+)\(([\w$]+)\);return\}if\([^{};]*)` +
+    String.raw`(\)\{if\(\3\.current=!1,[^{}]*\)\{\4\.current=Date\.now\(\),\5\(\6,!0\);return\}\})` +
+    String.raw`(?=if\([^{}]*\)\{\3\.current=!1,\4\.current=null,\5\(\6\),([\w$]+)\.current=!0;return\})`,
+);
+const PERM_YANK_SETTLE_GUARD = String.raw`&&\/\*ccup:permYankGuard\*\/`;
+// Both conditions guarded by the same atBottom ref (captures: 1=atBottom,
+// 2=away ref, 3=settle ref, 4=helper, 5=container ref).
+const PERM_YANK_SETTLE_GUARDED_RE = new RegExp(
+  String.raw`if\([^{};]*` +
+    PERM_YANK_SETTLE_GUARD +
+    String.raw`([\w$]+)\.current\)\{([\w$]+)\.current=!1,([\w$]+)\.current=null,([\w$]+)\(([\w$]+)\);return\}if\([^{};]*` +
+    PERM_YANK_SETTLE_GUARD +
+    String.raw`\1\.current\)\{if\(\2\.current=!1,[^{}]*\)\{\3\.current=Date\.now\(\),\4\(\5,!0\);return\}\}` +
+    String.raw`(?=if\([^{}]*\)\{\2\.current=!1,\3\.current=null,\4\(\5\),\1\.current=!0;return\})`,
+);
+// One inserted conjunct, whichever condition it sits in.
+const PERM_YANK_SETTLE_FRAG_RE = new RegExp(
+  PERM_YANK_SETTLE_GUARD + String.raw`[\w$]+\.current(?=\)\{)`,
+  "g",
+);
 function permYankGuardedText(
   cond: string,
   fn: string,
@@ -2127,9 +2193,10 @@ function permYankGuardedText(
     `(window.__ccupPermGlide||${fn})(${ref},${smooth});return}`
   );
 }
-// Strip any guard (current or legacy) back to the native branch, then re-apply
-// when on. Both guarded forms spell the ref before the helper (the stickiness
-// check reads it first), so the strip callback takes them in that order.
+// Strip any guard (current, legacy, or the 2.1.275 form) back to the native
+// branch, then re-apply when on. Both guarded one-branch forms spell the ref
+// before the helper (the stickiness check reads it first), so the strip
+// callback takes them in that order.
 function permYankGuardSet(c: string, on: boolean): string {
   const native = (
     _m: string,
@@ -2140,17 +2207,34 @@ function permYankGuardSet(c: string, on: boolean): string {
   ): string => `if(${cond}){${fn}(${ref},${smooth});return}`;
   const off = c
     .replace(PERM_YANK_GUARDED_RE, native)
-    .replace(PERM_YANK_LEGACY_RE, native);
+    .replace(PERM_YANK_LEGACY_RE, native)
+    .replace(PERM_YANK_SETTLE_FRAG_RE, "");
   if (!on) return off;
-  return off.replace(PERM_YANK_NATIVE_RE, (_m, cond, fn, ref, smooth) =>
-    permYankGuardedText(cond, fn, ref, smooth),
-  );
+  return off
+    .replace(PERM_YANK_NATIVE_RE, (_m, cond, fn, ref, smooth) =>
+      permYankGuardedText(cond, fn, ref, smooth),
+    )
+    .replace(
+      PERM_YANK_SETTLE_NATIVE_RE,
+      (_m, head, mid, _away, _settle, _fn, _ref, body, bottom) => {
+        const guard = `&&${PERM_YANK_MARKER}${bottom}.current`;
+        return `${head}${guard}${mid}${guard}${body}`;
+      },
+    );
 }
-// The guard's ON-state health: guarded in the current form, or nothing left to
-// guard (drift). A legacy guard reads as unhealthy so the next apply rebuilds it.
+// The guard's ON-state health: guarded in a current form, or nothing left to
+// guard (drift). A legacy guard reads as unhealthy so the next apply rebuilds
+// it, and so does a 2.1.275 site with only one of its two conjuncts, which the
+// opaque conditions let the native form match.
 function permYankGuardOk(c: string): boolean {
-  if (PERM_YANK_GUARDED_RE.test(c)) return true;
-  return !PERM_YANK_NATIVE_RE.test(c) && !PERM_YANK_LEGACY_RE.test(c);
+  if (PERM_YANK_GUARDED_RE.test(c) || PERM_YANK_SETTLE_GUARDED_RE.test(c)) {
+    return true;
+  }
+  return (
+    !PERM_YANK_NATIVE_RE.test(c) &&
+    !PERM_YANK_LEGACY_RE.test(c) &&
+    !PERM_YANK_SETTLE_NATIVE_RE.test(c)
+  );
 }
 
 const SCROLL_DOT_MARKER = "/*ccup:scrollDot*/";
@@ -2236,6 +2320,8 @@ function scrollDotBuild(c: string): string | undefined {
     // The permission/question arrival path, called from the guarded branch in
     // the chat's scroll effect (see PERM_YANK_MARKER) with that effect's own
     // container ref, which is authoritative when several chat views are mounted.
+    // Through 2.1.274 only: the guard from 2.1.275 on leaves native's own
+    // settle-glide in charge, so nothing calls it there.
     `window.__ccupPermGlide=function(r){try{go(r&&r.current,1)}catch(e){}};` +
     // can = something below to scroll to; shown always, dimmed inert otherwise.
     `function upd(){raf=0;var s=sc(),can=!!s&&s.scrollHeight-s.scrollTop-s.clientHeight>8,boxes=hosts();` +
@@ -3903,12 +3989,14 @@ const UCE_Q_KEY_ON_RE =
 const UCE_Q_KEY_ON_LEGACY_RE =
   /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;\/\*ccup-uce\*\/var ccupOn=ccupQCtx&&ccupQCtx\.useCtrlEnterToSend;if\(!ccupOn\|\|\1\.metaKey\|\|\1\.ctrlKey\)\{if\(ccupOn\)\1\.stopPropagation\(\);if\(\1\.preventDefault\(\),([\w$]+)\.questions&&([\w$]+)<\2\.questions\.length-1\)([\w$]+)\(\3\+1\)\}\}\}/;
 // The permission component's signature (yields the context param's minified
-// name) and its feedback box's Enter-submits keydown handler. The props after
-// onPermissionModeChange are an open-ended tail (2.1.261 added folded,
-// onFoldedChange and onAnswered), so the destructure is matched to its closing
-// brace instead of being pinned to the three props this needs to see.
+// name) and its feedback box's Enter-submits keydown handler. Props join the
+// destructure on both sides of onPermissionModeChange (2.1.261 added folded,
+// onFoldedChange and onAnswered after it, 2.1.280 autoModeAvailable before
+// it), so the span between context and it takes any run of plain `key:alias,`
+// props and the tail is matched to the closing brace, rather than pinning the
+// destructure to the three props this needs to see.
 const UCE_PERM_SIG_RE =
-  /function [\w$]+\(\{request:[\w$]+,context:([\w$]+),onPermissionModeChange:[\w$]+[^{}]*\}\)\{/;
+  /function [\w$]+\(\{request:[\w$]+,context:([\w$]+),(?:[\w$]+:[\w$]+,)*onPermissionModeChange:[\w$]+[^{}]*\}\)\{/;
 const UCE_PERM_TE_RE =
   /(=async\(([\w$]+)\)=>\{if\(\2\.key==="Enter"&&!\2\.shiftKey\)\{if\(\2\.nativeEvent\.isComposing\)return;)(\2\.preventDefault\(\),[\w$]+\(\)\})/;
 const UCE_PERM_TE_ON_RE =
@@ -4227,15 +4315,19 @@ const RAWMD_HOOK_RE =
   /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)\}\)\{let [\w$]+=[^;]{0,600}?,\[[\w$]+,[\w$]+\]=([\w$]+)\(null\))(,)/;
 
 // ret: the component's returned root span, `return R("span",{className:
-// PM.root,children:[` with the markdown element's factory in a lookahead
-// (captures: 1=`return `, 2=span opener, 3=multi-child factory, 4=single-child
-// factory, left unconsumed).
+// PM.root,children:[` (captures: 1=`return `, 2=span opener, 3=multi-child
+// factory). Nothing after the bracket is read: the first child is the markdown
+// element through 2.1.281 and a map over memoized source chunks since 2.1.282
+// (`Y.map((U,V)=>F(zx0,{source:U,...},V))`), and either one is a single
+// expression the pre fragment's ternary can take as its else branch.
 const RAWMD_RET_RE =
-  /(return )(([\w$]+)\("span",\{className:[\w$]+\.root,children:\[)(?=([\w$]+)\()/;
+  /(return )(([\w$]+)\("span",\{className:[\w$]+\.root,children:\[)/;
 
 // tail: the link context menu that closes the root span's children, `,X&&F(Sf1,
 // {href:X.href,x:X.x,y:X.y,onClose:z})]})` + the component's closing brace
-// (captures: 1=the tail, 2=menu state, 3=single-child factory, 4=brace).
+// (captures: 1=the tail, 2=menu state, 3=single-child factory, 4=brace). The
+// single-child factory for the pre fragment is read here too, since ret no
+// longer sees one.
 const RAWMD_TAIL_RE =
   /(,([\w$]+)&&([\w$]+)\([\w$]+,\{href:\2\.href,x:\2\.x,y:\2\.y,onClose:[\w$]+\}\)\]\}\))(\})/;
 
@@ -4317,7 +4409,8 @@ function rawMdStrip(c: string): string {
 // one site). The pin line is appended separately, see rawMdSet.
 function rawMdApplyInline(c: string): string {
   const content = c.match(RAWMD_HOOK_RE)?.[2];
-  if (content === undefined) return c;
+  const single = c.match(RAWMD_TAIL_RE)?.[3];
+  if (content === undefined || single === undefined) return c;
   let out = c.replace(
     RAWMD_HOOK_RE,
     (_w, head, _content, _partial, useState, comma) =>
@@ -4326,7 +4419,7 @@ function rawMdApplyInline(c: string): string {
         `,[${RAWMD_ON},${RAWMD_SET}]=${useState}(!1)`,
       )}${comma}`,
   );
-  out = out.replace(RAWMD_RET_RE, (_w, ret, span, multi, single) =>
+  out = out.replace(RAWMD_RET_RE, (_w, ret, span, multi) =>
     [
       ret,
       rawMdFrag(

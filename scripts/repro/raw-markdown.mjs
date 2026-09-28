@@ -28,7 +28,7 @@ import { join } from "node:path";
 const HOOK_RE =
   /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)\}\)\{let [\w$]+=[^;]{0,600}?,\[[\w$]+,[\w$]+\]=([\w$]+)\(null\))(,)/;
 const RET_RE =
-  /(return )(([\w$]+)\("span",\{className:[\w$]+\.root,children:\[)(?=([\w$]+)\()/;
+  /(return )(([\w$]+)\("span",\{className:[\w$]+\.root,children:\[)/;
 const TAIL_RE =
   /(,([\w$]+)&&([\w$]+)\([\w$]+,\{href:\2\.href,x:\2\.x,y:\2\.y,onClose:[\w$]+\}\)\]\}\))(\})/;
 const TESTID_RE = /"data-testid":"assistant-message"/;

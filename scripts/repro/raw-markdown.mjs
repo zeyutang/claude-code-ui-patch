@@ -26,7 +26,7 @@ import { join } from "node:path";
 
 // --- the point's anchors in webview/index.js (mirror of src/patcher.ts) -----
 const HOOK_RE =
-  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)\}\)\{let [\w$]+=[^;]{0,600}?,\[[\w$]+,[\w$]+\]=([\w$]+)\(null\))(,)/;
+  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)[^{}]*\}\)\{let [\w$]+=[^;]{0,600}?,\[[\w$]+,[\w$]+\]=([\w$]+)\(null\))(,)/;
 const RET_RE =
   /(return )(([\w$]+)\("span",\{className:[\w$]+\.root,children:\[)/;
 const TAIL_RE =

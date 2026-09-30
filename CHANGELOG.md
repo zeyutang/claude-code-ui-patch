@@ -2,6 +2,13 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.5.4
+
+- `chatMathRendering` renders math in agent responses again on Claude Code 2.1.286 and later.
+- `chatRawMarkdownButton` works again on Claude Code 2.1.286 and later, where agent responses had lost their raw markdown button.
+- `useCtrlEnterToSendEverywhere` applies again on Claude Code 2.1.286 and later, where the AskUserQuestion `Other` box and the permission feedback box had gone back to submitting on a plain `Enter`.
+- With `chatDiffCardLineNumbers` on, diff cards again number their lines by the file's real line numbers on Claude Code 2.1.285 and later, instead of counting from 1 within the snippet.
+
 ## 1.5.3
 
 - `chatRawMarkdownButton` works again on Claude Code 2.1.282 and later, where agent responses had lost their raw markdown button.

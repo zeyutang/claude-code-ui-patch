@@ -525,9 +525,11 @@ const ABS_LN_HELPER =
 
 // tur: the webview store's result-pairing loop, `for(let o of t.message.content)
 // if(o.type==="tool_result"){let r=BG(e,o.tool_use_id);if(r)r.setToolResult(o)}`
-// (captures: 2=block, 3=message, 4=wrapper, 5=finder, 6=list).
+// (captures: 2=block, 3=message, 4=wrapper, 5=finder, 6=list, 7=tail). The
+// tail is read only up to the block argument: 2.1.285 opens a block that
+// derives the call's options first (`if(r){let u=...;r.setToolResult(o,{...})}`).
 const ABS_LN_TUR_RE =
-  /(for\(let ([\w$]+) of ([\w$]+)\.message\.content\)if\(\2\.type==="tool_result"\)\{let ([\w$]+)=([\w$]+)\(([\w$]+),\2\.tool_use_id\);)(if\(\4\)\4\.setToolResult\(\2\)\})/g;
+  /(for\(let ([\w$]+) of ([\w$]+)\.message\.content\)if\(\2\.type==="tool_result"\)\{let ([\w$]+)=([\w$]+)\(([\w$]+),\2\.tool_use_id\);)(if\(\4\)(?:\{[^{}]*?)?\4\.setToolResult\(\2[,)])/g;
 
 // prop: the Edit card's body, from its `is_error?"Edit failed"` head through the
 // diff-component JSX call (captures: 2/3/4=body params ctx/input/result,
@@ -1291,9 +1293,10 @@ export function initMathAssets(extensionDir: string): void {
 
 // wrap: the markdown component's content initializer,
 // `({content:e,context:t,isPartialText:i}){let n=i?wlt(e):e,` (captures:
-// 1=head, 2=content, 3=isPartialText, 4=initializer, 5=separator).
+// 1=head, 2=content, 3=isPartialText, 4=initializer, 5=separator). Props after
+// isPartialText are skipped (2.1.286 added `links:X="live"`).
 const MATH_WRAP_RE =
-  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)\}\)\{let [\w$]+=)(\3\?[\w$]+\(\2\):\2)([,;])/g;
+  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)[^{}]*\}\)\{let [\w$]+=)(\3\?[\w$]+\(\2\):\2)([,;])/g;
 
 // code: the head of the component map's `code` renderer,
 // `code:({children:c,className:d})=>{if(d)return b("code",...)` (captures:
@@ -3965,18 +3968,21 @@ const PLAN_COMMENT_SEND_RE =
 // the apply through the foreign-key watch (taking effect there on reload).
 const UCE_TAG = "/*ccup-uce*/";
 // The AskUserQuestion render site: the only permissionRequest method whose body
-// is exactly the input/onInputChange/options passthrough (param 1 = context,
-// capture 5 = the build's minified JSX factory, 6 = the component).
+// is exactly the input/onInputChange/options passthrough (captures: 1=head,
+// 2=param 1, the context, 6=tail). Plain props may lead the literal, and the
+// head re-emits them: 2.1.286 passes `context:$` natively (for the option
+// preview's markdown), while the "Other" box still ignores it.
 const UCE_Q_RENDER_RE =
-  /permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return ([\w$]+)\(([\w$]+),\{input:\2,onInputChange:\3,options:\4\}\)\}/;
+  /(permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return [\w$]+\([\w$]+,\{(?:[\w$]+:[\w$]+,)*input:\3,onInputChange:\4,options:\5)(\}\)\})/;
 const UCE_Q_RENDER_ON_RE =
-  /permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return ([\w$]+)\(([\w$]+),\{input:\2,onInputChange:\3,options:\4,ccupCtx:\1\}\)\}/;
+  /(permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return [\w$]+\([\w$]+,\{(?:[\w$]+:[\w$]+,)*input:\3,onInputChange:\4,options:\5),ccupCtx:\2(\}\)\})/;
 // The question component's props destructure (unique: the render site above
-// spells the same names after `<factory>(Comp,` with no `({`).
+// spells the same names after `<factory>(Comp,` with no `({`), with the same
+// leading props (captures: 1=head, 2=options, 3=tail).
 const UCE_Q_SIG_RE =
-  /function ([\w$]+)\(\{input:([\w$]+),onInputChange:([\w$]+),options:([\w$]+)\}\)\{/;
+  /(function [\w$]+\(\{(?:[\w$]+:[\w$]+,)*input:[\w$]+,onInputChange:[\w$]+,options:([\w$]+))(\}\)\{)/;
 const UCE_Q_SIG_ON_RE =
-  /function ([\w$]+)\(\{input:([\w$]+),onInputChange:([\w$]+),options:([\w$]+),ccupCtx:ccupQCtx\}\)\{/;
+  /(function [\w$]+\(\{(?:[\w$]+:[\w$]+,)*input:[\w$]+,onInputChange:[\w$]+,options:([\w$]+)),ccupCtx:ccupQCtx(\}\)\{)/;
 // The "Other" box's keydown: stopPropagation for unmodified keys, then the
 // Enter branch that advances to the next unanswered question.
 const UCE_Q_KEY_RE =
@@ -4010,13 +4016,15 @@ const UCE_PRIMARY_RE =
 // The options literal handed to the permission content renderer, which passes it
 // on as the question component's `options` prop. Matched to the literal's
 // closing brace so a build that adds another prop still threads (2.1.261 added
-// three to the permission destructure), and ccupSubmit goes on the end. The
-// arrow's own braces are why this native form cannot match an already-threaded
-// literal: [^{}]* stops at the `{` of the injected body.
+// three to the permission destructure), and ccupSubmit goes on the end. Plain
+// props may also join between the four it keys on (2.1.286 put `logEvent`
+// after channelId). The arrow's own braces are why this native form cannot
+// match an already-threaded literal: [^{}]* stops at the `{` of the injected
+// body.
 const UCE_CONTENT_RE =
-  /(\([\w$]+,([\w$]+),[\w$]+,\{onClose:[\w$]+,channelId:\2\.channelId,fold:[\w$]+,foldButtonRef:[\w$]+[^{}]*)\}\)/;
+  /(\([\w$]+,([\w$]+),[\w$]+,\{onClose:[\w$]+,(?:[\w$]+:[\w$]+,)*channelId:\2\.channelId,(?:[\w$]+:[\w$]+,)*fold:[\w$]+,(?:[\w$]+:[\w$]+,)*foldButtonRef:[\w$]+[^{}]*)\}\)/;
 const UCE_CONTENT_ON_RE =
-  /(\([\w$]+,([\w$]+),[\w$]+,\{onClose:[\w$]+,channelId:\2\.channelId,fold:[\w$]+,foldButtonRef:[\w$]+[^{}]*),ccupSubmit:\(\)=>\{\/\*ccup-uce\*\/if\([\w$]+\|\|![\w$]+\)return!1;return [\w$]+\(\),!0\}\}\)/;
+  /(\([\w$]+,([\w$]+),[\w$]+,\{onClose:[\w$]+,(?:[\w$]+:[\w$]+,)*channelId:\2\.channelId,(?:[\w$]+:[\w$]+,)*fold:[\w$]+,(?:[\w$]+:[\w$]+,)*foldButtonRef:[\w$]+[^{}]*),ccupSubmit:\(\)=>\{\/\*ccup-uce\*\/if\([\w$]+\|\|![\w$]+\)return!1;return [\w$]+\(\),!0\}\}\)/;
 
 // The submit the "Other" box borrows: the primary button's disabled condition
 // first, then its accept call. Returns whether it submitted, so the keydown can
@@ -4106,13 +4114,11 @@ function uceOff(c: string): string {
   let out = c;
   out = out.replace(
     UCE_Q_RENDER_ON_RE,
-    (_w, p1, p2, p3, p4, fac, comp) =>
-      `permissionRequest(${p1},${p2},${p3},${p4}){return ${fac}(${comp},{input:${p2},onInputChange:${p3},options:${p4}})}`,
+    (_w, head, _p1, _p2, _p3, _p4, tail) => `${head}${tail}`,
   );
   out = out.replace(
     UCE_Q_SIG_ON_RE,
-    (_w, name, input, onChange, options) =>
-      `function ${name}({input:${input},onInputChange:${onChange},options:${options}}){`,
+    (_w, head, _opts, tail) => `${head}${tail}`,
   );
   out = out.replace(UCE_Q_KEY_ON_RE, (_w, k, _opts, props, idx, setIdx) =>
     uceQKeyNativeText(k, props, idx, setIdx),
@@ -4131,18 +4137,16 @@ function uceSet(c: string, on: boolean): string {
   if (!on) return off;
   if (!uceNativeAnchorsPresent(off)) return c; // anchors drifted: stay native
   const ctx = off.match(UCE_PERM_SIG_RE)![1];
-  const opts = off.match(UCE_Q_SIG_RE)![4];
+  const opts = off.match(UCE_Q_SIG_RE)![2];
   const [, , accept, pending, answered] = off.match(UCE_PRIMARY_RE)!;
   let out = off;
   out = out.replace(
     UCE_Q_RENDER_RE,
-    (_w, p1, p2, p3, p4, fac, comp) =>
-      `permissionRequest(${p1},${p2},${p3},${p4}){return ${fac}(${comp},{input:${p2},onInputChange:${p3},options:${p4},ccupCtx:${p1}})}`,
+    (_w, head, p1, _p2, _p3, _p4, tail) => `${head},ccupCtx:${p1}${tail}`,
   );
   out = out.replace(
     UCE_Q_SIG_RE,
-    (_w, name, input, onChange, options) =>
-      `function ${name}({input:${input},onInputChange:${onChange},options:${options},ccupCtx:ccupQCtx}){`,
+    (_w, head, _opts, tail) => `${head},ccupCtx:ccupQCtx${tail}`,
   );
   out = out.replace(UCE_Q_KEY_RE, (_w, k, props, idx, setIdx) =>
     uceQKeyOnText(k, opts, props, idx, setIdx),
@@ -4310,9 +4314,10 @@ const rawMdFrag = (marker: string, code: string): string =>
 // isPartialText:Z}){let Y=Z?wL0($):$,[X,Q]=l(null)` + `,` (captures: 1=head,
 // 2=content prop, 3=isPartialText prop, 4=useState alias, 5=chain comma). The
 // head tolerates the math patch's own fragments sitting in the initializer
-// (they carry no `;`), which is what lets the two compose in either order.
+// (they carry no `;`), which is what lets the two compose in either order, and
+// skips props after isPartialText the way MATH_WRAP_RE does.
 const RAWMD_HOOK_RE =
-  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)\}\)\{let [\w$]+=[^;]{0,600}?,\[[\w$]+,[\w$]+\]=([\w$]+)\(null\))(,)/;
+  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)[^{}]*\}\)\{let [\w$]+=[^;]{0,600}?,\[[\w$]+,[\w$]+\]=([\w$]+)\(null\))(,)/;
 
 // ret: the component's returned root span, `return R("span",{className:
 // PM.root,children:[` (captures: 1=`return `, 2=span opener, 3=multi-child

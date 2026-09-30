@@ -535,6 +535,13 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
         if (el.classList && el.classList.contains('ccup-rawmd-host')) return 'ccup-rawmd-host';
         return typeof el.className === 'string' && el.className ? el.className : el.tagName;
       })()`);
+    // The id of the response row a point falls in, if any.
+    const rowAt = (x, y) =>
+      ctx.evaluate(`(() => {
+        const el = document.elementFromPoint(${x}, ${y});
+        const row = el && el.closest('[data-testid="assistant-message"]');
+        return row ? row.id : null;
+      })()`);
     // Move the pointer and let the .15s fade settle before reading.
     const hoverAt = async (x, y) => {
       await ctx.cdp("Input.dispatchMouseEvent", {
@@ -734,7 +741,19 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       r.patched.opacity === 0 && r.patched.pe === "none",
       `opacity=${r.patched.opacity} pointer-events=${r.patched.pe}`,
     );
-    r = await hoverAt(midX, r.patched.host.y + 120);
+    // Halfway between the button's bottom edge and the host's, read off the
+    // block's own boxes: the block's height follows the stylesheet's text size
+    // and paragraph spacing, and a fixed offset that stays inside it at a large
+    // chat font lands in the next response at the native 13px, right on that
+    // raw-mode response's own button.
+    const below = (r.patched.btn.bottom + r.patched.host.bottom) / 2;
+    check(
+      "the probe point is on this response's thread line, below the button",
+      below - r.patched.btn.bottom >= SIZE &&
+        (await rowAt(midX, below)) === "patched",
+      `y=${below} btn bottom=${r.patched.btn.bottom} host bottom=${r.patched.host.bottom}`,
+    );
+    r = await hoverAt(midX, below);
     check(
       "the thread line well below the button raises it",
       r.patched.opacity === 1 && r.patched.pe === "auto",

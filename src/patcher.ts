@@ -17,12 +17,14 @@ import {
   isMember,
   keyName,
   memberProp,
+  methodAt,
   parseUnitAt,
   propOf,
   shiftedPos,
   unitAround,
   unitsWith,
   walk,
+  walkOwn,
 } from "./derive";
 
 // The installed Claude Code extension is laid down as one directory per
@@ -500,14 +502,19 @@ const DIFF_CONTAINER_HASH_RE = /\.diffEditorContainer_([-\w]+)\{/g;
 // first and rebuilds, making it deterministic and idempotent, and letting
 // fnCurrentOn detect "fully current" as content === diffLinesSet(content, true)
 // (an older patch layout reads as off and upgrades in place on the next apply).
-// The anchors capture the build's minified identifiers and cross-check them
-// against each other (same component, same destructured names in the deps and
-// the modal call, useEffect alias read from the editor-creation effect a short
-// hop above the models effect it is spliced after); if ANY anchor or
-// cross-check fails, the enhancement is
-// skipped as a block and ON degrades to the base swap alone, so a partial
-// application can never reference an identifier another edit failed to
-// introduce. Injected names are ccup-prefixed to dodge minified locals, and
+// The six sites are located by their structure (src/derive.ts), from four
+// locally parsed units: the diff component (its params destructure
+// original/modified/language/filePath), which holds the arg, fx and mprop sites
+// and the create effect that names the build's useEffect alias; the class
+// around the Edit card (whose body method renders that same component with the
+// tool input's strings); the function around the store's result-pairing loop;
+// and the expand modal's component. Each site is matched by its role and key
+// SET rather than its text, each must be found exactly once, and every
+// minified name an insertion reads must resolve there to the binding it was
+// read from (the fx effect must also be a top-level statement of the
+// component, as hooks are). If ANY of that fails, the enhancement is skipped as
+// a block and ON degrades to the base swap alone, so a partial application can
+// never reference an identifier another edit failed to introduce. Injected names are ccup-prefixed to dodge minified locals, and
 // every injected code path is try/catch-wrapped so it can never break the card.
 // ---------------------------------------------------------------------------
 const DIFF_LN_BASE_RE =
@@ -546,60 +553,12 @@ const ABS_LN_HELPER =
   ':{lineNumbers:"on",lineNumbersMinChars:1};' +
   "ed.updateOptions(o)}catch(e){}}}catch(e){}})();";
 
-// tur: the webview store's result-pairing loop, `for(let o of t.message.content)
-// if(o.type==="tool_result"){let r=BG(e,o.tool_use_id);if(r)r.setToolResult(o)}`
-// (captures: 2=block, 3=message, 4=wrapper, 5=finder, 6=list, 7=tail). The
-// tail is read only up to the block argument: 2.1.285 opens a block that
-// derives the call's options first (`if(r){let u=...;r.setToolResult(o,{...})}`).
-const ABS_LN_TUR_RE =
-  /(for\(let ([\w$]+) of ([\w$]+)\.message\.content\)if\(\2\.type==="tool_result"\)\{let ([\w$]+)=([\w$]+)\(([\w$]+),\2\.tool_use_id\);)(if\(\4\)(?:\{[^{}]*?)?\4\.setToolResult\(\2[,)])/g;
-
-// prop: the Edit card's body, from its `is_error?"Edit failed"` head through the
-// diff-component JSX call (captures: 2/3/4=body params ctx/input/result,
-// 5=jsx factory, 6=component; the bounded lazy gap spans the summary line).
-const ABS_LN_PROP_RE =
-  /(body\(([\w$]+),([\w$]+),([\w$]+)\)\{let [\w$]+=\4&&\4\.is_error\?"Edit failed"[\s\S]{1,800}?\b([\w$]+)\(([\w$]+),\{original:\3\.old_string\|\|"",modified:\3\.new_string\|\|"",filePath:\3\.file_path\|\|"")(\}\))/g;
-
-// arg: the diff component's props destructure (captures: 2=component,
-// 3=original, 4=modified, 5=language, 6=filePath).
-const ABS_LN_ARG_RE =
-  /(function ([\w$]+)\(\{original:([\w$]+),modified:([\w$]+),language:([\w$]+)="plaintext",filePath:([\w$]+))(\}\))/g;
-
-// card: the card's models effect, setModel followed by a FOUR-dep array (the
-// modal's twin has one dep, so the arity disambiguates; captures: 1=editor ref,
-// 2=setModel chunk, 3=models ref, 4..7=deps original/modified/language/
-// filePath). The fx fragment is spliced in after this effect's closing `])`.
-// The editor ref is read through a lookbehind so the pattern proper starts at a
-// literal: a leading (\w+) has no fixed head for the regex engine to skip-scan
-// with and costs ~80ms per pass over the ~5MB bundle (~3ms this way), which the
-// toggle round-trip pays several times.
-const ABS_LN_CARD_FX_RE =
-  /(?<=([\w$]+))(\.current\.setModel\(\{original:([\w$]+)\.current\.original,modified:\3\.current\.modified\}\))\},\[([\w$]+),([\w$]+),([\w$]+),([\w$]+)\]\)/g;
-
-// use: the diff component's editor-creation effect, read only for the build's
-// useEffect alias, which the fx fragment needs to declare an effect of its own
-// (captures: 1=useEffect). Same lookbehind trick as above so the pattern proper
-// starts at the literal `.createDiffEditor(`. What the effect does before the
-// call is not read, only that it is brace-free: through 2.1.273 it was
-// `if(!X.current)return;let O=J$`, and 2.1.274 reads the container into a
-// local and derives the initial side-by-side flag from its width first. The
-// expand modal's own create effect matches too, so absLnThread takes the match
-// nearest above the card's models effect and checks it by distance, which is
-// what ties the alias to this component.
-const ABS_LN_USEEFFECT_RE =
-  /(?<=([\w$]+)\(\(\)=>\{[^{}]{0,400})\.createDiffEditor\(/g;
-const ABS_LN_USEEFFECT_MAX_GAP = 4000;
-
-// mprop: the card's expand click, openModal({original,modified,language,
-// filePath}) (captures: 2=openModal, 3=original, 4=modified).
-const ABS_LN_MODAL_PROP_RE =
-  /(\{([\w$]+)\(\{original:([\w$]+),modified:([\w$]+),language:([\w$]+),filePath:([\w$]+))(\}\)\})/g;
-
-// modal: the modal's models effect, setModel followed by the ONE-dep array
-// (captures: 1=editor ref via the same lookbehind, 2=setModel chunk, 3=models
-// ref, 4=deps tail, 5=modal state).
-const ABS_LN_MODAL_FX_RE =
-  /(?<=([\w$]+))(\.current\.setModel\(\{original:([\w$]+)\.current\.original,modified:\3\.current\.modified\}\))(\},\[([\w$]+)\]\))/g;
+// The props the diff component destructures (ccupStart joins them). A
+// destructured prop sits close after its function keyword, while a token deep
+// in a function body or a class may sit far from where that unit starts.
+const ABS_LN_DIFF_KEYS = ["original", "modified", "language", "filePath"];
+const ABS_LN_PARAMS_REACH = 2000;
+const ABS_LN_UNIT_REACH = 200000;
 
 // gm: the diff editor's left-hand-side option derive, which forces the original
 // editor's glyph margin on in side-by-side view.
@@ -614,18 +573,6 @@ const ABS_LN_GAP_RE =
 function absLnExec(re: RegExp, c: string): RegExpExecArray | null {
   re.lastIndex = 0;
   return re.exec(c);
-}
-
-// The last match of a global regex that starts before `end`.
-function absLnLastBefore(
-  re: RegExp,
-  c: string,
-  end: number,
-): RegExpExecArray | null {
-  re.lastIndex = 0;
-  let last: RegExpExecArray | null = null;
-  for (let m = re.exec(c); m && m.index < end; m = re.exec(c)) last = m;
-  return last;
 }
 
 // Remove every trace of the enhancement (inline fragments + helper line),
@@ -650,96 +597,322 @@ function absLnApply(c: string): string {
   return out;
 }
 
-// The tool_use_result thread, or the input unchanged when any anchor or
-// cross-check fails (all-or-nothing, see the block comment above).
+// The editor ref's name when `x` is the models push both models effects end
+// with, `<ref>.current.setModel({original:<m>.current.original,
+// modified:<m>.current.modified})`; else null.
+function absLnSetModelRef(x: N): string | null {
+  if (x.type !== "CallExpression" || memberProp(x.callee) !== "setModel")
+    return null;
+  const owner = x.callee.object;
+  const arg = x.arguments[0];
+  if (
+    memberProp(owner) !== "current" ||
+    !hasKeys(arg, ["original", "modified"])
+  )
+    return null;
+  const models = ["original", "modified"].map((k) => {
+    const v = propOf(arg, k)!.value;
+    return memberProp(v) === k && memberProp(v.object) === "current"
+      ? idName(v.object.object)
+      : null;
+  });
+  return models[0] && models[0] === models[1] ? idName(owner.object) : null;
+}
+
+// `<blk>.type==="tool_result"`, the comparison written either way round.
+function absLnIsToolResultTest(t: N, blk: string): boolean {
+  if (
+    t.type !== "BinaryExpression" ||
+    (t.operator !== "===" && t.operator !== "==")
+  )
+    return false;
+  const lit = (n: N) => n.type === "Literal" && n.value === "tool_result";
+  return (
+    (isMember(t.left, blk, "type") && lit(t.right)) ||
+    (isMember(t.right, blk, "type") && lit(t.left))
+  );
+}
+
+// The tool_use_result thread, or the input unchanged when any site is missing,
+// ambiguous, or would read a name bound elsewhere (all-or-nothing, see the
+// block comment above).
 function absLnThread(c: string): string {
-  const mTur = absLnExec(ABS_LN_TUR_RE, c);
-  const mProp = absLnExec(ABS_LN_PROP_RE, c);
-  const mArg = absLnExec(ABS_LN_ARG_RE, c);
-  const mCardFx = absLnExec(ABS_LN_CARD_FX_RE, c);
-  const mUse = mCardFx
-    ? absLnLastBefore(ABS_LN_USEEFFECT_RE, c, mCardFx.index)
-    : null;
-  const mModalProp = absLnExec(ABS_LN_MODAL_PROP_RE, c);
-  const mModalFx = absLnExec(ABS_LN_MODAL_FX_RE, c);
-  if (
-    !mTur ||
-    !mProp ||
-    !mArg ||
-    !mCardFx ||
-    !mUse ||
-    !mModalProp ||
-    !mModalFx
-  ) {
+  // The diff component, and inside it the models effect (a hook call whose
+  // callback ends in the models push and whose deps hold both strings), the
+  // create effect (whose callee is the build's useEffect alias, the hook the fx
+  // fragment declares its own effect with), and the expand click (a call handed
+  // the component's own four strings).
+  const comps = unitsWith(
+    c,
+    "filePath:",
+    "function",
+    isFn,
+    ABS_LN_PARAMS_REACH,
+  ).filter((f) => hasKeys(f.params[0], ABS_LN_DIFF_KEYS));
+  if (comps.length !== 1) return c;
+  const comp = comps[0];
+  const compName = idName(comp.id);
+  const orig = boundName(comp.params[0], "original");
+  const mod = boundName(comp.params[0], "modified");
+  if (!compName || !orig || !mod || comp.body.type !== "BlockStatement")
     return c;
-  }
-  if (
-    mArg[2] !== mProp[6] || // the card renders this same component
-    mCardFx[4] !== mArg[3] || // effect deps are the destructured strings
-    mCardFx[5] !== mArg[4] ||
-    mModalProp[3] !== mArg[3] || // the modal receives those same strings
-    mModalProp[4] !== mArg[4] ||
-    // the useEffect alias comes from this component's own create effect
-    mUse.index >= mCardFx.index ||
-    mCardFx.index - mUse.index > ABS_LN_USEEFFECT_MAX_GAP
-  ) {
+  const models: { call: N; set: N; ref: string }[] = [];
+  const creates: N[] = [];
+  const opens: N[] = [];
+  walk(comp, (n) => {
+    if (n.type !== "CallExpression") return;
+    const [cb, deps] = n.arguments as N[];
+    if (isFn(cb) && idName(n.callee)) {
+      const seen = { create: false, sets: [] as { set: N; ref: string }[] };
+      walkOwn(cb, (x) => {
+        if (x.type !== "CallExpression") return;
+        if (memberProp(x.callee) === "createDiffEditor") seen.create = true;
+        const ref = absLnSetModelRef(x);
+        if (ref) seen.sets.push({ set: x, ref });
+      });
+      if (seen.create) creates.push(n);
+      const names =
+        deps?.type === "ArrayExpression" ? deps.elements.map(idName) : [];
+      if (seen.sets.length === 1 && names.includes(orig) && names.includes(mod))
+        models.push({ call: n, ...seen.sets[0] });
+    }
+    for (const a of n.arguments as N[]) {
+      if (
+        a.type === "ObjectExpression" &&
+        hasKeys(a, ABS_LN_DIFF_KEYS) &&
+        idName(propOf(a, "original")!.value) === orig &&
+        idName(propOf(a, "modified")!.value) === mod
+      )
+        opens.push(a);
+    }
+  });
+  if (models.length !== 1 || creates.length !== 1 || opens.length !== 1)
     return c;
+  const fx = models[0];
+  const alias = idName(creates[0].callee)!;
+  // The fx effect goes in as a statement of its own right after the models
+  // effect, which has to be a top-level statement of the component (as hooks
+  // are), and every name it reads must mean there what it meant where it was
+  // read.
+  const stmt =
+    fx.call.parent?.type === "SequenceExpression"
+      ? fx.call.parent.parent
+      : fx.call.parent;
+  if (
+    stmt?.type !== "ExpressionStatement" ||
+    stmt.parent !== comp.body ||
+    bindingSite(fx.call, alias, comp) !==
+      bindingSite(creates[0], alias, comp) ||
+    bindingSite(fx.call, fx.ref, comp) !== bindingSite(fx.set, fx.ref, comp) ||
+    bindingSite(fx.call, orig, comp) !== comp ||
+    bindingSite(fx.call, mod, comp) !== comp
+  )
+    return c;
+
+  // The Edit card: the call rendering that same component from a class's
+  // body(ctx,input,result) method, its strings read off the tool input, in the
+  // method that tests the result's is_error.
+  const cards = new Map<number, { cls: N; obj: N; result: string }>();
+  const tok = `(${compName},`;
+  for (let i = c.indexOf(tok); i >= 0; i = c.indexOf(tok, i + 1)) {
+    const cls = unitAround(c, i, "class ", isClass, ABS_LN_UNIT_REACH);
+    const m = cls ? methodAt(cls, "body", i) : null;
+    const input = m ? idName(m.params[1]) : null;
+    const result = m ? idName(m.params[2]) : null;
+    if (!cls || !m || !input || !result) continue;
+    const fromInput = (obj: N, key: string, field: string) => {
+      const v = propOf(obj, key)!.value;
+      return (
+        v.type === "LogicalExpression" &&
+        v.operator === "||" &&
+        isMember(v.left, input, field) &&
+        v.right.type === "Literal" &&
+        v.right.value === ""
+      );
+    };
+    const seen = { isError: false, objs: [] as N[] };
+    walk(m, (n) => {
+      if (isMember(n, result, "is_error")) seen.isError = true;
+      const obj =
+        n.type === "CallExpression" && idName(n.arguments[0]) === compName
+          ? n.arguments[1]
+          : null;
+      if (
+        hasKeys(obj, ["original", "modified", "filePath"]) &&
+        fromInput(obj, "original", "old_string") &&
+        fromInput(obj, "modified", "new_string") &&
+        fromInput(obj, "filePath", "file_path") &&
+        bindingSite(obj, result, m) === m
+      )
+        seen.objs.push(obj);
+    });
+    if (seen.isError)
+      for (const obj of seen.objs) cards.set(obj.start, { cls, obj, result });
   }
-  let out = c;
-  out = out.replace(
-    ABS_LN_TUR_RE,
-    (_w, head, blk, msg, wrap, _find, _list, tail) => {
-      const stash =
-        `try{var ccupR=${msg}.tool_use_result;` +
-        'if(ccupR&&typeof ccupR==="object"&&!ccupR.replaceAll&&' +
-        'typeof ccupR.originalFile==="string"){' +
-        'var ccupQ=typeof ccupR.oldString==="string"&&ccupR.oldString?' +
-        `ccupR.oldString:(${wrap}&&${wrap}.content&&${wrap}.content.input&&` +
-        `${wrap}.content.input.old_string);` +
-        "if(ccupQ){var ccupX=ccupR.originalFile.indexOf(ccupQ);" +
-        "if(ccupX>=0){var ccupN=1,ccupP=0;" +
-        'while((ccupP=ccupR.originalFile.indexOf("\\n",ccupP))>=0&&ccupP<ccupX)' +
-        "{ccupN++;ccupP++}" +
-        `${blk}.ccupStart=ccupN}}}}catch(ccupE){}`;
-      return `${head}${absLnFrag("tur", stash)}${tail}`;
-    },
+  if (cards.size !== 1) return c;
+  const card = [...cards.values()][0];
+
+  // The store's result-pairing loop, `for(<blk> of <msg>.message.content)
+  // if(<blk>.type==="tool_result"){let <wrap>=<find>(...,<blk>.tool_use_id);
+  // ... <wrap>.setToolResult(<blk>,...)}`, the stash going in right after
+  // that let.
+  const loops: { unit: N; first: N; blk: string; msg: string; wrap: string }[] =
+    [];
+  const pairUnits: N[] = [];
+  for (
+    let i = c.indexOf("setToolResult(");
+    i >= 0;
+    i = c.indexOf("setToolResult(", i + 1)
+  ) {
+    if (pairUnits.some((u) => u.start <= i && i < u.end)) continue;
+    const u = unitAround(c, i, "function", isFn, ABS_LN_UNIT_REACH);
+    if (!u) continue;
+    pairUnits.push(u);
+    walk(u, (n) => {
+      if (n.type !== "ForOfStatement") return;
+      const blk =
+        n.left.type === "VariableDeclaration" &&
+        n.left.declarations.length === 1
+          ? idName(n.left.declarations[0].id)
+          : null;
+      const msg =
+        memberProp(n.right) === "content" &&
+        memberProp(n.right.object) === "message"
+          ? idName(n.right.object.object)
+          : null;
+      const s = n.body;
+      if (
+        !blk ||
+        !msg ||
+        s.type !== "IfStatement" ||
+        !absLnIsToolResultTest(s.test, blk) ||
+        s.consequent.type !== "BlockStatement"
+      )
+        return;
+      const first = s.consequent.body[0];
+      const d =
+        first?.type === "VariableDeclaration" && first.declarations.length === 1
+          ? first.declarations[0]
+          : null;
+      const wrap = d ? idName(d.id) : null;
+      if (
+        !wrap ||
+        d.init?.type !== "CallExpression" ||
+        !d.init.arguments.some((a: N) => isMember(a, blk, "tool_use_id"))
+      )
+        return;
+      const seen = { pairs: false };
+      walkOwn(s.consequent, (x) => {
+        if (
+          x.type === "CallExpression" &&
+          isMember(x.callee, wrap, "setToolResult") &&
+          idName(x.arguments[0]) === blk
+        )
+          seen.pairs = true;
+      });
+      if (
+        seen.pairs &&
+        bindingSite(first, msg, u) === bindingSite(n.right, msg, u)
+      )
+        loops.push({ unit: u, first, blk, msg, wrap });
+    });
+  }
+  if (loops.length !== 1) return c;
+  const loop = loops[0];
+
+  // The expand modal's models effect: a hook call with one dep, the modal state,
+  // whose callback reads that state's original and modified and ends in the
+  // same models push.
+  const modals: { unit: N; set: N; ref: string; state: string }[] = [];
+  const modalUnits: N[] = [];
+  for (
+    let i = c.indexOf(".current.setModel(");
+    i >= 0;
+    i = c.indexOf(".current.setModel(", i + 1)
+  ) {
+    if (comp.start <= i && i < comp.end) continue;
+    if (modalUnits.some((u) => u.start <= i && i < u.end)) continue;
+    const u = unitAround(c, i, "function", isFn, ABS_LN_UNIT_REACH);
+    if (!u) continue;
+    modalUnits.push(u);
+    walk(u, (n) => {
+      if (n.type !== "CallExpression" || !idName(n.callee)) return;
+      const [cb, deps] = n.arguments as N[];
+      const state =
+        deps?.type === "ArrayExpression" && deps.elements.length === 1
+          ? idName(deps.elements[0])
+          : null;
+      if (!state || !isFn(cb) || cb.body.type !== "BlockStatement") return;
+      const last = cb.body.body[cb.body.body.length - 1];
+      const set = last?.type === "ExpressionStatement" ? last.expression : null;
+      const ref = set ? absLnSetModelRef(set) : null;
+      if (!ref) return;
+      const reads = { original: false, modified: false };
+      walkOwn(cb, (x) => {
+        if (isMember(x, state, "original")) reads.original = true;
+        if (isMember(x, state, "modified")) reads.modified = true;
+      });
+      if (
+        reads.original &&
+        reads.modified &&
+        bindingSite(set, state, u) === bindingSite(n, state, u)
+      )
+        modals.push({ unit: u, set, ref, state });
+    });
+  }
+  if (modals.length !== 1) return c;
+  const modal = modals[0];
+
+  const stash =
+    `try{var ccupR=${loop.msg}.tool_use_result;` +
+    'if(ccupR&&typeof ccupR==="object"&&!ccupR.replaceAll&&' +
+    'typeof ccupR.originalFile==="string"){' +
+    'var ccupQ=typeof ccupR.oldString==="string"&&ccupR.oldString?' +
+    `ccupR.oldString:(${loop.wrap}&&${loop.wrap}.content&&${loop.wrap}.content.input&&` +
+    `${loop.wrap}.content.input.old_string);` +
+    "if(ccupQ){var ccupX=ccupR.originalFile.indexOf(ccupQ);" +
+    "if(ccupX>=0){var ccupN=1,ccupP=0;" +
+    'while((ccupP=ccupR.originalFile.indexOf("\\n",ccupP))>=0&&ccupP<ccupX)' +
+    "{ccupN++;ccupP++}" +
+    `${loop.blk}.ccupStart=ccupN}}}}catch(ccupE){}`;
+  const prop = appendProp(
+    card.obj,
+    `ccupStart:(${card.result}&&${card.result}.ccupStart)`,
   );
-  out = out.replace(
-    ABS_LN_PROP_RE,
-    (_w, head, _ctx, _input, result, _jsx, _comp, tail) =>
-      `${head}${absLnFrag(
-        "prop",
-        `,ccupStart:(${result}&&${result}.ccupStart)`,
-      )}${tail}`,
-  );
-  out = out.replace(
-    ABS_LN_ARG_RE,
-    (_w, head, _comp, _o, _m, _l, _f, tail) =>
-      `${head}${absLnFrag("arg", ",ccupStart:ccupS")}${tail}`,
-  );
-  out = out.replace(
-    ABS_LN_CARD_FX_RE,
-    (_w, ref, set, _models, d1, d2, d3, d4) =>
-      `${set}},[${d1},${d2},${d3},${d4}])${absLnFrag(
+  const arg = appendProp(comp.params[0], "ccupStart:ccupS");
+  const mprop = appendProp(opens[0], "ccupStart:ccupS");
+  const edits: Edit[] = [
+    { pos: loop.first.end, text: absLnFrag("tur", stash) },
+    { pos: prop.pos, text: absLnFrag("prop", prop.text) },
+    { pos: arg.pos, text: absLnFrag("arg", arg.text) },
+    {
+      pos: fx.call.end,
+      text: absLnFrag(
         "fx",
-        `;${mUse[1]}(()=>{window.__ccupAbsLn&&` +
-          `window.__ccupAbsLn(${ref}.current,ccupS,${d1},${d2})},` +
-          `[ccupS,${d1},${d2}])`,
-      )}`,
-  );
-  out = out.replace(
-    ABS_LN_MODAL_PROP_RE,
-    (_w, head, _open, _o, _m, _l, _f, tail) =>
-      `${head}${absLnFrag("mprop", ",ccupStart:ccupS")}${tail}`,
-  );
-  out = out.replace(
-    ABS_LN_MODAL_FX_RE,
-    (_w, ref, set, _models, tail, state) =>
-      `${set}${absLnFrag(
+        `;${alias}(()=>{window.__ccupAbsLn&&` +
+          `window.__ccupAbsLn(${fx.ref}.current,ccupS,${orig},${mod})},` +
+          `[ccupS,${orig},${mod}])`,
+      ),
+    },
+    { pos: mprop.pos, text: absLnFrag("mprop", mprop.text) },
+    {
+      pos: modal.set.end,
+      text: absLnFrag(
         "modal",
-        `;window.__ccupAbsLn&&window.__ccupAbsLn(${ref}.current,${state}.ccupStart,${state}.original,${state}.modified)`,
-      )}${tail}`,
-  );
+        `;window.__ccupAbsLn&&window.__ccupAbsLn(${modal.ref}.current,${modal.state}.ccupStart,${modal.state}.original,${modal.state}.modified)`,
+      ),
+    },
+  ];
+  const out = applyEdits(c, edits);
+  for (const [u, kind] of [
+    [comp, isFn],
+    [card.cls, isClass],
+    [loop.unit, isFn],
+    [modal.unit, isFn],
+  ] as const) {
+    const n = parseUnitAt(out, shiftedPos(u.start, edits, true), kind);
+    if (!n || n.end !== shiftedPos(u.end, edits, false)) return c;
+  }
   return `${out}\n${ABS_LN_HELPER}`;
 }
 

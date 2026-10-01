@@ -46,9 +46,21 @@ let acornApi: Acorn | null | undefined;
 export function loadAcorn(): Acorn | null {
   if (acornApi === undefined) {
     try {
-      acornApi = require(
+      const a = require(
         path.join(__dirname, "..", "assets", "acorn", "acorn.js"),
       ) as Acorn;
+      // acorn's raise() suffixes "(line:column)", counted by scanning the
+      // input from its start to the error, which costs ~10ms per failed probe
+      // deep in a ~5MB bundle. A failed parse here only ever means "no unit
+      // starts here", so the error goes out bare. This copy is private to the
+      // extension, so nothing else sees the change.
+      const bare = (pos: number, message: string): never => {
+        throw Object.assign(new SyntaxError(message), { pos });
+      };
+      const proto = a.Parser.prototype as unknown as Record<string, unknown>;
+      proto.raise = bare;
+      proto.raiseRecoverable = bare;
+      acornApi = a;
     } catch {
       acornApi = null;
     }
@@ -182,11 +194,32 @@ export function isCallOf(
 // excluded.
 export function callsOf(root: N, obj: string, method: string): boolean {
   let hit = false;
-  walk(root, (n) => {
-    if (hit || (n !== root && isFn(n))) return false;
+  walkOwn(root, (n) => {
+    if (hit) return false;
     if (isCallOf(n, obj, method)) hit = true;
   });
   return hit;
+}
+
+// The function of the method named `name` in a parsed class that spans
+// offset `at`, or null.
+export function methodAt(cls: N, name: string, at: number): N | null {
+  for (const m of cls.body.body as N[]) {
+    if (
+      m.type === "MethodDefinition" &&
+      !m.computed &&
+      idName(m.key) === name &&
+      m.value.start <= at &&
+      at < m.value.end
+    )
+      return m.value;
+  }
+  return null;
+}
+
+// walk, without entering the functions nested under `root`.
+export function walkOwn(root: N, visit: (n: N) => boolean | void): void {
+  walk(root, (n) => (n !== root && isFn(n) ? false : visit(n)));
 }
 
 // The key of an object literal or pattern property; null for spreads, rests
@@ -210,10 +243,12 @@ export function hasKeys(obj: N | null | undefined, keys: string[]): boolean {
   return keys.every((k) => have.has(k));
 }
 
-// The plain local a destructured key binds (`{context:J}` gives "J").
+// The plain local a destructured key binds, past any default (`{context:J}`
+// gives "J", `{language:Z="plaintext"}` gives "Z").
 export function boundName(pattern: N, key: string): string | null {
   const p = propOf(pattern, key);
-  return p ? idName(p.value) : null;
+  if (!p) return null;
+  return idName(p.value.type === "AssignmentPattern" ? p.value.left : p.value);
 }
 
 // The insertion that appends one property to an object literal or pattern:
@@ -229,10 +264,13 @@ export function appendProp(obj: N, prop: string): Edit {
 
 // The nearest unit around offset `at` that starts with `keyword` and parses as
 // `kind`. Backs off over the keyword's earlier occurrences (skipping ones
-// inside an identifier, or where nothing of that kind parses) until a parse
-// spans `at`, and never escalates past that first enclosing unit, so a token
-// in the wrong place costs one parse rather than a climb through ever larger
-// functions. `reach` bounds how far back the unit may start.
+// inside an identifier, a `function` that is not followed the way the keyword
+// is, as in `typeof x==="function"`, and ones where nothing of that kind
+// parses) until a parse spans `at`, and never escalates past that first
+// enclosing unit, so a token in the wrong place costs one parse rather than a
+// climb through ever larger functions. An `async function` is parsed from its
+// `async`, where an `await` inside it is legal. `reach` bounds how far back the
+// unit may start.
 export function unitAround(
   c: string,
   at: number,
@@ -244,8 +282,13 @@ export function unitAround(
     j = c.lastIndexOf(keyword, j - 1);
     if (j < 0 || at - j > reach) return null;
     if (j > 0 && /[\w$]/.test(c[j - 1])) continue;
+    if (keyword === "function" && !/[\s(*]/.test(c[j + 8] ?? "")) continue;
     tries++;
-    const n = parseUnitAt(c, j, kind);
+    const start =
+      keyword === "function" && c.slice(Math.max(0, j - 6), j) === "async "
+        ? j - 6
+        : j;
+    const n = parseUnitAt(c, start, kind);
     if (n && n.end > at) return n;
   }
   return null;

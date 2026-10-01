@@ -145,9 +145,8 @@ function loadPatcher(config, notices) {
 // claudeCode.useCtrlEnterToSend comes along because ctrlEnterEverywhere folds
 // it into the plan-comment toggle.
 function everythingOn() {
-  const props = JSON.parse(
-    readFileSync(join(root, "package.json"), "utf8"),
-  ).contributes.configuration.properties;
+  const props = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
+    .contributes.configuration.properties;
   const config = { "claudeCode.useCtrlEnterToSend": true };
   for (const [key, schema] of Object.entries(props)) {
     if (schema.type === "boolean") config[key] = true;
@@ -187,8 +186,17 @@ function expectedMarkers() {
   for (const [, tag] of src.matchAll(/mathFrag\(\s*"([-\w]+)"/g)) {
     add(`/*ccup:math:${tag}*/`);
   }
+  for (const [, tag] of src.matchAll(/uceEdit\(\s*"([-\w]+)"/g)) {
+    add(`/*ccup:uce:${tag}*/`);
+  }
+  for (const m of OLD_FORM_MARKERS) markers.delete(m);
   return markers;
 }
+
+// Markers the patcher only reads, in the regexes that strip forms older builds
+// wrote, and never emits any more. They turn up in the literal scan above like
+// any other, so they are dropped from the expected set by name.
+const OLD_FORM_MARKERS = ["/*ccup-uce*/"];
 
 // Markers a point emits only while it still has to patch the feature in. When a
 // Claude Code build absorbs the feature the point reports "native" (see nativeOn

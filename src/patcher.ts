@@ -1,6 +1,29 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import {
+  type Edit,
+  type N,
+  appendProp,
+  applyEdits,
+  bindingSite,
+  boundName,
+  callsOf,
+  hasKeys,
+  idName,
+  isCallOf,
+  isClass,
+  isFn,
+  isMember,
+  keyName,
+  memberProp,
+  parseUnitAt,
+  propOf,
+  shiftedPos,
+  unitAround,
+  unitsWith,
+  walk,
+} from "./derive";
 
 // The installed Claude Code extension is laid down as one directory per
 // version/platform, e.g. anthropic.claude-code-2.1.200-darwin-arm64. We patch
@@ -3955,89 +3978,311 @@ const PLAN_COMMENT_SEND_RE =
 //   or some question unanswered) by returning false instead of submitting, so
 //   the chord submits a complete form and otherwise falls back to advancing.
 //
-// The rewrites are all-or-nothing: each of the seven anchors must match exactly
-// once (they are unique in the current bundle) or the file is left native, so a
-// drifted bundle can never end up half-threaded with a dangling identifier.
-// Restore strips each patched form independently, including the 1.4.x-1.5.0 on
-// form that threaded no submit: that one reads as off, so the next apply
-// rebuilds it rather than stranding it. The /*ccup-uce*/ tag marks the on
-// state. The plan preview's comment box lives in a different webview
+// The seven sites are located by their structure (src/derive.ts), not by a
+// regex over the text. Three units are parsed locally, each found from an
+// invariant token: the question component (its params destructure
+// input/onInputChange/options), the class around the AskUserQuestion render
+// site (the call that renders that same component from a permissionRequest
+// method, passing the method's params through), and the permission component
+// (its params destructure request/context/onPermissionModeChange), which holds
+// the feedback box's Enter handler, the primary button, and the options
+// literal. Every site is matched by its role and by the SET of keys it
+// carries, so props joining in any order (2.1.261, 2.1.280 and 2.1.286 each
+// added some), operands swapping sides, or statements moving in ahead of a
+// site do not lose it. Each must be found exactly once, and every minified
+// name an insertion references must resolve, at that spot, to the binding the
+// site was read from (no inner scope rebinding it), or the file is left
+// native: a drifted bundle can never end up half-threaded with a dangling
+// identifier. The three units are parsed again after the edits, so an
+// insertion that would break the syntax refuses as well.
+//
+// Every insertion is wrapped in /*ccup:uce:<tag>*/.../*ccup:uceEnd*/, so
+// restore strips the markers and never has to read native code. The
+// /*ccup-uce*/-tagged forms 1.4.x-1.5.4 wrote are still recognized, only to
+// strip them: an older patch reads as off, and the next apply rebuilds it in
+// the marked form. The plan preview's comment box lives in a different webview
 // with no access to this config, so it follows via the commentCtrlEnter toggle
 // instead: readToggles() folds (ctrlEnterEverywhere && the native setting's
 // value at apply time) into that toggle, and a native-setting change re-runs
 // the apply through the foreign-key watch (taking effect there on reload).
-const UCE_TAG = "/*ccup-uce*/";
-// The AskUserQuestion render site: the only permissionRequest method whose body
-// is exactly the input/onInputChange/options passthrough (captures: 1=head,
-// 2=param 1, the context, 6=tail). Plain props may lead the literal, and the
-// head re-emits them: 2.1.286 passes `context:$` natively (for the option
-// preview's markdown), while the "Other" box still ignores it.
-const UCE_Q_RENDER_RE =
-  /(permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return [\w$]+\([\w$]+,\{(?:[\w$]+:[\w$]+,)*input:\3,onInputChange:\4,options:\5)(\}\)\})/;
-const UCE_Q_RENDER_ON_RE =
-  /(permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return [\w$]+\([\w$]+,\{(?:[\w$]+:[\w$]+,)*input:\3,onInputChange:\4,options:\5),ccupCtx:\2(\}\)\})/;
-// The question component's props destructure (unique: the render site above
-// spells the same names after `<factory>(Comp,` with no `({`), with the same
-// leading props (captures: 1=head, 2=options, 3=tail).
-const UCE_Q_SIG_RE =
-  /(function [\w$]+\(\{(?:[\w$]+:[\w$]+,)*input:[\w$]+,onInputChange:[\w$]+,options:([\w$]+))(\}\)\{)/;
-const UCE_Q_SIG_ON_RE =
-  /(function [\w$]+\(\{(?:[\w$]+:[\w$]+,)*input:[\w$]+,onInputChange:[\w$]+,options:([\w$]+)),ccupCtx:ccupQCtx(\}\)\{)/;
-// The "Other" box's keydown: stopPropagation for unmodified keys, then the
-// Enter branch that advances to the next unanswered question.
-const UCE_Q_KEY_RE =
-  /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;if\(\1\.preventDefault\(\),([\w$]+)\.questions&&([\w$]+)<\2\.questions\.length-1\)([\w$]+)\(\3\+1\)\}\}/;
-const UCE_Q_KEY_ON_RE =
-  /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;\/\*ccup-uce\*\/var ccupOn=ccupQCtx&&ccupQCtx\.useCtrlEnterToSend;if\(!ccupOn\|\|\1\.metaKey\|\|\1\.ctrlKey\)\{if\(ccupOn\)\1\.stopPropagation\(\);if\(\1\.preventDefault\(\),ccupOn&&([\w$]+)&&\2\.ccupSubmit&&\2\.ccupSubmit\(\)\)return;if\(([\w$]+)\.questions&&([\w$]+)<\3\.questions\.length-1\)([\w$]+)\(\4\+1\)\}\}\}/;
-// The 1.4.x-1.5.0 on form, which advanced but never submitted. Stripping it is
-// what lets an in-place upgrade rebuild the handler instead of stranding the
-// old form (the native regex no longer matches an already-gated branch).
-const UCE_Q_KEY_ON_LEGACY_RE =
-  /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;\/\*ccup-uce\*\/var ccupOn=ccupQCtx&&ccupQCtx\.useCtrlEnterToSend;if\(!ccupOn\|\|\1\.metaKey\|\|\1\.ctrlKey\)\{if\(ccupOn\)\1\.stopPropagation\(\);if\(\1\.preventDefault\(\),([\w$]+)\.questions&&([\w$]+)<\2\.questions\.length-1\)([\w$]+)\(\3\+1\)\}\}\}/;
-// The permission component's signature (yields the context param's minified
-// name) and its feedback box's Enter-submits keydown handler. Props join the
-// destructure on both sides of onPermissionModeChange (2.1.261 added folded,
-// onFoldedChange and onAnswered after it, 2.1.280 autoModeAvailable before
-// it), so the span between context and it takes any run of plain `key:alias,`
-// props and the tail is matched to the closing brace, rather than pinning the
-// destructure to the three props this needs to see.
-const UCE_PERM_SIG_RE =
-  /function [\w$]+\(\{request:[\w$]+,context:([\w$]+),(?:[\w$]+:[\w$]+,)*onPermissionModeChange:[\w$]+[^{}]*\}\)\{/;
-const UCE_PERM_TE_RE =
-  /(=async\(([\w$]+)\)=>\{if\(\2\.key==="Enter"&&!\2\.shiftKey\)\{if\(\2\.nativeEvent\.isComposing\)return;)(\2\.preventDefault\(\),[\w$]+\(\)\})/;
-const UCE_PERM_TE_ON_RE =
-  /(=async\(([\w$]+)\)=>\{if\(\2\.key==="Enter"&&!\2\.shiftKey\)\{if\(\2\.nativeEvent\.isComposing\)return;)\/\*ccup-uce\*\/if\([\w$]+\.useCtrlEnterToSend&&!\2\.metaKey&&!\2\.ctrlKey\)return;/;
-// The primary button's props, which name the three pieces of the submit: the
-// accept call, the still-arming flag, and the every-question-answered memo (the
-// last two are exactly its disabled condition). Read-only, so this anchor stays
-// native in both states and only has to be present to patch.
-const UCE_PRIMARY_RE =
-  /\{ref:[\w$]+,className:`\$\{([\w$]+)\.button\} \$\{\1\.primary\}`,onClick:([\w$]+),disabled:([\w$]+)\|\|!([\w$]+),/;
-// The options literal handed to the permission content renderer, which passes it
-// on as the question component's `options` prop. Matched to the literal's
-// closing brace so a build that adds another prop still threads (2.1.261 added
-// three to the permission destructure), and ccupSubmit goes on the end. Plain
-// props may also join between the four it keys on (2.1.286 put `logEvent`
-// after channelId). The arrow's own braces are why this native form cannot
-// match an already-threaded literal: [^{}]* stops at the `{` of the injected
-// body.
-const UCE_CONTENT_RE =
-  /(\([\w$]+,([\w$]+),[\w$]+,\{onClose:[\w$]+,(?:[\w$]+:[\w$]+,)*channelId:\2\.channelId,(?:[\w$]+:[\w$]+,)*fold:[\w$]+,(?:[\w$]+:[\w$]+,)*foldButtonRef:[\w$]+[^{}]*)\}\)/;
-const UCE_CONTENT_ON_RE =
-  /(\([\w$]+,([\w$]+),[\w$]+,\{onClose:[\w$]+,(?:[\w$]+:[\w$]+,)*channelId:\2\.channelId,(?:[\w$]+:[\w$]+,)*fold:[\w$]+,(?:[\w$]+:[\w$]+,)*foldButtonRef:[\w$]+[^{}]*),ccupSubmit:\(\)=>\{\/\*ccup-uce\*\/if\([\w$]+\|\|![\w$]+\)return!1;return [\w$]+\(\),!0\}\}\)/;
+const UCE_FRAG_END = "/*ccup:uceEnd*/";
+// An insertion with its text wrapped in the tag's markers.
+const uceEdit = (tag: string, e: Edit): Edit => ({
+  pos: e.pos,
+  text: `/*ccup:uce:${tag}*/${e.text}${UCE_FRAG_END}`,
+});
+const UCE_FRAG_RE = /\/\*ccup:uce:[-\w]+\*\/[\s\S]*?\/\*ccup:uceEnd\*\//g;
 
-// The submit the "Other" box borrows: the primary button's disabled condition
-// first, then its accept call. Returns whether it submitted, so the keydown can
-// fall back to advancing when the form is not complete yet.
-function uceSubmitProp(
-  accept: string,
-  pending: string,
-  answered: string,
-): string {
-  return `,ccupSubmit:()=>{${UCE_TAG}if(${pending}||!${answered})return!1;return ${accept}(),!0}`;
+// The props the question component and the permission component destructure.
+const UCE_Q_KEYS = ["input", "onInputChange", "options"];
+const UCE_PERM_KEYS = ["request", "context", "onPermissionModeChange"];
+// How far ahead of a destructured prop its function keyword may sit, and how
+// far ahead of a render site its class may start.
+const UCE_PARAMS_REACH = 2000;
+const UCE_CLASS_REACH = 200000;
+
+const uceIsStr = (n: N, s: string): boolean =>
+  n.type === "Literal" && n.value === s;
+
+// `ev.key==="Enter"&&!ev.shiftKey`, in either operand order and with the
+// comparison written either way round.
+function uceIsEnterNoShift(t: N, ev: string): boolean {
+  if (t.type !== "LogicalExpression" || t.operator !== "&&") return false;
+  const sides: N[] = [t.left, t.right];
+  const enter = (n: N) =>
+    n.type === "BinaryExpression" &&
+    (n.operator === "===" || n.operator === "==") &&
+    ((isMember(n.left, ev, "key") && uceIsStr(n.right, "Enter")) ||
+      (isMember(n.right, ev, "key") && uceIsStr(n.left, "Enter")));
+  const noShift = (n: N) =>
+    n.type === "UnaryExpression" &&
+    n.operator === "!" &&
+    isMember(n.argument, ev, "shiftKey");
+  return sides.some(enter) && sides.some(noShift);
 }
 
-function uceQKeyNativeText(
+// `if(ev.nativeEvent.isComposing)return;`, the bare return braced or not.
+function uceIsComposingReturn(s: N | undefined, ev: string): boolean {
+  if (!s || s.type !== "IfStatement" || s.alternate) return false;
+  if (
+    memberProp(s.test) !== "isComposing" ||
+    !isMember(s.test.object, ev, "nativeEvent")
+  )
+    return false;
+  const r =
+    s.consequent.type === "BlockStatement" && s.consequent.body.length === 1
+      ? s.consequent.body[0]
+      : s.consequent;
+  return r.type === "ReturnStatement" && !r.argument;
+}
+
+// The patched bundle for a native one, or null when any site is missing,
+// ambiguous, or would reference a name that resolves elsewhere.
+function uceBuild(c: string): string | null {
+  // The question component.
+  const qs = unitsWith(
+    c,
+    "onInputChange:",
+    "function",
+    isFn,
+    UCE_PARAMS_REACH,
+  ).filter((f) => hasKeys(f.params[0], UCE_Q_KEYS));
+  if (qs.length !== 1) return null;
+  const q = qs[0];
+  const qName = idName(q.id);
+  const opts = boundName(q.params[0], "options");
+  if (!qName || !opts) return null;
+
+  // Its "Other" box keydown: the Enter branch that opens with the composition
+  // check and then advances under `ev.preventDefault(), <condition>`.
+  const keys: { k: string; branch: N; advance: N }[] = [];
+  walk(q, (n) => {
+    if (n.type !== "Property" || keyName(n) !== "onKeyDown") return;
+    const h = n.value;
+    const k = isFn(h) && h.params.length === 1 ? idName(h.params[0]) : null;
+    if (!k || h.body.type !== "BlockStatement") return;
+    for (const s of h.body.body as N[]) {
+      if (s.type !== "IfStatement" || !uceIsEnterNoShift(s.test, k)) continue;
+      const b = s.consequent;
+      if (b.type !== "BlockStatement" || !uceIsComposingReturn(b.body[0], k))
+        continue;
+      const adv = (b.body as N[])
+        .slice(1)
+        .filter(
+          (x) =>
+            x.type === "IfStatement" &&
+            x.test.type === "SequenceExpression" &&
+            x.test.expressions.length >= 2 &&
+            isCallOf(x.test.expressions[0], k, "preventDefault"),
+        );
+      if (adv.length === 1) keys.push({ k, branch: b, advance: adv[0] });
+    }
+  });
+  if (keys.length !== 1) return null;
+  const { k, branch, advance } = keys[0];
+  if (bindingSite(advance, opts, q) !== q) return null;
+
+  // The render site: the call rendering that same component, returned from a
+  // class's permissionRequest method and handed that method's params.
+  const renders: { cls: N; obj: N; ctx: string }[] = [];
+  const tok = `(${qName},`;
+  for (let i = c.indexOf(tok); i >= 0; i = c.indexOf(tok, i + 1)) {
+    let at = i;
+    while (at > 0 && /[\w$]/.test(c[at - 1])) at--;
+    if (at === i) continue;
+    const cls = unitAround(c, at, "class ", isClass, UCE_CLASS_REACH);
+    if (!cls) continue;
+    walk(cls, (n) => {
+      if (n.type !== "MethodDefinition") return;
+      const m = n.value;
+      if (n.computed || idName(n.key) !== "permissionRequest") return false;
+      if (!(m.start <= at && at < m.end)) return false;
+      const ps: (string | null)[] = m.params.map(idName);
+      walk(m.body, (r) => {
+        if (r !== m.body && isFn(r)) return false;
+        if (r.type !== "ReturnStatement" || r.argument?.start !== at) return;
+        const call = r.argument;
+        const obj = call.type === "CallExpression" ? call.arguments[1] : null;
+        if (
+          idName(call.arguments?.[0]) === qName &&
+          hasKeys(obj, UCE_Q_KEYS) &&
+          ps.length >= 4 &&
+          ps[0] &&
+          UCE_Q_KEYS.every(
+            (key, j) => idName(propOf(obj, key)!.value) === ps[j + 1],
+          ) &&
+          bindingSite(obj, ps[0], m) === m
+        )
+          renders.push({ cls, obj, ctx: ps[0] });
+      });
+      return false;
+    });
+  }
+  if (renders.length !== 1) return null;
+  const render = renders[0];
+
+  // The permission component, and inside it the feedback box's Enter handler,
+  // the primary button's props, and the options literal for the content.
+  const perms = unitsWith(
+    c,
+    "onPermissionModeChange:",
+    "function",
+    isFn,
+    UCE_PARAMS_REACH,
+  ).filter((f) => hasKeys(f.params[0], UCE_PERM_KEYS));
+  if (perms.length !== 1) return null;
+  const p = perms[0];
+  const ctx = boundName(p.params[0], "context");
+  const req = boundName(p.params[0], "request");
+  if (!ctx || !req) return null;
+  const handlers: { ev: string; first: N }[] = [];
+  const buttons: {
+    obj: N;
+    accept: string;
+    pending: string;
+    answered: string;
+  }[] = [];
+  const contents: N[] = [];
+  walk(p, (n) => {
+    const ev =
+      isFn(n) && n !== p && n.params.length === 1 ? idName(n.params[0]) : null;
+    if (ev && n.body.type === "BlockStatement") {
+      for (const s of n.body.body as N[]) {
+        if (s.type !== "IfStatement" || !uceIsEnterNoShift(s.test, ev))
+          continue;
+        const b = s.consequent;
+        if (
+          b.type === "BlockStatement" &&
+          uceIsComposingReturn(b.body[0], ev) &&
+          (b.body as N[]).slice(1).some((x) => callsOf(x, ev, "preventDefault"))
+        )
+          handlers.push({ ev, first: b.body[0] });
+      }
+    }
+    if (n.type !== "ObjectExpression") return;
+    if (hasKeys(n, ["className", "onClick", "disabled"])) {
+      // className `${S.button} ${S.primary}` (with whatever else), onClick the
+      // accept call, disabled `pending||!answered`.
+      const cn = propOf(n, "className")!.value;
+      const dis = propOf(n, "disabled")!.value;
+      const accept = idName(propOf(n, "onClick")!.value);
+      const parts: N[] = cn.type === "TemplateLiteral" ? cn.expressions : [];
+      const sheet = idName(
+        parts.find((x) => memberProp(x) === "button")?.object,
+      );
+      if (
+        accept &&
+        sheet &&
+        parts.some((x) => isMember(x, sheet, "primary")) &&
+        dis.type === "LogicalExpression" &&
+        dis.operator === "||" &&
+        idName(dis.left) &&
+        dis.right.type === "UnaryExpression" &&
+        dis.right.operator === "!" &&
+        idName(dis.right.argument)
+      )
+        buttons.push({
+          obj: n,
+          accept,
+          pending: idName(dis.left)!,
+          answered: idName(dis.right.argument)!,
+        });
+    }
+    if (
+      hasKeys(n, ["onClose", "channelId", "fold", "foldButtonRef"]) &&
+      n.parent?.type === "CallExpression" &&
+      n.parent.arguments.includes(n) &&
+      isMember(propOf(n, "channelId")!.value, req, "channelId")
+    )
+      contents.push(n);
+  });
+  if (handlers.length !== 1 || buttons.length !== 1 || contents.length !== 1)
+    return null;
+  const { ev, first } = handlers[0];
+  const btn = buttons[0];
+  const content = contents[0];
+  if (bindingSite(first, ctx, p) !== p) return null;
+  for (const name of [btn.accept, btn.pending, btn.answered]) {
+    if (bindingSite(content, name, p) !== bindingSite(btn.obj, name, p))
+      return null;
+  }
+
+  const edits: Edit[] = [
+    uceEdit("render", appendProp(render.obj, `ccupCtx:${render.ctx}`)),
+    uceEdit("sig", appendProp(q.params[0], "ccupCtx:ccupQCtx")),
+    uceEdit("qgate", {
+      pos: branch.body[0].end,
+      text:
+        "var ccupOn=ccupQCtx&&ccupQCtx.useCtrlEnterToSend;" +
+        `if(!ccupOn||${k}.metaKey||${k}.ctrlKey){if(ccupOn)${k}.stopPropagation();`,
+    }),
+    uceEdit("qsub", {
+      pos: advance.test.expressions[1].start,
+      text: `ccupOn&&${opts}&&${opts}.ccupSubmit&&${opts}.ccupSubmit())return;if(`,
+    }),
+    uceEdit("qclose", { pos: branch.end - 1, text: "}" }),
+    uceEdit(
+      "submit",
+      appendProp(
+        content,
+        `ccupSubmit:()=>{if(${btn.pending}||!${btn.answered})return!1;return ${btn.accept}(),!0}`,
+      ),
+    ),
+    uceEdit("perm", {
+      pos: first.end,
+      text: `if(${ctx}.useCtrlEnterToSend&&!${ev}.metaKey&&!${ev}.ctrlKey)return;`,
+    }),
+  ];
+  const out = applyEdits(c, edits);
+  for (const [u, kind] of [
+    [q, isFn],
+    [p, isFn],
+    [render.cls, isClass],
+  ] as const) {
+    const n = parseUnitAt(out, shiftedPos(u.start, edits, true), kind);
+    if (!n || n.end !== shiftedPos(u.end, edits, false)) return null;
+  }
+  return out;
+}
+
+// The /*ccup-uce*/-tagged forms 1.4.x-1.5.4 wrote, matched only to strip them
+// (the native text around each was identical when they were written, and
+// still is in the bundle they were written to).
+const UCE_OLD_RENDER_RE =
+  /(permissionRequest\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{return [\w$]+\([\w$]+,\{(?:[\w$]+:[\w$]+,)*input:\3,onInputChange:\4,options:\5),ccupCtx:\2(\}\)\})/;
+const UCE_OLD_SIG_RE =
+  /(function [\w$]+\(\{(?:[\w$]+:[\w$]+,)*input:[\w$]+,onInputChange:[\w$]+,options:([\w$]+)),ccupCtx:ccupQCtx(\}\)\{)/;
+const UCE_OLD_KEY_RE =
+  /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;\/\*ccup-uce\*\/var ccupOn=ccupQCtx&&ccupQCtx\.useCtrlEnterToSend;if\(!ccupOn\|\|\1\.metaKey\|\|\1\.ctrlKey\)\{if\(ccupOn\)\1\.stopPropagation\(\);if\(\1\.preventDefault\(\),ccupOn&&([\w$]+)&&\2\.ccupSubmit&&\2\.ccupSubmit\(\)\)return;if\(([\w$]+)\.questions&&([\w$]+)<\3\.questions\.length-1\)([\w$]+)\(\4\+1\)\}\}\}/;
+// The 1.4.x-1.5.0 form of that handler, which advanced but never submitted.
+const UCE_OLD_KEY_NOSUBMIT_RE =
+  /onKeyDown:\(([\w$]+)\)=>\{if\(!\1\.metaKey&&!\1\.ctrlKey\)\1\.stopPropagation\(\);if\(\1\.key==="Enter"&&!\1\.shiftKey\)\{if\(\1\.nativeEvent\.isComposing\)return;\/\*ccup-uce\*\/var ccupOn=ccupQCtx&&ccupQCtx\.useCtrlEnterToSend;if\(!ccupOn\|\|\1\.metaKey\|\|\1\.ctrlKey\)\{if\(ccupOn\)\1\.stopPropagation\(\);if\(\1\.preventDefault\(\),([\w$]+)\.questions&&([\w$]+)<\2\.questions\.length-1\)([\w$]+)\(\3\+1\)\}\}\}/;
+const UCE_OLD_CONTENT_RE =
+  /(\([\w$]+,([\w$]+),[\w$]+,\{onClose:[\w$]+,(?:[\w$]+:[\w$]+,)*channelId:\2\.channelId,(?:[\w$]+:[\w$]+,)*fold:[\w$]+,(?:[\w$]+:[\w$]+,)*foldButtonRef:[\w$]+[^{}]*),ccupSubmit:\(\)=>\{\/\*ccup-uce\*\/if\([\w$]+\|\|![\w$]+\)return!1;return [\w$]+\(\),!0\}\}\)/;
+const UCE_OLD_PERM_RE =
+  /(=async\(([\w$]+)\)=>\{if\(\2\.key==="Enter"&&!\2\.shiftKey\)\{if\(\2\.nativeEvent\.isComposing\)return;)\/\*ccup-uce\*\/if\([\w$]+\.useCtrlEnterToSend&&!\2\.metaKey&&!\2\.ctrlKey\)return;/;
+
+function uceOldKeyNativeText(
   k: string,
   props: string,
   idx: string,
@@ -4050,117 +4295,60 @@ function uceQKeyNativeText(
   );
 }
 
-function uceQKeyOnText(
-  k: string,
-  opts: string,
-  props: string,
-  idx: string,
-  setIdx: string,
-): string {
-  return (
-    `onKeyDown:(${k})=>{if(!${k}.metaKey&&!${k}.ctrlKey)${k}.stopPropagation();` +
-    `if(${k}.key==="Enter"&&!${k}.shiftKey){if(${k}.nativeEvent.isComposing)return;` +
-    `${UCE_TAG}var ccupOn=ccupQCtx&&ccupQCtx.useCtrlEnterToSend;` +
-    `if(!ccupOn||${k}.metaKey||${k}.ctrlKey){if(ccupOn)${k}.stopPropagation();` +
-    `if(${k}.preventDefault(),ccupOn&&${opts}&&${opts}.ccupSubmit&&${opts}.ccupSubmit())return;` +
-    `if(${props}.questions&&${idx}<${props}.questions.length-1)${setIdx}(${idx}+1)}}}`
+// Strip every form, marked or old, back to native. Each old form carries the
+// tag, so a bundle without it skips their six passes over the file.
+function uceStrip(c: string): string {
+  let out = c.replace(UCE_FRAG_RE, "");
+  if (!out.includes("/*ccup-uce*/")) return out;
+  out = out.replace(
+    UCE_OLD_RENDER_RE,
+    (_w, head, _p1, _p2, _p3, _p4, tail) => `${head}${tail}`,
   );
+  out = out.replace(
+    UCE_OLD_SIG_RE,
+    (_w, head, _opts, tail) => `${head}${tail}`,
+  );
+  out = out.replace(UCE_OLD_KEY_RE, (_w, k, _opts, props, idx, setIdx) =>
+    uceOldKeyNativeText(k, props, idx, setIdx),
+  );
+  out = out.replace(UCE_OLD_KEY_NOSUBMIT_RE, (_w, k, props, idx, setIdx) =>
+    uceOldKeyNativeText(k, props, idx, setIdx),
+  );
+  out = out.replace(UCE_OLD_CONTENT_RE, (_w, head) => `${head}})`);
+  out = out.replace(UCE_OLD_PERM_RE, (_w, head) => head);
+  return out;
 }
 
-function countMatches(c: string, re: RegExp): number {
-  return (c.match(new RegExp(re.source, "g")) ?? []).length;
+// One apply pass asks for the same build several times (present, current,
+// set, then the reconcile and refresh reads), so the last native -> patched
+// pair is kept; a hit costs one string compare.
+let uceMemo: { input: string; output: string | null } | undefined;
+
+function uceBuildMemo(native: string): string | null {
+  if (uceMemo?.input !== native) {
+    uceMemo = { input: native, output: uceBuild(native) };
+  }
+  return uceMemo.output;
 }
 
-// All seven native anchors, each exactly once, so the rewrites can only land as
-// a complete, mutually consistent set.
-function uceNativeAnchorsPresent(c: string): boolean {
-  return [
-    UCE_Q_RENDER_RE,
-    UCE_Q_SIG_RE,
-    UCE_Q_KEY_RE,
-    UCE_PERM_SIG_RE,
-    UCE_PERM_TE_RE,
-    UCE_PRIMARY_RE,
-    UCE_CONTENT_RE,
-  ].every((re) => countMatches(c, re) === 1);
-}
-
-// The on state in the current form. The tag alone will not do: a 1.4.x-1.5.0
-// bundle carries it on a handler that never submits, and reading that as on
-// would keep the apply from ever rebuilding it.
-function uceOnFormsPresent(c: string): boolean {
-  return [
-    UCE_Q_RENDER_ON_RE,
-    UCE_Q_SIG_ON_RE,
-    UCE_Q_KEY_ON_RE,
-    UCE_CONTENT_ON_RE,
-    UCE_PERM_TE_ON_RE,
-  ].every((re) => countMatches(c, re) === 1);
-}
-
+// true = on in exactly this build's form (also when marked but no longer
+// buildable, so an orphaned patch still reads as on and stays removable),
+// false = off, or on in an older form, undefined = no marks and no sites.
 function uceCurrentOn(c: string): boolean | undefined {
-  if (uceOnFormsPresent(c)) return true;
-  // Off, or on in an older form: patchable either way exactly when the anchors
-  // are all there once that older form is stripped back to native.
-  return uceNativeAnchorsPresent(uceOff(c)) ? false : undefined;
+  const native = uceStrip(c);
+  const on = uceBuildMemo(native);
+  if (on === null) return c !== native ? true : undefined;
+  return c === on;
 }
 
 function ucePresent(c: string): boolean {
   return uceCurrentOn(c) !== undefined;
 }
 
-// Strip every on form, current or legacy, back to native.
-function uceOff(c: string): string {
-  let out = c;
-  out = out.replace(
-    UCE_Q_RENDER_ON_RE,
-    (_w, head, _p1, _p2, _p3, _p4, tail) => `${head}${tail}`,
-  );
-  out = out.replace(
-    UCE_Q_SIG_ON_RE,
-    (_w, head, _opts, tail) => `${head}${tail}`,
-  );
-  out = out.replace(UCE_Q_KEY_ON_RE, (_w, k, _opts, props, idx, setIdx) =>
-    uceQKeyNativeText(k, props, idx, setIdx),
-  );
-  out = out.replace(UCE_Q_KEY_ON_LEGACY_RE, (_w, k, props, idx, setIdx) =>
-    uceQKeyNativeText(k, props, idx, setIdx),
-  );
-  out = out.replace(UCE_CONTENT_ON_RE, (_w, head) => `${head}})`);
-  out = out.replace(UCE_PERM_TE_ON_RE, (_w, head) => head);
-  return out;
-}
-
 function uceSet(c: string, on: boolean): string {
-  if (on && uceOnFormsPresent(c)) return c; // already on, current form
-  const off = uceOff(c);
-  if (!on) return off;
-  if (!uceNativeAnchorsPresent(off)) return c; // anchors drifted: stay native
-  const ctx = off.match(UCE_PERM_SIG_RE)![1];
-  const opts = off.match(UCE_Q_SIG_RE)![2];
-  const [, , accept, pending, answered] = off.match(UCE_PRIMARY_RE)!;
-  let out = off;
-  out = out.replace(
-    UCE_Q_RENDER_RE,
-    (_w, head, p1, _p2, _p3, _p4, tail) => `${head},ccupCtx:${p1}${tail}`,
-  );
-  out = out.replace(
-    UCE_Q_SIG_RE,
-    (_w, head, _opts, tail) => `${head},ccupCtx:ccupQCtx${tail}`,
-  );
-  out = out.replace(UCE_Q_KEY_RE, (_w, k, props, idx, setIdx) =>
-    uceQKeyOnText(k, opts, props, idx, setIdx),
-  );
-  out = out.replace(
-    UCE_CONTENT_RE,
-    (_w, head) => `${head}${uceSubmitProp(accept, pending, answered)}})`,
-  );
-  out = out.replace(
-    UCE_PERM_TE_RE,
-    (_w, head, ev, tail) =>
-      `${head}${UCE_TAG}if(${ctx}.useCtrlEnterToSend&&!${ev}.metaKey&&!${ev}.ctrlKey)return;${tail}`,
-  );
-  return out;
+  const native = uceStrip(c);
+  if (!on) return native;
+  return uceBuildMemo(native) ?? c; // sites drifted: leave the file as it is
 }
 
 // ---------------------------------------------------------------------------

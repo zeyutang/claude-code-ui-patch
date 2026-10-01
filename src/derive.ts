@@ -160,6 +160,10 @@ export const isClass = (n: N | null | undefined): boolean =>
 export const idName = (n: N | null | undefined): string | null =>
   n && n.type === "Identifier" ? n.name : null;
 
+// A string literal with exactly this value.
+export const isStr = (n: N | null | undefined, s: string): boolean =>
+  !!n && n.type === "Literal" && n.value === s;
+
 // A plain member access's property name (`a.b` gives "b").
 export function memberProp(n: N | null | undefined): string | null {
   return n && n.type === "MemberExpression" && !n.computed
@@ -422,4 +426,18 @@ export function shiftedPos(
     if (e.pos < pos || (inclusive && e.pos === pos)) d += e.text.length;
   }
   return pos + d;
+}
+
+// Whether each unit still parses, as the same kind, from its place in the
+// edited source to exactly where the edits move its end: the check that no
+// insertion broke the syntax around it.
+export function unitsReparse(
+  out: string,
+  edits: Edit[],
+  units: [N, (n: N) => boolean][],
+): boolean {
+  return units.every(([u, kind]) => {
+    const n = parseUnitAt(out, shiftedPos(u.start, edits, true), kind);
+    return !!n && n.end === shiftedPos(u.end, edits, false);
+  });
 }

@@ -15,13 +15,13 @@ import {
   isClass,
   isFn,
   isMember,
+  isStr,
   keyName,
   memberProp,
   methodAt,
-  parseUnitAt,
   propOf,
-  shiftedPos,
   unitAround,
+  unitsReparse,
   unitsWith,
   walk,
   walkOwn,
@@ -626,10 +626,9 @@ function absLnIsToolResultTest(t: N, blk: string): boolean {
     (t.operator !== "===" && t.operator !== "==")
   )
     return false;
-  const lit = (n: N) => n.type === "Literal" && n.value === "tool_result";
   return (
-    (isMember(t.left, blk, "type") && lit(t.right)) ||
-    (isMember(t.right, blk, "type") && lit(t.left))
+    (isMember(t.left, blk, "type") && isStr(t.right, "tool_result")) ||
+    (isMember(t.right, blk, "type") && isStr(t.left, "tool_result"))
   );
 }
 
@@ -904,16 +903,13 @@ function absLnThread(c: string): string {
     },
   ];
   const out = applyEdits(c, edits);
-  for (const [u, kind] of [
+  const units: [N, (n: N) => boolean][] = [
     [comp, isFn],
     [card.cls, isClass],
     [loop.unit, isFn],
     [modal.unit, isFn],
-  ] as const) {
-    const n = parseUnitAt(out, shiftedPos(u.start, edits, true), kind);
-    if (!n || n.end !== shiftedPos(u.end, edits, false)) return c;
-  }
-  return `${out}\n${ABS_LN_HELPER}`;
+  ];
+  return unitsReparse(out, edits, units) ? `${out}\n${ABS_LN_HELPER}` : c;
 }
 
 function diffLinesPresent(c: string): boolean {
@@ -1487,18 +1483,31 @@ export function initMathAssets(extensionDir: string): void {
   }
 }
 
-// wrap: the markdown component's content initializer,
-// `({content:e,context:t,isPartialText:i}){let n=i?wlt(e):e,` (captures:
-// 1=head, 2=content, 3=isPartialText, 4=initializer, 5=separator). Props after
-// isPartialText are skipped (2.1.286 added `links:X="live"`).
-const MATH_WRAP_RE =
-  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)[^{}]*\}\)\{let [\w$]+=)(\3\?[\w$]+\(\2\):\2)([,;])/g;
+// The markdown component every agent text block renders through, found by
+// its params destructure (content/context/isPartialText, plus whatever props a
+// build adds, as 2.1.286 did with `links`). chatMath and rawMd both read their
+// sites off it, so the parse is kept per bundle text.
+const MD_KEYS = ["content", "context", "isPartialText"];
+const MD_PARAMS_REACH = 2000;
+let mdMemo: { input: string; unit: N | null } | undefined;
 
-// code: the head of the component map's `code` renderer,
-// `code:({children:c,className:d})=>{if(d)return b("code",...)` (captures:
-// 1=head, 2=children, 3=className, 4=original first statement, 5=jsx factory).
-const MATH_CODE_RE =
-  /(code:\(\{children:([\w$]+),className:([\w$]+)\}\)=>\{)(if\(\3\)return ([\w$]+)\("code",\{className:\3,children:\2\}\);)/g;
+function mdComponent(c: string): N | null {
+  if (mdMemo?.input !== c) {
+    const units = unitsWith(
+      c,
+      "isPartialText:",
+      "function",
+      isFn,
+      MD_PARAMS_REACH,
+    ).filter((f) => hasKeys(f.params[0], MD_KEYS));
+    const u = units.length === 1 ? units[0] : null;
+    mdMemo = {
+      input: c,
+      unit: u?.body.type === "BlockStatement" ? u : null,
+    };
+  }
+  return mdMemo.unit;
+}
 
 const MATH_FRAG_END = "/*ccup:mathEnd*/";
 const mathFrag = (tag: string, code: string): string =>
@@ -1867,10 +1876,112 @@ function mathKatexBlock(): string | undefined {
   return `${MATH_KATEX_START};(function(define,module,exports){${mathAssets.js}})();/*ccup:mathKatexEnd*/`;
 }
 
+// The math sites, found by structure. wrap: the markdown component's content
+// initializer, the declarator `isPartialText ? <split>(content) : content`,
+// which the two wrap fragments route through the KaTeX preprocessor. code: the
+// component map's `code` renderer, whose body opens `if(className)return
+// <jsx>("code",{className,children})`; the code fragment goes in ahead of that
+// `if`. Since 2.1.282 the map sits in a memoized chunk component rather than in
+// the markdown component, so the renderer is found from its own `code:(` token
+// and must be the only one of its shape.
+const MATH_UNIT_REACH = 200000;
+let mathMemo: { input: string; output: string | null } | undefined;
+
+// The bundle with the inline fragments in, or null when a site is missing,
+// ambiguous, or the edit would not parse.
+function mathBuild(c: string): string | null {
+  if (mathMemo?.input !== c) {
+    mathMemo = { input: c, output: mathBuildUncached(c) };
+  }
+  return mathMemo.output;
+}
+
+function mathBuildUncached(c: string): string | null {
+  const m = mdComponent(c);
+  const content = m ? boundName(m.params[0], "content") : null;
+  const partial = m ? boundName(m.params[0], "isPartialText") : null;
+  if (!m || !content || !partial) return null;
+  const inits: N[] = [];
+  walkOwn(m, (n) => {
+    const v = n.type === "VariableDeclarator" ? n.init : null;
+    if (
+      v?.type === "ConditionalExpression" &&
+      idName(v.test) === partial &&
+      idName(v.alternate) === content &&
+      v.consequent.type === "CallExpression" &&
+      idName(v.consequent.arguments[0]) === content
+    )
+      inits.push(v);
+  });
+  if (inits.length !== 1) return null;
+  const renderers: { unit: N; first: N; jsx: string; children: string }[] = [];
+  const units: N[] = [];
+  for (let i = c.indexOf("code:("); i >= 0; i = c.indexOf("code:(", i + 1)) {
+    if (units.some((u) => u.start <= i && i < u.end)) continue;
+    const u =
+      m.start <= i && i < m.end
+        ? m
+        : unitAround(c, i, "function", isFn, MATH_UNIT_REACH);
+    if (!u) continue;
+    units.push(u);
+    walk(u, (n) => {
+      if (n.type !== "Property" || keyName(n) !== "code" || !isFn(n.value))
+        return;
+      const f = n.value;
+      const p = f.params[0];
+      const children = hasKeys(p, ["children", "className"])
+        ? boundName(p, "children")
+        : null;
+      const cls = children ? boundName(p, "className") : null;
+      const first = f.body.type === "BlockStatement" ? f.body.body[0] : null;
+      const call =
+        cls &&
+        first?.type === "IfStatement" &&
+        idName(first.test) === cls &&
+        first.consequent.type === "ReturnStatement"
+          ? first.consequent.argument
+          : null;
+      const props =
+        call?.type === "CallExpression" && isStr(call.arguments[0], "code")
+          ? call.arguments[1]
+          : null;
+      const jsx = props ? idName(call.callee) : null;
+      if (
+        jsx &&
+        hasKeys(props, ["className", "children"]) &&
+        idName(propOf(props, "className")!.value) === cls &&
+        idName(propOf(props, "children")!.value) === children
+      )
+        renderers.push({ unit: u, first, jsx, children: children! });
+    });
+  }
+  if (renderers.length !== 1) return null;
+  const r = renderers[0];
+  const edits: Edit[] = [
+    {
+      pos: inits[0].start,
+      text: mathFrag(
+        "wrapA",
+        "(window.__ccupMathW||function(ccupX){return ccupX})(",
+      ),
+    },
+    { pos: inits[0].end, text: mathFrag("wrapB", ")") },
+    {
+      pos: r.first.start,
+      text: mathFrag(
+        "code",
+        `var ccupM=window.__ccupMathR&&window.__ccupMathR(${r.jsx},${r.children});if(ccupM)return ccupM;`,
+      ),
+    },
+  ];
+  const out = applyEdits(c, edits);
+  const check: [N, (n: N) => boolean][] = [[m, isFn]];
+  if (r.unit !== m) check.push([r.unit, isFn]);
+  return unitsReparse(out, edits, check) ? out : null;
+}
+
 function mathAnchorsPresent(c: string): boolean {
-  MATH_WRAP_RE.lastIndex = 0;
-  MATH_CODE_RE.lastIndex = 0;
-  return MATH_WRAP_RE.test(c) && MATH_CODE_RE.test(c);
+  return mathBuild(c) !== null;
 }
 function mathMarksPresent(c: string): boolean {
   return (
@@ -1892,26 +2003,10 @@ function mathStrip(c: string): string {
 function mathStripEof(c: string): string {
   return c.replace(MATH_KATEX_BLOCK_RE, "").replace(MATH_HELPER_BLOCK_RE, "");
 }
-// Insert the inline fragments into a STRIPPED bundle (caller verified both
-// anchors; all-or-nothing is the anchors' job, the two replaces are safe).
+// Insert the inline fragments into a STRIPPED bundle (the caller has checked
+// mathAnchorsPresent; an unbuildable bundle comes back unchanged).
 function mathApplyInline(c: string): string {
-  let out = c.replace(
-    MATH_WRAP_RE,
-    (_w, head, _content, _partial, init, sep) =>
-      `${head}${mathFrag(
-        "wrapA",
-        "(window.__ccupMathW||function(ccupX){return ccupX})(",
-      )}${init}${mathFrag("wrapB", ")")}${sep}`,
-  );
-  out = out.replace(
-    MATH_CODE_RE,
-    (_w, head, ch, _cls, origIf, jsx) =>
-      `${head}${mathFrag(
-        "code",
-        `var ccupM=window.__ccupMathR&&window.__ccupMathR(${jsx},${ch});if(ccupM)return ccupM;`,
-      )}${origIf}`,
-  );
-  return out;
+  return mathBuild(c) ?? c;
 }
 
 function mathPresent(c: string): boolean {
@@ -4194,9 +4289,6 @@ const UCE_PERM_KEYS = ["request", "context", "onPermissionModeChange"];
 const UCE_PARAMS_REACH = 2000;
 const UCE_CLASS_REACH = 200000;
 
-const uceIsStr = (n: N, s: string): boolean =>
-  n.type === "Literal" && n.value === s;
-
 // `ev.key==="Enter"&&!ev.shiftKey`, in either operand order and with the
 // comparison written either way round.
 function uceIsEnterNoShift(t: N, ev: string): boolean {
@@ -4205,8 +4297,8 @@ function uceIsEnterNoShift(t: N, ev: string): boolean {
   const enter = (n: N) =>
     n.type === "BinaryExpression" &&
     (n.operator === "===" || n.operator === "==") &&
-    ((isMember(n.left, ev, "key") && uceIsStr(n.right, "Enter")) ||
-      (isMember(n.right, ev, "key") && uceIsStr(n.left, "Enter")));
+    ((isMember(n.left, ev, "key") && isStr(n.right, "Enter")) ||
+      (isMember(n.right, ev, "key") && isStr(n.left, "Enter")));
   const noShift = (n: N) =>
     n.type === "UnaryExpression" &&
     n.operator === "!" &&
@@ -4427,15 +4519,12 @@ function uceBuild(c: string): string | null {
     }),
   ];
   const out = applyEdits(c, edits);
-  for (const [u, kind] of [
+  const units: [N, (n: N) => boolean][] = [
     [q, isFn],
     [p, isFn],
     [render.cls, isClass],
-  ] as const) {
-    const n = parseUnitAt(out, shiftedPos(u.start, edits, true), kind);
-    if (!n || n.end !== shiftedPos(u.end, edits, false)) return null;
-  }
-  return out;
+  ];
+  return unitsReparse(out, edits, units) ? out : null;
 }
 
 // The /*ccup-uce*/-tagged forms 1.4.x-1.5.4 wrote, matched only to strip them
@@ -4670,32 +4759,18 @@ const RAWMD_SET = "ccupRawSet";
 const rawMdFrag = (marker: string, code: string): string =>
   `${marker}${code}${RAWMD_FRAG_END}`;
 
-// hook: the markdown component's hook chain, from its destructured signature
-// through the link-context-menu useState, `({content:$,context:J,
-// isPartialText:Z}){let Y=Z?wL0($):$,[X,Q]=l(null)` + `,` (captures: 1=head,
-// 2=content prop, 3=isPartialText prop, 4=useState alias, 5=chain comma). The
-// head tolerates the math patch's own fragments sitting in the initializer
-// (they carry no `;`), which is what lets the two compose in either order, and
-// skips props after isPartialText the way MATH_WRAP_RE does.
-const RAWMD_HOOK_RE =
-  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)[^{}]*\}\)\{let [\w$]+=[^;]{0,600}?,\[[\w$]+,[\w$]+\]=([\w$]+)\(null\))(,)/;
-
-// ret: the component's returned root span, `return R("span",{className:
-// PM.root,children:[` (captures: 1=`return `, 2=span opener, 3=multi-child
-// factory). Nothing after the bracket is read: the first child is the markdown
-// element through 2.1.281 and a map over memoized source chunks since 2.1.282
-// (`Y.map((U,V)=>F(zx0,{source:U,...},V))`), and either one is a single
-// expression the pre fragment's ternary can take as its else branch.
-const RAWMD_RET_RE =
-  /(return )(([\w$]+)\("span",\{className:[\w$]+\.root,children:\[)/;
-
-// tail: the link context menu that closes the root span's children, `,X&&F(Sf1,
-// {href:X.href,x:X.x,y:X.y,onClose:z})]})` + the component's closing brace
-// (captures: 1=the tail, 2=menu state, 3=single-child factory, 4=brace). The
-// single-child factory for the pre fragment is read here too, since ret no
-// longer sees one.
-const RAWMD_TAIL_RE =
-  /(,([\w$]+)&&([\w$]+)\([\w$]+,\{href:\2\.href,x:\2\.x,y:\2\.y,onClose:[\w$]+\}\)\]\}\))(\})/;
+// The rawMd sites, found by structure in the markdown component. hook: a
+// top-level `[a,b]=useState(null)` declarator (the link context menu's state;
+// top-level because hooks must be), which the hook fragment's own useState
+// follows. ret: the returned root span, `return <multi>("span",{className:
+// X.root,children:[...]})`, which wrapA and wrapB wrap in the host div and
+// whose first child takes the pre ternary as its else branch (the markdown
+// element through 2.1.281, a map over memoized source chunks since 2.1.282).
+// The single-child jsx factory the pre and rail fragments call is read off the
+// component's other element calls, as the one callee besides the span's that
+// takes a props object. The content prop and that factory must mean at the
+// root span what they mean where they were read.
+let rawMdMemo: { input: string; output: string | null } | undefined;
 
 // The attribute the CSS gate keys on, so a build that drops it reports missing.
 const RAWMD_TESTID_RE = /"data-testid":"assistant-message"/;
@@ -4753,14 +4828,117 @@ function rawMdPinBuild(c: string): string | undefined {
   return `${RAWMD_PIN_MARKER}${js}`;
 }
 
+// The bundle with the four inline fragments in, or null when a site is
+// missing, ambiguous, or the edit would not parse.
+function rawMdBuild(c: string): string | null {
+  if (rawMdMemo?.input !== c) {
+    rawMdMemo = { input: c, output: rawMdBuildUncached(c) };
+  }
+  return rawMdMemo.output;
+}
+
+function rawMdBuildUncached(c: string): string | null {
+  const m = mdComponent(c);
+  const content = m ? boundName(m.params[0], "content") : null;
+  if (!m || !content) return null;
+  const hooks: N[] = [];
+  const spans: N[] = [];
+  walkOwn(m, (n) => {
+    const init = n.type === "VariableDeclarator" ? n.init : null;
+    if (
+      init?.type === "CallExpression" &&
+      idName(init.callee) &&
+      init.arguments.length === 1 &&
+      init.arguments[0].type === "Literal" &&
+      init.arguments[0].value === null &&
+      n.id.type === "ArrayPattern" &&
+      n.id.elements.length === 2 &&
+      n.id.elements.every((e: N | null) => idName(e)) &&
+      n.parent?.parent === m.body
+    )
+      hooks.push(n);
+    const a = n.type === "ReturnStatement" ? n.argument : null;
+    const props =
+      a?.type === "CallExpression" &&
+      idName(a.callee) &&
+      isStr(a.arguments[0], "span") &&
+      a.arguments[1]?.type === "ObjectExpression"
+        ? a.arguments[1]
+        : null;
+    const kids = props ? propOf(props, "children")?.value : null;
+    if (
+      props &&
+      memberProp(propOf(props, "className")?.value) === "root" &&
+      kids?.type === "ArrayExpression" &&
+      kids.elements[0]
+    )
+      spans.push(a);
+  });
+  if (hooks.length !== 1 || spans.length !== 1) return null;
+  const span = spans[0];
+  const multi = idName(span.callee)!;
+  const singles = new Map<string, N>();
+  walk(m, (n) => {
+    const f = n.type === "CallExpression" ? idName(n.callee) : null;
+    if (f && f !== multi && n.arguments[1]?.type === "ObjectExpression")
+      singles.set(f, n);
+  });
+  if (singles.size !== 1) return null;
+  const [[single, singleAt]] = [...singles];
+  if (
+    bindingSite(span, content, m) !== m ||
+    bindingSite(span, single, m) !== bindingSite(singleAt, single, m)
+  )
+    return null;
+  const first = propOf(span.arguments[1], "children")!.value.elements[0];
+  const useState = idName(hooks[0].init.callee)!;
+  const edits: Edit[] = [
+    {
+      pos: hooks[0].end,
+      text: rawMdFrag(
+        RAWMD_HOOK_MARKER,
+        `,[${RAWMD_ON},${RAWMD_SET}]=${useState}(!1)`,
+      ),
+    },
+    {
+      pos: span.start,
+      text: rawMdFrag(
+        RAWMD_WRAPA_MARKER,
+        `${multi}("div",{className:"${RAWMD_HOST_CLASS}",children:[`,
+      ),
+    },
+    {
+      pos: first.start,
+      text: rawMdFrag(
+        RAWMD_PRE_MARKER,
+        `${RAWMD_ON}?${single}("pre",{className:"${RAWMD_PRE_CLASS}",` +
+          `children:${single}("code",{children:${content}})}):`,
+      ),
+    },
+    {
+      pos: span.end,
+      text: rawMdFrag(
+        RAWMD_WRAPB_MARKER,
+        `,${single}("div",{className:"${RAWMD_RAIL_CLASS}",children:` +
+          `${single}("button",{type:"button",className:"${RAWMD_BTN_CLASS}",` +
+          `title:${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
+          `"aria-label":${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
+          `"aria-pressed":${RAWMD_ON},` +
+          `onClick:function(){${RAWMD_SET}(!${RAWMD_ON})},` +
+          `dangerouslySetInnerHTML:{__html:"${RAWMD_ICON}"}})})]})`,
+      ),
+    },
+  ];
+  const out = applyEdits(c, edits);
+  return unitsReparse(out, edits, [[m, isFn]]) ? out : null;
+}
+
 function rawMdAnchorsPresent(c: string): boolean {
   return (
     RAWMD_TESTID_RE.test(c) &&
     RAWMD_CHAT_HASH_RE.test(c) &&
     RAWMD_STICKY_HASH_RE.test(c) &&
-    RAWMD_HOOK_RE.test(c) &&
-    RAWMD_RET_RE.test(c) &&
-    RAWMD_TAIL_RE.test(c)
+    rawMdBuild(c) !== null
   );
 }
 function rawMdMarksPresent(c: string): boolean {
@@ -4771,50 +4949,17 @@ function rawMdStrip(c: string): string {
   return c.replace(RAWMD_FRAG_RE, "").replace(RAWMD_PIN_LINE_RE, "");
 }
 // Insert the four inline fragments into a STRIPPED bundle (the caller has
-// verified the anchors; each is unique, so the non-global replaces hit exactly
-// one site). The pin line is appended separately, see rawMdSet.
+// checked rawMdAnchorsPresent; an unbuildable bundle comes back unchanged).
+// The pin line is appended separately, see rawMdSet.
 function rawMdApplyInline(c: string): string {
-  const content = c.match(RAWMD_HOOK_RE)?.[2];
-  const single = c.match(RAWMD_TAIL_RE)?.[3];
-  if (content === undefined || single === undefined) return c;
-  let out = c.replace(
-    RAWMD_HOOK_RE,
-    (_w, head, _content, _partial, useState, comma) =>
-      `${head}${rawMdFrag(
-        RAWMD_HOOK_MARKER,
-        `,[${RAWMD_ON},${RAWMD_SET}]=${useState}(!1)`,
-      )}${comma}`,
-  );
-  out = out.replace(RAWMD_RET_RE, (_w, ret, span, multi) =>
-    [
-      ret,
-      rawMdFrag(
-        RAWMD_WRAPA_MARKER,
-        `${multi}("div",{className:"${RAWMD_HOST_CLASS}",children:[`,
-      ),
-      span,
-      rawMdFrag(
-        RAWMD_PRE_MARKER,
-        `${RAWMD_ON}?${single}("pre",{className:"${RAWMD_PRE_CLASS}",` +
-          `children:${single}("code",{children:${content}})}):`,
-      ),
-    ].join(""),
-  );
-  out = out.replace(
-    RAWMD_TAIL_RE,
-    (_w, tail, _menu, single, brace) =>
-      `${tail}${rawMdFrag(
-        RAWMD_WRAPB_MARKER,
-        `,${single}("div",{className:"${RAWMD_RAIL_CLASS}",children:` +
-          `${single}("button",{type:"button",className:"${RAWMD_BTN_CLASS}",` +
-          `title:${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
-          `"aria-label":${RAWMD_ON}?"${RAWMD_TIP_ON}":"${RAWMD_TIP}",` +
-          `"aria-pressed":${RAWMD_ON},` +
-          `onClick:function(){${RAWMD_SET}(!${RAWMD_ON})},` +
-          `dangerouslySetInnerHTML:{__html:"${RAWMD_ICON}"}})})]})`,
-      )}${brace}`,
-  );
-  return out;
+  return rawMdBuild(c) ?? c;
+}
+
+// Whether a bundle, patched or not, still carries every site the inline
+// fragments go into. scripts/repro/raw-markdown.mjs reads this as its drift
+// canary, so it checks exactly what the patcher locates.
+export function rawMdSitesFound(c: string): boolean {
+  return rawMdBuild(rawMdStrip(c)) !== null;
 }
 
 function rawMdPresent(c: string): boolean {

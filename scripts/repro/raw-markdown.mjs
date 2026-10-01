@@ -15,28 +15,36 @@
 //
 // The CSS mirrors rawMdCssBuild in src/patcher.ts, the DOM mirrors the shape
 // its four inline fragments produce, and pinJs mirrors the IIFE of its pin
-// line, which runs here for real; keep all of it in sync. The anchor checks parse the
-// live bundle, so they double as a drift canary for the point. The live bundle
-// is found under ~/.vscode/extensions (newest Claude Code install) or via
-// $CCUP_BUNDLE (the webview directory).
+// line, which runs here for real; keep all of it in sync. The site check asks
+// the compiled patcher (out/, so compile first) whether it can locate the
+// point's sites in the live bundle, so it doubles as a drift canary that checks
+// exactly what the patcher locates. The live bundle is found under
+// ~/.vscode/extensions (newest Claude Code install) or via $CCUP_BUNDLE (the
+// webview directory).
 import { readFileSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-// --- the point's anchors in webview/index.js (mirror of src/patcher.ts) -----
-const HOOK_RE =
-  /(\(\{content:([\w$]+),context:[\w$]+,isPartialText:([\w$]+)[^{}]*\}\)\{let [\w$]+=[^;]{0,600}?,\[[\w$]+,[\w$]+\]=([\w$]+)\(null\))(,)/;
-const RET_RE =
-  /(return )(([\w$]+)\("span",\{className:[\w$]+\.root,children:\[)/;
-const TAIL_RE =
-  /(,([\w$]+)&&([\w$]+)\([\w$]+,\{href:\2\.href,x:\2\.x,y:\2\.y,onClose:[\w$]+\}\)\]\}\))(\})/;
 const TESTID_RE = /"data-testid":"assistant-message"/;
-// The live install may already have the point applied, and three of those
-// anchors sit exactly where the fragments land. The patcher matches them on a
-// stripped bundle, so strip the same way before testing them here.
-const FRAG_RE =
-  /\/\*ccup:rawMd(?:Hook|WrapA|Pre|WrapB)\*\/[\s\S]*?\/\*ccup:rawMdEnd\*\//g;
+
+// The compiled patcher, for its own site check. It reads vscode only inside
+// functions, so an empty stand-in is enough to load the module.
+function loadPatcher() {
+  const require = createRequire(import.meta.url);
+  const Module = require("node:module");
+  const load = Module._load;
+  Module._load = (request, ...rest) =>
+    request === "vscode" ? {} : load(request, ...rest);
+  try {
+    const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+    return require(join(root, "out", "patcher.js"));
+  } finally {
+    Module._load = load;
+  }
+}
 
 // --- CSS-module hashes the replica needs ------------------------------------
 const MD_ROOT_RE = /\.root_([-\w]+) code\{font-family/; // stylesheet, not js
@@ -202,11 +210,10 @@ const RAW = [
 
 export async function run(ctx) {
   const dir = liveBundleDir();
-  const raw = readFileSync(join(dir, "index.js"), "utf8");
-  const js = raw.replace(FRAG_RE, "");
+  const js = readFileSync(join(dir, "index.js"), "utf8");
   const css = readFileSync(join(dir, "index.css"), "utf8");
   console.log(
-    `live bundle: ${dir}${raw === js ? "" : " (rawMd applied; anchors read stripped)"}`,
+    `live bundle: ${dir}${js.includes("/*ccup:rawMd") ? " (rawMd applied)" : ""}`,
   );
 
   let ok = true;
@@ -218,11 +225,11 @@ export async function run(ctx) {
     return cond;
   };
 
-  // --- live-bundle anchors -------------------------------------------------
-  const hook = js.match(HOOK_RE);
-  check("markdown component hook chain parses", Boolean(hook), hook?.[2]);
-  check("root span return parses", RET_RE.test(js));
-  check("link-context-menu tail parses", TAIL_RE.test(js));
+  // --- live-bundle sites ---------------------------------------------------
+  check(
+    "the patcher locates the point's sites in the markdown component",
+    loadPatcher().rawMdSitesFound(js),
+  );
   check("assistant-message testid present", TESTID_RE.test(js));
 
   const md = css.match(MD_ROOT_RE)?.[1];

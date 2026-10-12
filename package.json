@@ -309,7 +309,7 @@
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "acorn": "^8.18.0",
-    "katex": "^0.18.1",
+    "katex": "^0.19.0",
     "typescript": "^5.4.0"
   }
 }

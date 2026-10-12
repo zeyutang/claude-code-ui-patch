@@ -2,6 +2,12 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 1.5.5
+
+- `useCtrlEnterToSendEverywhere` applies again on Claude Code 2.1.290 and later, where the AskUserQuestion `Other` box and the permission feedback box had gone back to submitting on a plain `Enter`.
+- `chatMathRendering` now bundles KaTeX 0.19.0 (was 0.18.1), so `\reflectbox`, `\mapsfrom`, and braced delimiter sizes such as `\big{(}` render instead of showing as red source.
+  Characters missing from KaTeX's own fonts now fall back to the platform's math font before Times New Roman, and a numbered `align` or `gather` ending in `\\` shows the empty numbered row LaTeX gives it.
+
 ## 1.5.4
 
 - `chatMathRendering` renders math in agent responses again on Claude Code 2.1.286 and later.

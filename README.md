@@ -27,7 +27,7 @@ Patch Claude Code VS Code extension UI to provide finegrained settings for vario
 
 Settings live under the `claudeCodeUiPatch.*` namespace (prefix omitted below) and each defaults to Claude Code's native value.
 The tree shows every knob, what it targets, and what scales with what: an indented child follows its parent until you give it a value.
-The one exception is the "Always applied" group at the end, which has no setting: it fills in UI the native interface applies everywhere except one spot, so installing the patch is the opt-in and uninstalling it is the undo.
+The one exception is the "Always applied" group at the end, which has no setting: it fills in what the native interface leaves out, so installing the patch is the opt-in and uninstalling it is the undo.
 
 ```text
 chat.fontSize & chat.fontFamily        # native VS Code settings, shared by every chat extension
@@ -90,7 +90,8 @@ Behavior
 Always applied                         # no setting; installing this patch is the opt-in
    ├── permission focus ring           # focused permission/question box gets the input box's ring
    ├── question answer box reveal      # typing keeps the "Other" box's border and padding in view
-   └── expanded prompt header          # "Show more" keeps the prompt on top in its own scroller
+   ├── expanded prompt header          # "Show more" keeps the prompt on top in its own scroller
+   └── session delete button           # session list rows: move a conversation to the Trash
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)

@@ -2,6 +2,11 @@
 
 All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+- Rows in the session list (the chat's history dropdown and the sidebar list), archived or not, get a delete button beside their archive or unarchive button, which moves the conversation to the Trash once you confirm.
+  Always applied, no setting; a conversation still open in a tab, another window, or a terminal stays until you close it there.
+
 ## 1.5.5
 
 - `useCtrlEnterToSendEverywhere` applies again on Claude Code 2.1.290 and later, where the AskUserQuestion `Other` box and the permission feedback box had gone back to submitting on a plain `Enter`.

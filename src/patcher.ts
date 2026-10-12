@@ -1375,6 +1375,538 @@ function expandedViewBuild(c: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Session delete (always on, two halves): the session list (the chat header's
+// history dropdown and the sidebar's session list render the same rows) offers
+// rename, archive and unarchive on hover, and nothing anywhere deletes a
+// conversation: the host knows archive_session, unarchive_session(s) and
+// rename_session, and no delete request at all. Every local row with a
+// transcript, archived or not, gets a third button that moves the
+// conversation to the OS trash, except the row of the session its view shows.
+//
+// The webview half (sessionDelete) is one fragment in the row component: a
+// sibling element right after the unarchive button in the actions span, built
+// from that button's own jsx factory and class-map members, with Heroicons'
+// trash beside the set's archive and unarchive icons. It renders where the
+// list hands the row an archive or an unarchive handler (a local row; the Web
+// tab passes neither) and the session has an id. A click sends
+// {type:"delete_session",sessionId,title} through the session's
+// connectionProvider, the shared transport, without the per-session listener
+// wiring getConnection would add to a row that is about to go. A host still
+// running its pre-patch code answers "Unknown request type.", which the click
+// turns into a native notification asking for the reload that loads the
+// handler.
+//
+// The host half (sessionDeleteHost) is three fragments in extension.js:
+//   wire    at the head of the webview provider's wireLiveRegistry(comms),
+//           which runs for every chat panel, the sidebar and the session list
+//           alike: ccupOpenHere(id), the provider's own sessionOpenHere test
+//           (a panel holds the session, or the sidebar shows it) plus the
+//           remembered tabs a reload has not revived yet, and ccupPeers(),
+//           every live comms
+//   route   at the head of the comms subclass's processRequest: delete_session
+//           goes to the method below, everything else falls through untouched
+//   method  ccupDeleteSession, ahead of processRequest in the same class,
+//           running the compiled ccupSessionDeleteHost with the session store
+// The handler refuses while anything could still write the transcript, asks
+// in a modal, moves the transcript and the session's folder beside it to the
+// trash (offering a permanent delete where the file system has none), and
+// sends session_store_changed to every comms: the one notice after which a
+// list's re-read drops sessions missing from disk (an archive_sync re-read
+// keeps them). Builds without the live-session registry (2.1.270 has no
+// sessionHeldElsewhere hook) cannot tell whether another window or a
+// terminal holds a session, so the provider anchors require it.
+//
+// The halves are all or nothing across the two files: each builds only when
+// the other file's sites are found too, so a drifted build never shows a
+// button with no handler behind it. Every site is found by structure
+// (src/derive.ts) and required exactly once, the minified names an insertion
+// reads are taken from the site and checked to resolve there, and the touched
+// units are parsed again after the edits. Each insertion is wrapped in
+// /*ccup:sdel:<site>*/.../*ccup:sdelEnd*/, so stripping the fragments restores
+// the stock bytes.
+// ---------------------------------------------------------------------------
+const SDEL_END = "/*ccup:sdelEnd*/";
+const SDEL_ROW = "/*ccup:sdel:row*/";
+const SDEL_WIRE = "/*ccup:sdel:wire*/";
+const SDEL_ROUTE = "/*ccup:sdel:route*/";
+const SDEL_METHOD = "/*ccup:sdel:method*/";
+const SDEL_FRAG_RE = /\/\*ccup:sdel:[-\w]+\*\/[\s\S]*?\/\*ccup:sdelEnd\*\//g;
+const SDEL_WEBVIEW_FILE = "webview/index.js";
+const SDEL_HOST_FILE = "extension.js";
+const sdelEdit = (marker: string, e: Edit): Edit => ({
+  pos: e.pos,
+  text: `${marker}${e.text}${SDEL_END}`,
+});
+const sdelStrip = (c: string): string => c.replace(SDEL_FRAG_RE, "");
+
+// The props the session row destructures, and how far ahead of one its
+// function keyword may sit.
+const SDEL_ROW_KEYS = ["session", "isActive", "onArchive", "onUnarchive"];
+const SDEL_PARAMS_REACH = 2000;
+// How far ahead of a member token its class may start (the comms base class
+// alone spans about 145KB).
+const SDEL_CLASS_REACH = 400000;
+// Heroicons' outline trash, the set the row's archive and unarchive icons
+// come from (the bundle ships the same path for its own trash icon).
+const SDEL_TRASH_D =
+  "m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0";
+// The click, kept on window so every row shares one copy: one request, and
+// the host confirms, deletes and refreshes every list by itself. The busy
+// set swallows a second click while that request is still out.
+const SDEL_HELPER_PROP = "__ccupSessionDelete";
+const SDEL_RESTART_NOTE = "Reload the window to start using session delete.";
+const SDEL_WEBVIEW_HELPER =
+  `(s)=>{try{var w=window,id=s.sessionId.value,` +
+  `busy=w.__ccupSessionDeleteBusy||(w.__ccupSessionDeleteBusy=new Set);` +
+  `if(!id||busy.has(id))return;busy.add(id);` +
+  `Promise.resolve().then(()=>s.connectionProvider()).then((c)=>c.sendRequest(` +
+  `{type:"delete_session",sessionId:id,title:s.summary&&s.summary.value||"Untitled"})` +
+  `.catch((e)=>{var m=e&&e.message||String(e);return c.showNotification(` +
+  `m==="Unknown request type."?${JSON.stringify(SDEL_RESTART_NOTE)}:"Could not delete the session: "+m,"warning")}))` +
+  `.catch(()=>{}).finally(()=>busy.delete(id))}catch{}}`;
+
+// Whether `fn`'s own body calls `name(arg)`.
+function sdelCallsWith(fn: N, name: string, arg: string): boolean {
+  let hit = false;
+  walkOwn(fn, (n) => {
+    if (hit) return false;
+    if (
+      n.type === "CallExpression" &&
+      idName(n.callee) === name &&
+      n.arguments.length === 1 &&
+      idName(n.arguments[0]) === arg
+    )
+      hit = true;
+  });
+  return hit;
+}
+
+// The row component and the insertion that adds its delete button, or null.
+function sdelRowFind(c: string): { unit: N; edit: Edit } | null {
+  const rows = unitsWith(
+    c,
+    "onUnarchive:",
+    "function",
+    isFn,
+    SDEL_PARAMS_REACH,
+  ).filter((f) => hasKeys(f.params[0], SDEL_ROW_KEYS));
+  if (rows.length !== 1) return null;
+  const row = rows[0];
+  const ps = row.params[0];
+  const sess = boundName(ps, "session");
+  const active = boundName(ps, "isActive");
+  const archive = boundName(ps, "onArchive");
+  const unarchive = boundName(ps, "onUnarchive");
+  if (!sess || !active || !archive || !unarchive) return null;
+
+  // The archive and unarchive buttons, `cb&&jsx("span",{...})` with a click
+  // that calls cb(session), siblings in the actions span's children array.
+  const buttons: { el: N; call: N; props: N; cb: string }[] = [];
+  let readsId = false;
+  walk(row, (n) => {
+    if (memberProp(n) === "value" && isMember(n.object, sess, "sessionId"))
+      readsId = true;
+    if (n.type !== "LogicalExpression" || n.operator !== "&&") return;
+    const cb = idName(n.left);
+    const call = n.right;
+    if ((cb !== archive && cb !== unarchive) || call.type !== "CallExpression")
+      return;
+    const props = call.arguments[1];
+    if (
+      call.arguments.length !== 2 ||
+      !isStr(call.arguments[0], "span") ||
+      !hasKeys(props, ["className", "onClick", "title", "children"])
+    )
+      return;
+    const click = propOf(props, "onClick")!.value;
+    if (isFn(click) && sdelCallsWith(click, cb, sess))
+      buttons.push({ el: n, call, props, cb });
+  });
+  const un = buttons.filter((b) => b.cb === unarchive);
+  const ar = buttons.filter((b) => b.cb === archive);
+  if (!readsId || un.length !== 1 || ar.length !== 1) return null;
+  const { el, call, props } = un[0];
+  if (el.parent?.type !== "ArrayExpression" || ar[0].el.parent !== el.parent)
+    return null;
+
+  // The button's factory and class-map member, and its icon's: the new
+  // button repeats them, so it renders and styles exactly like its siblings.
+  const jsx = idName(call.callee);
+  const btnCls = propOf(props, "className")!.value;
+  const icon = propOf(props, "children")!.value;
+  const iconProps = icon.type === "CallExpression" ? icon.arguments[1] : null;
+  const iconCls = hasKeys(iconProps, ["className"])
+    ? propOf(iconProps, "className")!.value
+    : null;
+  const isSheetMember = (m: N | null) => !!memberProp(m) && !!idName(m!.object);
+  if (!jsx || !isSheetMember(btnCls) || !isSheetMember(iconCls)) return null;
+  for (const name of [sess, active, archive, unarchive]) {
+    if (bindingSite(el, name, row) !== row) return null;
+  }
+
+  const del = "ccupDel";
+  const ev = "ccupEv";
+  const fire = `${ev}.stopPropagation(),${del}(${sess})`;
+  const svg =
+    `${jsx}("svg",{xmlns:"http://www.w3.org/2000/svg",fill:"none",viewBox:"0 0 24 24",` +
+    `strokeWidth:1.5,stroke:"currentColor","aria-hidden":"true",` +
+    `className:${c.slice(iconCls!.start, iconCls!.end)},` +
+    `children:${jsx}("path",{strokeLinecap:"round",strokeLinejoin:"round",` +
+    `d:${JSON.stringify(SDEL_TRASH_D)}})})`;
+  const button =
+    `${jsx}("span",{role:"button",tabIndex:0,` +
+    `className:${c.slice(btnCls.start, btnCls.end)},` +
+    `onClick:(${ev})=>{${fire}},` +
+    `onKeyDown:(${ev})=>{if(${ev}.key==="Enter"||${ev}.key===" ")${ev}.preventDefault(),${fire}},` +
+    `title:"Delete session",children:${svg}})`;
+  const text =
+    `,(${archive}||${unarchive})&&!${active}&&${sess}.sessionId.value&&` +
+    `((${del})=>${button})(window.${SDEL_HELPER_PROP}||` +
+    `(window.${SDEL_HELPER_PROP}=${SDEL_WEBVIEW_HELPER}))`;
+  return { unit: row, edit: sdelEdit(SDEL_ROW, { pos: el.end, text }) };
+}
+
+// The delete_session handler. It is compiled into Claude Code's extension
+// host by toString, as the body of a method on its per-webview comms class,
+// so it runs there and may use only its parameters, `this` (that comms), and
+// Node's globals.
+async function ccupSessionDeleteHost(
+  this: any,
+  req: any,
+  store: any,
+): Promise<{ type: string; deleted: boolean }> {
+  const vscode = require("vscode");
+  const path = require("path");
+  const fs = require("fs");
+  const done = (deleted: boolean) => ({
+    type: "delete_session_response",
+    deleted,
+  });
+  const id = typeof req?.sessionId === "string" ? req.sessionId : "";
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))
+    return done(false);
+  let title =
+    typeof req.title === "string" ? req.title.replace(/\s+/g, " ").trim() : "";
+  if (!title) title = "Untitled";
+  if (title.length > 100) title = `${title.slice(0, 97)}...`;
+  const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const warn = (message: string) => {
+    void vscode.window.showWarningMessage(message);
+    return done(false);
+  };
+
+  // Anything that could still write the transcript: a tab of this window
+  // (including one a reload has not revived yet) or its sidebar; a Claude
+  // process of this window, live or still closing after its view moved on;
+  // or another window or a terminal, per the live-session registry, which
+  // answers undefined when it cannot tell and then does not block.
+  const heldWhere = async (): Promise<"here" | "elsewhere" | undefined> => {
+    if (this.ccupOpenHere(id)) return "here";
+    for (const peer of this.ccupPeers()) {
+      if (await peer.sessionMayStillRun(id)) return "here";
+    }
+    if ((await this.closedSurfaceMayHold?.(id)) === true) return "here";
+    if ((await this.sessionHeldElsewhere?.(id)) === true) return "elsewhere";
+    return undefined;
+  };
+  const busy = async (): Promise<boolean> => {
+    const where = await heldWhere();
+    if (where === "here")
+      warn(
+        `'${title}' is still open in this window. Close it first, then delete it.`,
+      );
+    else if (where === "elsewhere")
+      warn(
+        `'${title}' is open elsewhere (another window or a terminal). Close it there, then delete it.`,
+      );
+    return where !== undefined;
+  };
+  if (await busy()) return done(false);
+
+  let file: unknown;
+  try {
+    const sessions = await store.load(this.cwd, this.logger);
+    file = (await sessions.resolveSessionFile(id))?.filePath;
+  } catch (e) {
+    return warn(`Could not read the transcript of '${title}': ${reason(e)}`);
+  }
+  if (typeof file !== "string")
+    return warn(`Could not find the transcript of '${title}'.`);
+
+  const bin = process.platform === "win32" ? "Recycle Bin" : "Trash";
+  const move = `Move to ${bin}`;
+  const sure = await vscode.window.showWarningMessage(
+    `Are you sure you want to delete '${title}'?`,
+    { modal: true, detail: `You can restore it from the ${bin}.` },
+    move,
+  );
+  if (sure !== move) return done(false);
+  // The dialog can stay up while another window or a terminal resumes it.
+  if (await busy()) return done(false);
+
+  // The transcript goes first, since it is what lists the session, then the
+  // folder beside it with the session's subagent transcripts and tool output.
+  const targets = [file];
+  const folder = path.join(path.dirname(file), id);
+  try {
+    if (fs.lstatSync(folder).isDirectory()) targets.push(folder);
+  } catch {
+    // no folder: the session never kept anything beside its transcript
+  }
+  let useTrash = true;
+  let removed = 0;
+  try {
+    for (const target of targets) {
+      const uri = vscode.Uri.file(target);
+      try {
+        await vscode.workspace.fs.delete(uri, { recursive: true, useTrash });
+      } catch (e) {
+        if (!useTrash) throw e;
+        const forever = "Delete Permanently";
+        const pick = await vscode.window.showWarningMessage(
+          `Could not move '${title}' to the ${bin}.`,
+          {
+            modal: true,
+            detail: `${reason(e)}\n\nDelete it permanently instead? This cannot be undone.`,
+          },
+          forever,
+        );
+        if (pick !== forever) break;
+        useTrash = false;
+        await vscode.workspace.fs.delete(uri, { recursive: true, useTrash });
+      }
+      removed++;
+    }
+  } catch (e) {
+    void vscode.window.showErrorMessage(
+      `Could not delete '${title}': ${reason(e)}`,
+    );
+  }
+  if (removed > 0) {
+    for (const peer of this.ccupPeers()) peer.sendSessionStoreChanged();
+  }
+  return done(removed > 0);
+}
+
+// A class's own method (static or not) or field of this name.
+function sdelMethod(cls: N, name: string, isStatic = false): N | null {
+  for (const m of cls.body.body as N[]) {
+    if (
+      m.type === "MethodDefinition" &&
+      m.kind === "method" &&
+      !m.computed &&
+      !!m.static === isStatic &&
+      idName(m.key) === name
+    )
+      return m;
+  }
+  return null;
+}
+function sdelField(cls: N, name: string): boolean {
+  return (cls.body.body as N[]).some(
+    (m) =>
+      m.type === "PropertyDefinition" && !m.computed && idName(m.key) === name,
+  );
+}
+
+// `this.prop`.
+const sdelIsThisMember = (n: N | null | undefined, prop: string): boolean =>
+  memberProp(n) === prop && n!.object.type === "ThisExpression";
+
+// The host's sites and their three insertions, or null.
+function sdelHostFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  const classesWith = (token: string) =>
+    unitsWith(c, token, "class ", isClass, SDEL_CLASS_REACH);
+
+  // The per-webview comms subclass, which carries the hooks the provider sets.
+  const subs = classesWith("isSessionLiveInOtherSurface(").filter(
+    (k) =>
+      idName(k.superClass) &&
+      sdelMethod(k, "processRequest") &&
+      sdelField(k, "sessionHeldElsewhere") &&
+      sdelField(k, "closedSurfaceMayHold"),
+  );
+  if (subs.length !== 1) return null;
+  const sub = subs[0];
+  // Its base, with the per-session run check and the store-change notice.
+  const bases = classesWith("sessionMayStillRun(").filter(
+    (k) =>
+      idName(k.id) === idName(sub.superClass) &&
+      sdelMethod(k, "sessionMayStillRun") &&
+      sdelMethod(k, "sendSessionStoreChanged"),
+  );
+  if (bases.length !== 1) return null;
+
+  // The session store, as the base opens it: `S.load(this.cwd,this.logger)`.
+  const loads = new Set<string>();
+  walk(bases[0], (n) => {
+    if (
+      n.type === "CallExpression" &&
+      memberProp(n.callee) === "load" &&
+      n.arguments.length === 2 &&
+      sdelIsThisMember(n.arguments[0], "cwd") &&
+      sdelIsThisMember(n.arguments[1], "logger")
+    ) {
+      const s = idName(n.callee.object);
+      if (s) loads.add(s);
+    }
+  });
+  if (loads.size !== 1) return null;
+  const store = [...loads][0];
+  const stores = classesWith("resolveSessionFile(").filter(
+    (k) =>
+      idName(k.id) === store &&
+      sdelMethod(k, "resolveSessionFile") &&
+      sdelMethod(k, "load", true),
+  );
+  if (stores.length !== 1 || idName(sub.id) === store) return null;
+  // The subclass reads that same binding itself, unshadowed, so the method
+  // inserted into it reaches the store too.
+  let reaches = false;
+  walk(sub, (n) => {
+    if (reaches) return false;
+    if (
+      n.type === "MemberExpression" &&
+      idName(n.object) === store &&
+      bindingSite(n, store, sub) === null
+    )
+      reaches = true;
+  });
+  if (!reaches) return null;
+
+  // The webview provider: wireLiveRegistry(comms), which must be where the
+  // registry hooks are set, and the state ccupOpenHere reads.
+  const provs = classesWith("wireLiveRegistry(").filter(
+    (k) =>
+      sdelMethod(k, "wireLiveRegistry") &&
+      sdelMethod(k, "sidebarHoldsSession") &&
+      ["sessionPanels", "rememberedTabSessions", "allComms"].every((f) =>
+        sdelField(k, f),
+      ),
+  );
+  if (provs.length !== 1) return null;
+  const prov = provs[0];
+  const wire = sdelMethod(prov, "wireLiveRegistry")!.value;
+  const comms = wire.params.length === 1 ? idName(wire.params[0]) : null;
+  if (!comms || wire.body.type !== "BlockStatement") return null;
+  const hooks = new Set<string>();
+  walkOwn(wire, (n) => {
+    if (
+      n.type === "AssignmentExpression" &&
+      n.operator === "=" &&
+      idName(n.left.object) === comms
+    ) {
+      const k = memberProp(n.left);
+      if (k) hooks.add(k);
+    }
+  });
+  if (!hooks.has("sessionHeldElsewhere") || !hooks.has("closedSurfaceMayHold"))
+    return null;
+
+  // The route's method, whose first param is the request envelope.
+  const pr = sdelMethod(sub, "processRequest")!;
+  const env = idName(pr.value.params[0]);
+  if (!env || pr.value.body.type !== "BlockStatement") return null;
+  let readsType = false;
+  walkOwn(pr.value, (n) => {
+    if (readsType) return false;
+    if (memberProp(n) === "type" && isMember(n.object, env, "request"))
+      readsType = true;
+  });
+  if (!readsType) return null;
+
+  const edits: Edit[] = [
+    sdelEdit(SDEL_WIRE, {
+      pos: wire.body.start + 1,
+      text:
+        `${comms}.ccupOpenHere=(ccupId)=>this.sessionPanels.has(ccupId)||` +
+        `this.rememberedTabSessions.some((ccupT)=>ccupT.sessionId===ccupId)||` +
+        `this.sidebarHoldsSession(ccupId);` +
+        `${comms}.ccupPeers=()=>[...this.allComms];`,
+    }),
+    sdelEdit(SDEL_METHOD, {
+      pos: pr.start,
+      text:
+        `ccupDeleteSession(ccupReq){return(${ccupSessionDeleteHost.toString()})` +
+        `.call(this,ccupReq,${store})}`,
+    }),
+    sdelEdit(SDEL_ROUTE, {
+      pos: pr.value.body.start + 1,
+      text: `if(${env}.request.type==="delete_session")return this.ccupDeleteSession(${env}.request);`,
+    }),
+  ];
+  return {
+    units: [
+      [sub, isClass],
+      [prov, isClass],
+    ],
+    edits,
+  };
+}
+
+// A one-argument string function remembering its last two answers: an apply
+// pass asks each half about both its own file and, through the other half's
+// gate, the same text again.
+function sdelMemo(
+  fn: (native: string) => string | null,
+): (native: string) => string | null {
+  let slots: { input: string; output: string | null }[] = [];
+  return (native) => {
+    const hit = slots.find((s) => s.input === native);
+    if (hit) return hit.output;
+    const output = fn(native);
+    slots = [{ input: native, output }, ...slots].slice(0, 2);
+    return output;
+  };
+}
+
+// Each half's native file with its fragments in, or null when a site is
+// missing or an edit would not parse.
+const sdelRowBuild = sdelMemo((native) => {
+  const site = sdelRowFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, [site.edit]);
+  return unitsReparse(out, [site.edit], [[site.unit, isFn]]) ? out : null;
+});
+const sdelHostBuild = sdelMemo((native) => {
+  const sites = sdelHostFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+
+// The two ALWAYS_POINTS patches, each gated on the other file's sites.
+function sessionDeleteRowPatch(
+  native: string,
+  read: BundleReader,
+): string | null {
+  const host = read(SDEL_HOST_FILE);
+  if (host === undefined || sdelHostBuild(sdelStrip(host)) === null)
+    return null;
+  return sdelRowBuild(native);
+}
+function sessionDeleteHostPatch(
+  native: string,
+  read: BundleReader,
+): string | null {
+  const web = read(SDEL_WEBVIEW_FILE);
+  if (web === undefined || sdelRowBuild(sdelStrip(web)) === null) return null;
+  return sdelHostBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes it given this host
+// bundle, or null when either half's sites are gone. scripts/repro's
+// session-delete.mjs serves this, so it runs exactly what the patcher writes
+// and doubles as the drift canary for both halves.
+export function sessionDeleteWebview(web: string, host: string): string | null {
+  return sessionDeleteRowPatch(sdelStrip(web), (rel) =>
+    rel === SDEL_HOST_FILE ? host : undefined,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Chat math rendering (ON): the chat webview renders agent markdown through
 // react-markdown with no math support, so TeX like $\mathcal{G}$ shows as raw
 // source. When ON we render it with a bundled KaTeX (vendored under this
@@ -5410,18 +5942,28 @@ function toggleByFile(): Map<string, TogglePoint[]> {
 // ---------------------------------------------------------------------------
 // Always-on fixes: edits the patch writes unconditionally, with no setting
 // behind them. Reserved for spots where the native UI simply omits something it
-// applies everywhere else, so there is no native behavior worth preserving as an
-// option and a knob would only be noise. They ride the same analyze / apply /
-// restore / reload-cue machinery as the toggles but read no configuration:
-// applying always writes the current line, restoring always strips it, and the
-// panel shows no row for them. Their one user-visible consequence is that an
-// install with every setting left at its default still patches the bundle (and
-// so still asks for the one reload), where before it would leave it untouched.
+// applies everywhere else, and for small additions that stay inert until used
+// (the session list's delete button), so there is no native behavior worth
+// preserving as an option and a knob would only be noise. They ride the same
+// analyze / apply / restore / reload-cue machinery as the toggles but read no
+// configuration: applying always writes the current form, restoring always
+// strips it, and the panel shows no row for them. Their one user-visible
+// consequence is that an install with every setting left at its default still
+// patches the bundle (and so still asks for the one reload), where before it
+// would leave it untouched.
 // ---------------------------------------------------------------------------
-interface AlwaysPoint {
+
+// Reads one file of the install being patched, as the current pass has it.
+type BundleReader = (rel: string) => string | undefined;
+
+interface AlwaysBase {
   id: string;
   label: string;
   file: string; // path relative to the install dir
+}
+// One marked line appended to the file.
+interface AlwaysLine extends AlwaysBase {
+  kind: "line";
   marker: string;
   // The full marked line for this bundle, or undefined when the anchor is gone
   // (a drifted build: this fix is skipped, everything else still applies).
@@ -5429,9 +5971,23 @@ interface AlwaysPoint {
   // doubles as the staleness check across Claude Code versions.
   build: (c: string) => string | undefined;
 }
+// Marker-delimited fragments inside the native code.
+interface AlwaysInline extends AlwaysBase {
+  kind: "inline";
+  // Every fragment this point writes, markers included (global): removing
+  // them all gives back the native bytes.
+  frags: RegExp;
+  // The native file with the fragments in, or null when a site is missing.
+  // Deterministic given the files, so equality against the on-disk file is
+  // the staleness check. `read` reaches the install's other files, for a
+  // feature whose halves have to land together.
+  patch: (native: string, read: BundleReader) => string | null;
+}
+type AlwaysPoint = AlwaysLine | AlwaysInline;
 
 const ALWAYS_POINTS: AlwaysPoint[] = [
   {
+    kind: "line",
     id: "permRing",
     label: "permission focus ring",
     file: "webview/index.css",
@@ -5439,6 +5995,7 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     build: permRingBuild,
   },
   {
+    kind: "line",
     id: "questionReveal",
     label: "question answer box reveal",
     file: "webview/index.css",
@@ -5446,6 +6003,7 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     build: questionRevealBuild,
   },
   {
+    kind: "line",
     id: "expandedHeader",
     label: "expanded prompt header",
     file: "webview/index.css",
@@ -5453,22 +6011,67 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     build: expandedHeaderBuild,
   },
   {
+    kind: "line",
     id: "expandedView",
     label: "expanded prompt header view",
     file: "webview/index.js",
     marker: EXPANDED_VIEW_MARKER,
     build: expandedViewBuild,
   },
+  {
+    kind: "inline",
+    id: "sessionDelete",
+    label: "session list delete button",
+    file: SDEL_WEBVIEW_FILE,
+    frags: SDEL_FRAG_RE,
+    patch: sessionDeleteRowPatch,
+  },
+  {
+    kind: "inline",
+    id: "sessionDeleteHost",
+    label: "session list delete handler",
+    file: SDEL_HOST_FILE,
+    frags: SDEL_FRAG_RE,
+    patch: sessionDeleteHostPatch,
+  },
 ];
 
-// The on-disk state of one always-on fix, for the reload-cue comparison:
-// its marked line, "off" when absent, undefined when the file is unreadable.
+// The on-disk state of one always-on fix, for the reload-cue comparison: its
+// marked line or its fragments in file order, "off" when absent, undefined
+// when the file is unreadable.
 function alwaysStateStr(
   c: string | undefined,
   a: AlwaysPoint,
 ): string | undefined {
   if (c === undefined) return undefined;
-  return cssMarkedLine(c, a.marker) ?? "off";
+  if (a.kind === "line") return cssMarkedLine(c, a.marker) ?? "off";
+  return c.match(a.frags)?.join("") ?? "off";
+}
+
+// One always-on fix applied to a file: its current form written in, or, where
+// its anchor or a site is gone, any stale form stripped. `on` says which.
+function alwaysApply(
+  c: string,
+  a: AlwaysPoint,
+  read: BundleReader,
+): { out: string; on: boolean } {
+  if (a.kind === "line") {
+    const want = a.build(c);
+    // An already-correct line stays where it sits (see cssApplyLine).
+    if (cssMarkedLine(c, a.marker) === want) return { out: c, on: !!want };
+    return want === undefined
+      ? { out: cssRemoveLine(c, a.marker), on: false }
+      : { out: cssApplyLine(c, a.marker, want), on: true };
+  }
+  const native = c.replace(a.frags, "");
+  const want = a.patch(native, read);
+  return want === null ? { out: native, on: false } : { out: want, on: true };
+}
+
+function alwaysRestore(c: string, a: AlwaysPoint): string {
+  return a.kind === "line"
+    ? cssRemoveLine(c, a.marker)
+    : c.replace(a.frags, "");
 }
 
 // Build the diff-card gutter-cleanup rule, scoped to the diff container whose
@@ -6856,11 +7459,18 @@ export function analyzeAlways(
     const base = { id: a.id, label: a.label };
     const c = read(a.file);
     if (c === undefined) return { ...base, status: "missing" };
-    const want = a.build(c);
-    const cur = cssMarkedLine(c, a.marker);
-    if (want === undefined)
-      return { ...base, status: cur === undefined ? "missing" : "stock" };
-    return { ...base, status: cur === want ? "current" : "stock" };
+    if (a.kind === "line") {
+      const want = a.build(c);
+      const cur = cssMarkedLine(c, a.marker);
+      if (want === undefined)
+        return { ...base, status: cur === undefined ? "missing" : "stock" };
+      return { ...base, status: cur === want ? "current" : "stock" };
+    }
+    const native = c.replace(a.frags, "");
+    const want = a.patch(native, read);
+    if (want === null)
+      return { ...base, status: c === native ? "missing" : "stock" };
+    return { ...base, status: c === want ? "current" : "stock" };
   });
 }
 
@@ -6946,10 +7556,18 @@ export function applyPatch(
   const togglesByFile = toggleByFile();
   const injectsByFile = injectByFile();
   const files = allPatchedFiles();
-  const seed =
+  // Each file's post-write content lands in the map, for the downstream
+  // readers of the same cache and for the always-on points of the files after
+  // it; a file not reached yet is read as it stands.
+  const map =
     cache && cache.dir === ext.dir
-      ? (rel: string, c: string | undefined) => void cache.map.set(rel, c)
-      : () => {};
+      ? cache.map
+      : new Map<string, string | undefined>();
+  const seed = (rel: string, c: string | undefined) => void map.set(rel, c);
+  const read: BundleReader = (rel) => {
+    if (!map.has(rel)) map.set(rel, readFileSafe(ext, rel));
+    return map.get(rel);
+  };
   for (const file of files) {
     const abs = filePath(ext, file);
     let content: string;
@@ -7015,18 +7633,18 @@ export function applyPatch(
         changed.push(`${t.label} css ${wantOn ? "applied" : "native"}`);
       }
     }
-    // No setting to consult: write the line this bundle wants, or strip a stale
-    // one whose anchor is gone. Skipping the equal case avoids re-appending an
-    // already-correct line, which would shuffle it past the other marked lines.
+    // No setting to consult: write the form this bundle wants, or strip a stale
+    // one whose anchor is gone. An already-correct form is left as it is (a
+    // re-appended line would shuffle past the other marked lines). An inline
+    // point may read the install's other files: this one as edited so far, the
+    // rest as this pass has them.
+    const readHere: BundleReader = (rel) => (rel === file ? out : read(rel));
     for (const a of ALWAYS_POINTS) {
       if (a.file !== file) continue;
-      const want = a.build(out);
-      if (cssMarkedLine(out, a.marker) === want) continue;
-      out =
-        want === undefined
-          ? cssRemoveLine(out, a.marker)
-          : cssApplyLine(out, a.marker, want);
-      changed.push(`${a.label} ${want === undefined ? "native" : "applied"}`);
+      const next = alwaysApply(out, a, readHere);
+      if (next.out === out) continue;
+      out = next.out;
+      changed.push(`${a.label} ${next.on ? "applied" : "native"}`);
     }
     if (out !== content) writeFileAtomic(abs, out);
     seed(file, out);
@@ -7103,7 +7721,7 @@ export function restorePatch(
     }
     for (const a of ALWAYS_POINTS) {
       if (a.file !== file) continue;
-      const next = cssRemoveLine(out, a.marker);
+      const next = alwaysRestore(out, a);
       if (next !== out) {
         out = next;
         changed.push(`${a.label} restored`);

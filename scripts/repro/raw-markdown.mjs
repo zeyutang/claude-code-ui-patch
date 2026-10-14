@@ -122,13 +122,13 @@ function rawMdCss(railLeft) {
     `.ccup-rawmd-rail{${rail}}` +
     '[data-testid="assistant-message"]>.ccup-rawmd-host>.ccup-rawmd-rail{display:block}' +
     `.ccup-rawmd-btn{${btn}}` +
-    '[data-testid="assistant-message"]:hover .ccup-rawmd-btn,' +
+    '[data-testid="assistant-message"]:hover:where(:not([data-ccup-nohover])) .ccup-rawmd-btn,' +
     ".ccup-rawmd-btn:focus-visible," +
     ".ccup-rawmd-btn[aria-pressed=true]{opacity:1;pointer-events:auto}" +
     `.ccup-rawmd-btn[aria-pressed=true]{opacity:${DIM}}` +
-    '[data-testid="assistant-message"]:hover .ccup-rawmd-btn[aria-pressed=true],' +
+    '[data-testid="assistant-message"]:hover:where(:not([data-ccup-nohover])) .ccup-rawmd-btn[aria-pressed=true],' +
     ".ccup-rawmd-btn[aria-pressed=true]:focus-visible{opacity:1;pointer-events:auto}" +
-    ".ccup-rawmd-btn:hover,.ccup-rawmd-btn[aria-pressed=true]" +
+    ".ccup-rawmd-btn:hover:where(:not([data-ccup-nohover])),.ccup-rawmd-btn[aria-pressed=true]" +
     "{color:var(--app-primary-foreground);border-color:var(--app-secondary-foreground)}" +
     ".ccup-rawmd-btn svg{display:block;width:16px;height:16px}"
   );

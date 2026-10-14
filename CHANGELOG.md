@@ -1,11 +1,11 @@
 # Changelog
 
-All notable changes to Claude Code UI Patch are documented here. This project follows [Semantic Versioning](https://semver.org).
-
 ## Unreleased
 
 - Rows in the session list (the chat's history dropdown and the sidebar list), archived or not, get a delete button beside their archive or unarchive button, which moves the conversation to the Trash once you confirm.
   Always applied, no setting; a conversation still open in a tab, another window, or a terminal stays until you close it there.
+- On macOS, the mouse pointer that hides while you type now stays inert until you move it, so a button the growing input box slides under it no longer pops a tooltip or lights up.
+  Always applied, no setting; a click still lands where the pointer rests.
 
 ## 1.5.5
 

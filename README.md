@@ -91,6 +91,7 @@ Always applied                         # no setting; installing this patch is th
    ├── permission focus ring           # focused permission/question box gets the input box's ring
    ├── question answer box reveal      # typing keeps the "Other" box's border and padding in view
    ├── expanded prompt header          # "Show more" keeps the prompt on top in its own scroller
+   ├── hidden cursor                   # macOS: a cursor hidden by typing hovers nothing until moved
    └── session delete button           # session list rows: move a conversation to the Trash
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native

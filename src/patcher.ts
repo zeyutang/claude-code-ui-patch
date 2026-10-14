@@ -1374,6 +1374,259 @@ function expandedViewBuild(c: string): string | undefined {
   return `${EXPANDED_VIEW_MARKER}${js}`;
 }
 
+// Hidden cursor (always on, two halves): macOS hides the mouse cursor while
+// you type in a text field, and the page should then act as if no pointer were
+// there at all. Whenever layout moves content under a resting pointer,
+// Chromium re-runs the hit test there with a synthetic move that updates
+// :hover and sends the boundary events (the over/out and enter/leave pairs,
+// pointer and mouse) but no move. It skips that synthetic move while it knows
+// the cursor is hidden, but only its Aura views report that state to the
+// renderer: on macOS the browser process hides the cursor in AppKit alone
+// (setHiddenUntilMouseMoves on a keyDown in a text input without Command,
+// cleared on the next NSEventTypeMouseMoved), and Blink never hears of it. So
+// the input box growing as you type carries the mic button and this patch's
+// buttons up under the hidden cursor, which hovers them: their tooltips pop up
+// over the text being typed, a question popup arriving under it opens an
+// option's preview, and whatever else reacts to hover reacts to a cursor
+// nobody can see.
+//
+// The halves emulate the platform rule in the page, and leave hit testing
+// alone, so a click or a wheel at the resting cursor lands exactly as natively:
+//   hiddenCursorWatch (JS)  macOS only, capture-phase listeners on window.
+//     Hide: a trusted keydown with focus in a text input, no Meta, and not a
+//       lone modifier, which is Chromium's own autohide condition. It marks
+//       the hovered chain with data-ccup-nohover and sends a synthetic leave
+//       from the chain's deepest element (pointerout, pointerleave up the
+//       chain, mouseout, mouseleave, relatedTarget null), as if the pointer
+//       had left the page.
+//     Hidden: every trusted boundary event stops at window, before anything
+//       else sees it (React listens on its root, further down). A pointerover
+//       or mouseover first marks the chain under its target, which is how
+//       elements that layout carries under the cursor join the marked set.
+//     Reveal: the first trusted pointermove unmarks them all and sends a
+//       synthetic enter at its target (pointerover, pointerenter down the
+//       chain, mouseover, mouseenter), as if the pointer had just come into
+//       the page, and the move itself then goes on. A click does not reveal,
+//       matching Chromium, which clears its flag on a move only.
+//   hiddenCursorHover (CSS)  every :hover in the stylesheet's selectors gets
+//     :where(:not([data-ccup-nohover])), so a marked element matches no hover
+//     rule, whether its :hover sits in the subject compound, an ancestor one,
+//     or inside :not() (where a marked element reads as not hovered, as it
+//     should). :where() adds no specificity, so the cascade is unchanged. The
+//     mark goes on the hovered elements rather than on <html>, because an
+//     attribute flip on <html> invalidates every element any hover rule names:
+//     73ms against 5.7ms for marking a hovered chain, on a synthetic page of
+//     80,000 elements. This patch's own stylesheet lines are skipped, since
+//     their builders write the same gate (HOVER).
+// An always-on fix rather than a knob: a hidden cursor that still triggers
+// things is never the wanted behavior. Neither half has an anchor, and the CSS
+// half reports missing only when the stylesheet has no :hover left to gate. Out
+// of reach: native title tooltips, which Blink raises from the hit test itself
+// (unreliable inside the webview anyway, see HOVER_TIP_CSS).
+const HIDDEN_CURSOR_MARKER = "/*ccup:hiddenCursor*/";
+// Set on an element while the hidden cursor hovers it: no hover rule matches it.
+const NOHOVER_ATTR = "data-ccup-nohover";
+// The gate after each :hover of the native stylesheet, behind its strip marker.
+const NOHOVER_FRAG = `/*ccup:nohover*/:where(:not([${NOHOVER_ATTR}]))`;
+const NOHOVER_FRAG_RE =
+  /\/\*ccup:nohover\*\/:where\(:not\(\[data-ccup-nohover\]\)\)/g;
+// The same gate for this patch's own hover rules, whose lines strip whole.
+const HOVER = `:hover:where(:not([${NOHOVER_ATTR}]))`;
+// The JS half's once-only guard on window.
+const HIDDEN_CURSOR_FLAG = "__ccupHiddenCursor";
+// Grouping at-rules hold rules of their own. Any other at-rule block is copied
+// whole: keyframes, font faces, and the like carry no selectors.
+const CSS_GROUP_AT_RE =
+  /^@(?:media|supports|container|layer|scope|starting-style|document|-moz-document)\b/i;
+
+// The stylesheet with NOHOVER_FRAG after every :hover in its selectors, and how
+// many it gated. Comments, strings, escapes, and declaration blocks are copied
+// as they are, and so are this patch's own marked lines (each starts a line
+// with a ccup or cc-ui-patch comment) and a :hover after a pseudo-element in
+// the same compound, where a :where() would void the whole rule.
+function gateHovers(css: string): { out: string; count: number } {
+  const n = css.length;
+  let count = 0;
+  // Index just past the comment, string, or escape at j, or j if none starts there.
+  const atomEnd = (j: number): number => {
+    const ch = css[j];
+    if (ch === "/" && css[j + 1] === "*") {
+      const e = css.indexOf("*/", j + 2);
+      return e < 0 ? n : e + 2;
+    }
+    if (ch === '"' || ch === "'") {
+      let k = j + 1;
+      while (k < n && css[k] !== ch && css[k] !== "\n") {
+        k += css[k] === "\\" ? 2 : 1;
+      }
+      return Math.min(n, k + 1);
+    }
+    return ch === "\\" ? Math.min(n, j + 2) : j;
+  };
+  // Index just past the "}" that closes the block opened at j.
+  const blockEnd = (j: number): number => {
+    let depth = 0;
+    for (let k = j; k < n;) {
+      const a = atomEnd(k);
+      if (a !== k) {
+        k = a;
+        continue;
+      }
+      if (css[k] === "{") depth++;
+      else if (css[k] === "}" && --depth === 0) return k + 1;
+      k++;
+    }
+    return n;
+  };
+  // The selector text from s to e with the gate after each :hover.
+  const gate = (s: number, e: number): string => {
+    let r = "";
+    for (let k = s; k < e;) {
+      const a = atomEnd(k);
+      if (a !== k) {
+        r += css.slice(k, a);
+        k = a;
+        continue;
+      }
+      if (css.startsWith(":hover", k) && !/[-\w]/.test(css[k + 6] ?? "")) {
+        const from = Math.max(
+          ...[" ", ">", "+", "~", ",", "("].map((c) => r.lastIndexOf(c)),
+        );
+        r += ":hover";
+        if (!r.slice(from + 1).includes("::")) {
+          r += NOHOVER_FRAG;
+          count++;
+        }
+        k += 6;
+        continue;
+      }
+      r += css[k++];
+    }
+    return r;
+  };
+  const ownLine = (j: number): boolean =>
+    (j === 0 || css[j - 1] === "\n") &&
+    (css.startsWith("/*ccup:", j) || css.startsWith("/*cc-ui-patch:", j));
+  // The rule list from i to the "}" that closes it (to the end at the top).
+  const list = (i: number, top: boolean): [string, number] => {
+    let out = "";
+    while (i < n) {
+      let w = i;
+      while (w < n && /\s/.test(css[w])) w++;
+      out += css.slice(i, w);
+      i = w;
+      if (i >= n) break;
+      if (top && ownLine(i)) {
+        const e = css.indexOf("\n", i);
+        out += css.slice(i, e < 0 ? n : e);
+        i = e < 0 ? n : e;
+        continue;
+      }
+      if (css[i] === "}") {
+        if (!top) return [out + "}", i + 1];
+        out += css[i++];
+        continue;
+      }
+      // The prelude runs to its "{", or to the ";" of a statement at-rule.
+      let k = i;
+      while (k < n) {
+        const a = atomEnd(k);
+        if (a !== k) {
+          k = a;
+          continue;
+        }
+        if (css[k] === "{" || css[k] === ";" || css[k] === "}") break;
+        k++;
+      }
+      if (k >= n || css[k] !== "{") {
+        const e = k < n && css[k] === ";" ? k + 1 : k;
+        out += css.slice(i, e);
+        i = e;
+        continue;
+      }
+      if (css[i] === "@") {
+        if (CSS_GROUP_AT_RE.test(css.slice(i, k))) {
+          const [inner, after] = list(k + 1, false);
+          out += css.slice(i, k + 1) + inner;
+          i = after;
+        } else {
+          const e = blockEnd(k);
+          out += css.slice(i, e);
+          i = e;
+        }
+        continue;
+      }
+      const e = blockEnd(k);
+      out += gate(i, k) + css.slice(k, e);
+      i = e;
+    }
+    return [out, i];
+  };
+  return { out: list(0, true)[0], count };
+}
+
+// The native stylesheet with the gate in, or null when it has no :hover to gate.
+function hiddenCursorHoverPatch(native: string): string | null {
+  const { out, count } = gateHovers(native);
+  return count ? out : null;
+}
+
+function hiddenCursorWatchBuild(): string {
+  const js =
+    `(function(){try{` +
+    `if(window.${HIDDEN_CURSOR_FLAG})return;window.${HIDDEN_CURSOR_FLAG}=1;` +
+    // The one platform known to hide the cursor behind Blink's back.
+    `if(!/^Mac/.test(navigator.platform||""))return;` +
+    `var A="${NOHOVER_ATTR}",hid=0,marked=[],x=0,y=0,sx=0,sy=0,` +
+    `MOD={Shift:1,Control:1,Alt:1,AltGraph:1,Meta:1,CapsLock:1,Fn:1,FnLock:1,Hyper:1,Super:1,Symbol:1,SymbolLock:1,OS:1},` +
+    `TXT=/^(?:text|search|url|email|tel|password|number)$/;` +
+    // Focus in a text input: where Chromium's autohide applies.
+    `function typing(el){return!!el&&!el.disabled&&!el.readOnly&&(el.isContentEditable||el.tagName==="TEXTAREA"||el.tagName==="INPUT"&&TXT.test(el.type))}` +
+    `function mark(el){for(var n=el;n&&n.nodeType===1;n=n.parentElement)if(!n.hasAttribute(A)){n.setAttribute(A,"");marked.push(n)}}` +
+    `function fire(t,el,b){var o={bubbles:b,cancelable:b,composed:!0,view:window,clientX:x,clientY:y,screenX:sx,screenY:sy,relatedTarget:null};` +
+    `if(t.charAt(0)==="p"){o.pointerId=1;o.pointerType="mouse";o.isPrimary=!0;el.dispatchEvent(new PointerEvent(t,o))}else el.dispatchEvent(new MouseEvent(t,o))}` +
+    // The boundary events of the pointer leaving the page from el, or entering it at el.
+    `function cross(el,inn){var c=[],n,i,p=inn?["pointerover","pointerenter","mouseover","mouseenter"]:["pointerout","pointerleave","mouseout","mouseleave"];` +
+    `for(n=el;n&&n.nodeType===1;n=n.parentElement)c.push(n);if(inn)c.reverse();` +
+    `fire(p[0],el,!0);for(i=0;i<c.length;i++)fire(p[1],c[i],!1);fire(p[2],el,!0);for(i=0;i<c.length;i++)fire(p[3],c[i],!1)}` +
+    `addEventListener("keydown",function(e){if(hid||!e.isTrusted||e.metaKey||MOD[e.key]||!typing(document.activeElement))return;` +
+    `var h=document.querySelectorAll(":hover"),el=h[h.length-1];hid=1;if(el){mark(el);cross(el,!1)}},!0);` +
+    // Hidden: layout re-hovers in silence, and whatever it lands on is marked.
+    `["pointerover","pointerout","pointerenter","pointerleave","mouseover","mouseout","mouseenter","mouseleave"].forEach(function(t){` +
+    `var over=t.slice(-4)==="over";addEventListener(t,function(e){if(!hid||!e.isTrusted)return;if(over)mark(e.target);e.stopImmediatePropagation()},!0)});` +
+    `addEventListener("pointermove",function(e){if(!e.isTrusted)return;x=e.clientX;y=e.clientY;sx=e.screenX;sy=e.screenY;` +
+    `if(!hid)return;hid=0;for(var i=0;i<marked.length;i++)marked[i].removeAttribute(A);marked=[];` +
+    `if(e.target&&e.target.nodeType===1)cross(e.target,!0)},!0)` +
+    `}catch(e){}})();`;
+  return `${HIDDEN_CURSOR_MARKER}${js}`;
+}
+
+// The webview bundle and stylesheet, patched or not, as an apply writes them
+// with both hidden-cursor halves in and the toggles whose buttons carry a tip
+// on (scroll-to-bottom, jump, find bar), or null when an anchor of any of them
+// is gone. scripts/repro's hidden-cursor.mjs serves this, so it runs exactly
+// what the patcher writes and doubles as the canary for both halves.
+export function hiddenCursorWebview(
+  js: string,
+  css: string,
+): { js: string; css: string } | null {
+  const bar = findBarCssBuild(css);
+  const out = findBarSet(jumpMsgSet(scrollDotSet(js, true), true), true);
+  const on =
+    scrollDotCurrentOn(out) === true &&
+    jumpMsgCurrentOn(out) === true &&
+    findBarCurrentOn(out) === true;
+  if (!bar || !on) return null;
+  const gated = hiddenCursorHoverPatch(
+    cssApplyLine(css.replace(NOHOVER_FRAG_RE, ""), FINDBAR_CSS_MARKER, bar),
+  );
+  if (gated === null) return null;
+  return {
+    js: cssApplyLine(out, HIDDEN_CURSOR_MARKER, hiddenCursorWatchBuild()),
+    css: gated,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Session delete (always on, two halves): the session list (the chat header's
 // history dropdown and the sidebar's session list render the same rows) offers
@@ -2696,7 +2949,9 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
 // unreliable inside the webview (long OS delay, often absent), so a small
 // fixed-delay tip shows ABOVE the button (they sit at the viewport's bottom
 // edge). One copy is embedded per toggle line so each stays self-contained;
-// the duplicate CSS rule is byte-identical and harmless.
+// the duplicate CSS rule is byte-identical and harmless. A cursor hidden by
+// typing never arms it, since no mouseenter gets past window while the cursor
+// is hidden (see hiddenCursorWatchBuild).
 const HOVER_TIP_CSS =
   ".ccup-hover-tip{position:fixed;display:none;padding:2px 8px;border:1px solid var(--vscode-editorHoverWidget-border,var(--vscode-widget-border,#454545));border-radius:4px;background:var(--vscode-editorHoverWidget-background,var(--vscode-editorWidget-background,#252526));color:var(--vscode-editorHoverWidget-foreground,var(--vscode-editorWidget-foreground,#cccccc));font-size:11px;white-space:nowrap;z-index:1300;pointer-events:none;box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36))}";
 const HOVER_TIP_JS =
@@ -3090,8 +3345,8 @@ function scrollDotBuild(c: string): string | undefined {
     ".ccup-scroll-btn{box-sizing:border-box;position:absolute;top:-34px;right:5px;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}" +
     ".ccup-scroll-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
     ".ccup-scroll-btn[data-show][data-off]{opacity:.35;cursor:default}" +
-    `.ccup-scroll-btn:hover{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
-    ".ccup-scroll-btn[data-off]:hover{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}" +
+    `.ccup-scroll-btn${HOVER}{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
+    `.ccup-scroll-btn[data-off]${HOVER}{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}` +
     ".ccup-scroll-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-scroll-btn svg{display:block;width:20px;height:20px}" +
     // While one of the composer's own dropdowns or the fieldset's overlay
@@ -3316,8 +3571,8 @@ function jumpMsgBuild(c: string): string | undefined {
     `.ccup-nav-prev{right:${withDot ? 65 : 35}px}.ccup-nav-next{right:${withDot ? 35 : 5}px}` +
     ".ccup-nav-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
     ".ccup-nav-btn[data-show][data-off]{opacity:.35;cursor:default}" +
-    `.ccup-nav-btn:hover{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
-    ".ccup-nav-btn[data-off]:hover{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}" +
+    `.ccup-nav-btn${HOVER}{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
+    `.ccup-nav-btn[data-off]${HOVER}{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}` +
     ".ccup-nav-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-nav-btn svg{display:block;width:20px;height:20px}" +
     // Hide both nav buttons while a composer dropdown or one of the fieldset's
@@ -4701,9 +4956,9 @@ function findBarCssBuild(css: string): string | undefined {
     ".ccup-find-tip{position:fixed;display:none;padding:2px 8px;border:1px solid var(--vscode-editorHoverWidget-border,var(--vscode-widget-border,#454545));border-radius:4px;background:var(--vscode-editorHoverWidget-background,var(--vscode-editorWidget-background,#252526));color:var(--vscode-editorHoverWidget-foreground,var(--vscode-editorWidget-foreground,#cccccc));font-size:11px;white-space:nowrap;z-index:1300;pointer-events:none;box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36))}" +
     ".ccup-find-bar[data-none] .ccup-find-count{color:var(--vscode-errorForeground,#f48771);opacity:1}" +
     ".ccup-find-bar button{display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin:0;padding:0;border:none;border-radius:4px;background:transparent;color:inherit;cursor:pointer}" +
-    `.ccup-find-bar button:hover{background:${ghost}}` +
+    `.ccup-find-bar button${HOVER}{background:${ghost}}` +
     ".ccup-find-bar button[data-off]{opacity:.4;cursor:default}" +
-    ".ccup-find-bar button[data-off]:hover{background:transparent}" +
+    `.ccup-find-bar button[data-off]${HOVER}{background:transparent}` +
     ".ccup-find-bar svg{display:block;width:16px;height:16px}" +
     ".ccup-find-bar .ccup-find-sep{margin-left:4px}" +
     ".ccup-find-ruler{position:fixed;display:none;width:5px;border-radius:5px;background:var(--vscode-editor-findMatchBackground,var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.8)));z-index:1199;pointer-events:none}"
@@ -5609,12 +5864,12 @@ function rawMdCssBuild(css: string): string | undefined {
     `.${RAWMD_RAIL_CLASS}{${rail}}` +
     `${RAWMD_ROW_SEL}>.${RAWMD_HOST_CLASS}>.${RAWMD_RAIL_CLASS}{display:block}` +
     `.${RAWMD_BTN_CLASS}{${btn}}` +
-    `${RAWMD_ROW_SEL}:hover .${RAWMD_BTN_CLASS},.${RAWMD_BTN_CLASS}:focus-visible,` +
+    `${RAWMD_ROW_SEL}${HOVER} .${RAWMD_BTN_CLASS},.${RAWMD_BTN_CLASS}:focus-visible,` +
     `.${RAWMD_BTN_CLASS}[aria-pressed=true]{${lit}}` +
     `.${RAWMD_BTN_CLASS}[aria-pressed=true]{${dim}}` +
-    `${RAWMD_ROW_SEL}:hover .${RAWMD_BTN_CLASS}[aria-pressed=true],` +
+    `${RAWMD_ROW_SEL}${HOVER} .${RAWMD_BTN_CLASS}[aria-pressed=true],` +
     `.${RAWMD_BTN_CLASS}[aria-pressed=true]:focus-visible{${lit}}` +
-    `.${RAWMD_BTN_CLASS}:hover,.${RAWMD_BTN_CLASS}[aria-pressed=true]{${on}}` +
+    `.${RAWMD_BTN_CLASS}${HOVER},.${RAWMD_BTN_CLASS}[aria-pressed=true]{${on}}` +
     `.${RAWMD_BTN_CLASS} svg{display:block;` +
     `width:${RAWMD_ICON_SIZE}px;height:${RAWMD_ICON_SIZE}px}`
   );
@@ -6017,6 +6272,22 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: "webview/index.js",
     marker: EXPANDED_VIEW_MARKER,
     build: expandedViewBuild,
+  },
+  {
+    kind: "inline",
+    id: "hiddenCursorHover",
+    label: "hidden cursor hover gate",
+    file: "webview/index.css",
+    frags: NOHOVER_FRAG_RE,
+    patch: hiddenCursorHoverPatch,
+  },
+  {
+    kind: "line",
+    id: "hiddenCursorWatch",
+    label: "hidden cursor watch",
+    file: "webview/index.js",
+    marker: HIDDEN_CURSOR_MARKER,
+    build: hiddenCursorWatchBuild,
   },
   {
     kind: "inline",

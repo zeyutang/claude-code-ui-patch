@@ -1,11 +1,18 @@
 # Changelog
 
-## Unreleased
+## 1.6.0
 
+- `chatCodeBlockFontSize`, `chatDiffCardFontSize`, and the five plan preview sizes now default to `0`, which keeps Claude Code's native size, as the other size settings already did.
+  Any other value pins that size, the old default value included.
+  On Claude Code 2.1.300 and later the native sizes follow `chat.fontSize` and `chat.editor.fontSize`, while a pinned size stays put when either changes.
+  At `0` the panel shows the size Claude Code renders, so the first `▼`/`▲` starts from there.
+  A setting still at its old default value is reset once on upgrade, so nothing you see changes.
 - Rows in the session list (the chat's history dropdown and the sidebar list), archived or not, get a delete button beside their archive or unarchive button, which moves the conversation to the Trash once you confirm.
   Always applied, no setting; a conversation still open in a tab, another window, or a terminal stays until you close it there.
 - On macOS, the mouse pointer that hides while you type now stays inert until you move it, so a button the growing input box slides under it no longer pops a tooltip or lights up.
   Always applied, no setting; a click still lands where the pointer rests.
+- `chatDiffCardFontSize` and `chatDiffCardLineNumbers` apply again on Claude Code 2.1.300 and later, where diff cards had gone back to the native size and lost their line numbers.
+- `planPreviewFontSize`, `planPreviewCodeBlockFontSize`, `planPreviewCommentQuoteFontSize`, `planPreviewCommentInputFontSize`, and `planPreviewCommentBadgeFontSize` apply again on Claude Code 2.1.300 and later.
 
 ## 1.5.5
 

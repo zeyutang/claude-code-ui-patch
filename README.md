@@ -44,26 +44,26 @@ Chat Panel and Tab                     # chat history only, private to Claude Co
    ├── chatHistoryParagraphSpacing     # visible gap between agent paragraphs, 1.0 = native
    ├── chatInputHistoryFontSize        # sent user message text, 0 -> follows chat.fontSize
    ├── chatInputHistoryFontFamily      # sent user message font, empty -> native chat font
-   ├── chatCodeBlockFontSize           # fenced code blocks
+   ├── chatCodeBlockFontSize           # fenced code blocks, 0 -> native
    │      └── chatCodeInlineFontSize   # inline code, 0 -> follows chatCodeBlockFontSize
    ├── chatMathRendering               # TeX math via bundled KaTeX if On
    │      └── chatMathFontSizeEm       # math size in em of chat text, 1.0 = match (KaTeX stock 1.21)
    └── diff cards                      # Edit / MultiEdit tool cards + expand modal
-          ├── chatDiffCardFontSize     # diff code size
+          ├── chatDiffCardFontSize     # diff code size, 0 -> native
           ├── chatDiffCardLineNumbers  # true file line numbers (when known) if On
           └── chatDiffCardThemeSync    # follow VS Code light/dark theme if On
                                        #   (Claude Code 2.1.267+ does this itself)
 
 Plan Mode Markdown Preview
-   ├── planPreviewFontSize             # preview text (headings scale with it)
+   ├── planPreviewFontSize             # preview text (headings scale with it), 0 -> native
    ├── planPreviewFontFamily           # preview font, empty -> native
-   ├── planPreviewCodeBlockFontSize    # fenced code blocks
+   ├── planPreviewCodeBlockFontSize    # fenced code blocks, 0 -> native
    │      └── planPreviewCodeInlineFontSize      # 0 -> follows planPreviewCodeBlockFontSize
    └── select-and-comment UI
-          ├── planPreviewCommentInputFontSize    # comment box text
+          ├── planPreviewCommentInputFontSize    # comment box text, 0 -> native
           ├── planPreviewCommentInputRows        # comment box height in rows, 0 -> native
-          ├── planPreviewCommentQuoteFontSize    # selected-text quote
-          └── planPreviewCommentBadgeFontSize    # comment badge (14px circle, keep <= 12)
+          ├── planPreviewCommentQuoteFontSize    # selected-text quote, 0 -> native
+          └── planPreviewCommentBadgeFontSize    # comment badge, 0 -> native
 
 Behavior
    ├── chatFindBar                     # working Cmd/Ctrl+F find bar in the chat, if On

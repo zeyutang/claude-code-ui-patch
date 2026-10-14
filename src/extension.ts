@@ -7,6 +7,7 @@ import {
   initFindKeys,
   initMathAssets,
   migrateLegacyKeys,
+  migrateSizeDefaults,
 } from "./patcher";
 import { StatusBar } from "./statusBar";
 import { PatchPanel } from "./panel";
@@ -56,6 +57,9 @@ export async function activate(
   // Move any pre-rename chatDiff* settings to chatDiffCard* before the Patcher
   // reads them, so a rebuild after the rename keeps the user's values.
   await migrateLegacyKeys();
+  // Then clear size values still at their pre-1.6.0 stock, which meant native
+  // under the old schema and would pin under the new one.
+  await migrateSizeDefaults(context);
   // Load the vendored KaTeX payloads and the keybindings.json location before
   // the Patcher's constructor analyzes the bundle (the math toggle reports
   // missing without the former; the find-bar cfg line bakes chords from the

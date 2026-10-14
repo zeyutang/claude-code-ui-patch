@@ -86,10 +86,10 @@
         },
         "claudeCodeUiPatch.chatCodeBlockFontSize": {
           "type": "number",
-          "default": 11,
-          "minimum": 6,
+          "default": 0,
+          "minimum": 0,
           "maximum": 24,
-          "markdownDescription": "Chat fenced code block size in px."
+          "markdownDescription": "Chat fenced code block size in px. `0` = native."
         },
         "claudeCodeUiPatch.chatCodeInlineFontSize": {
           "type": "number",
@@ -119,10 +119,10 @@
         },
         "claudeCodeUiPatch.chatDiffCardFontSize": {
           "type": "number",
-          "default": 12,
-          "minimum": 6,
+          "default": 0,
+          "minimum": 0,
           "maximum": 24,
-          "markdownDescription": "Diff card code size in px (Edit/MultiEdit cards and the expand modal)."
+          "markdownDescription": "Diff card code size in px (Edit/MultiEdit cards and the expand modal). `0` = native."
         },
         "claudeCodeUiPatch.chatDiffCardLineNumbers": {
           "type": "boolean",
@@ -236,10 +236,10 @@
         },
         "claudeCodeUiPatch.planPreviewFontSize": {
           "type": "number",
-          "default": 14,
-          "minimum": 6,
+          "default": 0,
+          "minimum": 0,
           "maximum": 24,
-          "markdownDescription": "Plan preview text size in px (headings scale with it)."
+          "markdownDescription": "Plan preview text size in px (headings scale with it). `0` = native."
         },
         "claudeCodeUiPatch.planPreviewFontFamily": {
           "type": "string",
@@ -248,10 +248,10 @@
         },
         "claudeCodeUiPatch.planPreviewCodeBlockFontSize": {
           "type": "number",
-          "default": 13,
-          "minimum": 6,
+          "default": 0,
+          "minimum": 0,
           "maximum": 24,
-          "markdownDescription": "Plan preview fenced code block size in px."
+          "markdownDescription": "Plan preview fenced code block size in px. `0` = native."
         },
         "claudeCodeUiPatch.planPreviewCodeInlineFontSize": {
           "type": "number",
@@ -262,10 +262,10 @@
         },
         "claudeCodeUiPatch.planPreviewCommentInputFontSize": {
           "type": "number",
-          "default": 13,
-          "minimum": 6,
+          "default": 0,
+          "minimum": 0,
           "maximum": 24,
-          "markdownDescription": "Plan preview comment box text size in px."
+          "markdownDescription": "Plan preview comment box text size in px. `0` = native."
         },
         "claudeCodeUiPatch.planPreviewCommentInputRows": {
           "type": "number",
@@ -281,17 +281,17 @@
         },
         "claudeCodeUiPatch.planPreviewCommentQuoteFontSize": {
           "type": "number",
-          "default": 12,
-          "minimum": 6,
+          "default": 0,
+          "minimum": 0,
           "maximum": 24,
-          "markdownDescription": "Plan preview selected-quote size in px."
+          "markdownDescription": "Plan preview selected-quote size in px. `0` = native."
         },
         "claudeCodeUiPatch.planPreviewCommentBadgeFontSize": {
           "type": "number",
-          "default": 10,
-          "minimum": 6,
+          "default": 0,
+          "minimum": 0,
           "maximum": 12,
-          "markdownDescription": "Plan preview comment badge size in px (14px circle, keep <= 12)."
+          "markdownDescription": "Plan preview comment badge size in px. `0` = native."
         }
       }
     }

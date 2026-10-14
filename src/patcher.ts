@@ -166,6 +166,32 @@ function nativeChatFontSizePx(): number {
   return typeof raw === "number" && raw > 0 ? raw : 13;
 }
 
+// The VS Code settings the native sizes of the patch points derive from (see
+// PatchPoint.nativeSize), read once per snapshot. The two chat values are read
+// the way Claude Code reads them, with its own fallbacks.
+interface NativeEnv {
+  chat: number; // chat.fontSize
+  chatEditor: number; // chat.editor.fontSize
+  editor: number; // editor.fontSize, which VS Code hands every webview
+  agentText: number; // agent message text: chatHistoryFontSize, else chat.fontSize
+}
+function nativeEnv(): NativeEnv {
+  const num = (section: string, key: string, dflt: number) => {
+    const raw = vscode.workspace.getConfiguration(section).get<number>(key);
+    return typeof raw === "number" && raw > 0 ? raw : dflt;
+  };
+  const chat = nativeChatFontSizePx();
+  const agent = readInject(
+    INJECT_POINTS.find((p) => p.id === "chatHistorySize")!,
+  );
+  return {
+    chat,
+    chatEditor: num("chat.editor", "fontSize", 12),
+    editor: num("editor", "fontSize", 12),
+    agentText: typeof agent === "number" ? agent : chat,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Patch points (edits inside bundled files).
 //   style "number": swap a bare px number in place (pinned value / hardcoded).
@@ -178,19 +204,51 @@ interface PatchPoint {
   id: string;
   section: Section;
   label: string;
-  key: string; // settings sub-key under the claudeCodeUiPatch namespace
-  defaultPx: number;
+  key: string; // settings sub-key under the claudeCodeUiPatch namespace; 0 = native
   maxPx: number; // clamp for ▲/▼ adjust
   file: string; // path relative to the install dir
-  originalPx: number; // stock px (for messaging / number-style restore)
+  // The own slot's stock px: the number-style restore target, its native size,
+  // and the setting's default before 1.6.0, when a value equal to it still
+  // meant native (see migrateSizeDefaults).
+  originalPx: number;
+  // What Claude Code renders natively on this bundle, which the panel shows
+  // while the setting is 0 (so a first ▲/▼ takes control from it) and the live
+  // preview renders. `alt` says the alternate form serves the bundle (see
+  // AltForm), and `stock` is the own slot's stock px, captured or originalPx.
+  nativeSize: (alt: boolean, env: NativeEnv, stock: number) => number;
   style?: "number" | "value";
   originalValue?: string; // value-style restore target
   res?: RegExp[]; // value-slot regexes, each capturing (prefix)(value)(suffix)
   // Custom transform (used when fnApply is present):
   fnPresent?: (c: string) => boolean;
-  fnCurrentPx?: (c: string) => string | undefined; // undefined => stock/native
+  // The px in place, undefined at native (a number-style slot reads its stock).
+  fnCurrentPx?: (c: string) => string | undefined;
   fnApply?: (c: string, px: string) => string;
   fnRestore?: (c: string) => string;
+  // A newer native form the slot model above cannot express (see AltForm).
+  alt?: AltForm;
+}
+
+// A second native form for a point whose value slot (res or fn*) is gone from a
+// newer build. Claude Code 2.1.300 sizes the plan preview off chat.fontSize and
+// the diff card off chat.editor.fontSize, so the literal a point used to swap in
+// place became an expression the bundle re-reads live. There the knob pins its
+// px with a marker-delimited insertion that leaves the native code in place:
+// restore is a strip that gives back the native bytes exactly, with no captured
+// stock value, and the knob's own default still means native. It serves only
+// where the point's own anchors find nothing, so every build they serve patches
+// exactly as before.
+interface AltForm {
+  marked: (c: string) => boolean; // carries this form's fragments
+  strip: (c: string) => string; // drop every fragment this form inserted
+  present: (c: string) => boolean; // anchor found, in an unmarked bundle
+  currentPx: (c: string) => string | undefined; // the pin, undefined = native
+  apply: (c: string, px: string) => string; // pin px, into an unmarked bundle
+}
+
+// A string's characters as a literal regex source.
+function reLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 }
 
 // Chat code block. Scoped to the chat message DOM (hovers/tooltips untouched)
@@ -232,11 +290,11 @@ function diffFontPresent(c: string): boolean {
   DIFF_FONT_RE.lastIndex = 0;
   return DIFF_FONT_RE.test(c);
 }
-// The fixed size in the bundle, or undefined when at the native stock (12).
+// The size in the bundle, the stock 12 included: a bare number reads the same
+// whether it is native or pinned at that number (the point is number-style).
 function diffFontCurrent(c: string): string | undefined {
   DIFF_FONT_RE.lastIndex = 0;
-  const v = DIFF_FONT_RE.exec(c)?.[2];
-  return v === undefined || Number(v) === DIFF_FONT_STOCK ? undefined : v;
+  return DIFF_FONT_RE.exec(c)?.[2];
 }
 function diffFontSet(c: string, px: string): string {
   return c.replace(DIFF_FONT_RE, (_w, p, _v, s) => `${p}${px}${s}`);
@@ -248,16 +306,98 @@ function diffFontRestore(c: string): string {
   );
 }
 
+// Claude Code 2.1.300 and later create both diff editors with fontSize:<S>(),
+// where S reads --app-monospace-font-size (set from chat.editor.fontSize), and a
+// subscriber re-applies <E>.subscribe((v)=>editor.updateOptions({fontSize:v}))
+// to both on every chat font setting change, fed by E.emit(S()). Pinning only
+// the two option blocks would snap back on the first such change, so the pin
+// goes in at all three sites as fontSize:<pin>N||<end><native>: the || returns N
+// without evaluating the native expression. The sites are required together
+// (two option blocks calling one S, one subscriber, its emitter fed S()), so a
+// pin can never land on only some of them.
+const DIFF_PIN = "/*ccup:diffFont*/";
+const DIFF_PIN_END = "/*ccup:diffFontEnd*/";
+const DIFF_PIN_FRAG_RE =
+  /\/\*ccup:diffFont\*\/[\d.]*\|\|\/\*ccup:diffFontEnd\*\//g;
+const DIFF_PIN_PX_RE =
+  /\/\*ccup:diffFont\*\/(\d+(?:\.\d+)?)\|\|\/\*ccup:diffFontEnd\*\//g;
+const DIFF_SIZE_CALL_RE = /(fontSize:)(([\w$]+)\(\),lineNumbers:")/g;
+// Ends right after `fontSize:`, the subscriber's insertion point. It starts at
+// its literal, since a leading identifier capture makes the engine try every
+// offset of the bundle (about 95ms a scan, against 2ms); the emitter is read
+// off the text just before the match instead.
+const DIFF_SIZE_SUB_RE =
+  /\.subscribe\(\(([\w$]+)\)=>[\w$]+\.updateOptions\(\{fontSize:(?=\1\}\)\))/g;
+
+const DIFF_FONT_ALT: AltForm = {
+  marked: (c) => c.includes(DIFF_PIN),
+  strip: (c) => (c.includes(DIFF_PIN) ? c.replace(DIFF_PIN_FRAG_RE, "") : c),
+  present: (c) => {
+    const calls = [...c.matchAll(DIFF_SIZE_CALL_RE)];
+    const subs = [...c.matchAll(DIFF_SIZE_SUB_RE)];
+    if (calls.length !== 2 || calls[0][3] !== calls[1][3] || subs.length !== 1)
+      return false;
+    const at = subs[0].index ?? 0;
+    const emitter = /[\w$]+$/.exec(c.slice(Math.max(0, at - 64), at))?.[0];
+    return !!emitter && c.includes(`${emitter}.emit(${calls[0][3]}())`);
+  },
+  // A partial or mixed pin reads as neither pinned nor native, so the next
+  // apply rebuilds it.
+  currentPx: (c) => {
+    const px = [...c.matchAll(DIFF_PIN_PX_RE)].map((m) => m[1]);
+    if (!px.length) return undefined;
+    return px.length === 3 && px.every((v) => v === px[0]) ? px[0] : "mixed";
+  },
+  apply: (c, px) => {
+    const pin = `${DIFF_PIN}${px}||${DIFF_PIN_END}`;
+    return c
+      .replace(DIFF_SIZE_CALL_RE, (_w, key, rest) => `${key}${pin}${rest}`)
+      .replace(DIFF_SIZE_SUB_RE, (w) => `${w}${pin}`);
+  },
+};
+
+// Claude Code 2.1.300 and later size the plan preview off chat.fontSize: prose
+// is var(--plan-font-size) (1px above the chat text), the comment popup's sizes
+// are calc(var(--plan-font-size) - Npx), code is
+// var(--claude-chat-editor-font-size, 13px), and the host pushes both values
+// live. With no px left to swap, a knob pins its element by adding its own
+// declaration right after the native one in the same rule (the later one wins).
+// The rule is found by its selector and its font-size declaration, whatever
+// that declaration's value, and must be unique.
+const PLAN_PIN_END = "/*ccup:planSizeEnd*/";
+
+function planPin(mark: string, selector: string): AltForm {
+  const decl = `${selector}[^}]*?font-size:[^;}]*;`;
+  const ruleRe = new RegExp(decl, "g");
+  const frag = (px: string) =>
+    `${reLiteral(mark)}font-size:${px}px;${reLiteral(PLAN_PIN_END)}`;
+  const fragRe = new RegExp(frag("[\\d.]+"), "g");
+  const pxRe = new RegExp(decl + frag("(\\d+(?:\\.\\d+)?)"));
+  return {
+    marked: (c) => c.includes(mark),
+    strip: (c) => (c.includes(mark) ? c.replace(fragRe, "") : c),
+    present: (c) => (c.match(ruleRe)?.length ?? 0) === 1,
+    // A fragment off its rule reads as neither pinned nor native, so the next
+    // apply rebuilds it.
+    currentPx: (c) =>
+      c.match(pxRe)?.[1] ?? (c.includes(mark) ? "mixed" : undefined),
+    apply: (c, px) =>
+      c.replace(ruleRe, (w) => `${w}${mark}font-size:${px}px;${PLAN_PIN_END}`),
+  };
+}
+
 const PATCH_POINTS: PatchPoint[] = [
   {
     id: "chatCode",
     section: "Chat Panel or Tab",
     label: "code block",
     key: "chatCodeBlockFontSize",
-    defaultPx: 11,
     maxPx: 24,
     file: "webview/index.css",
     originalPx: 11,
+    // Natively the markdown root sets `code{font-size:.9em}` and the fenced
+    // `pre` sets none, so block code is 0.9 of the agent text on every build.
+    nativeSize: (_alt, env) => 0.9 * env.agentText,
     fnPresent: (c) => c.includes(CHAT_CODE_MARKER) || CHAT_CODE_WRAP_RE.test(c),
     // A pre-inline-code patch line lacks `.root_`; report it as not-current so the
     // reconcile upgrades it in place to the selector list that also covers inline
@@ -275,24 +415,30 @@ const PATCH_POINTS: PatchPoint[] = [
     section: "Chat Panel or Tab",
     label: "diff card",
     key: "chatDiffCardFontSize",
-    defaultPx: 12,
     maxPx: 24,
     file: "webview/index.js",
     originalPx: 12,
+    nativeSize: (alt, env, stock) => (alt ? env.chatEditor : stock),
+    // The own slot is a bare number swapped by the custom fns below.
+    style: "number",
     fnPresent: diffFontPresent,
     fnCurrentPx: diffFontCurrent,
     fnApply: diffFontSet,
     fnRestore: diffFontRestore,
+    alt: DIFF_FONT_ALT,
   },
   {
     id: "text",
     section: "Plan Mode Markdown Preview",
     label: "Claude's drafted plan",
     key: "planPreviewFontSize",
-    defaultPx: 14,
     maxPx: 24,
     file: "extension.js",
     originalPx: 14,
+    // The own slot's var is one VS Code never sets in a webview, so its
+    // fallback renders. The alternate form's offsets, here and in the comment
+    // popup's points below, mirror the 2.1.300 template and only feed the panel.
+    nativeSize: (alt, env, stock) => (alt ? env.chat + 1 : stock),
     style: "value",
     originalValue: "var(--vscode-markdown-font-size, 14px)",
     // Anchor on the plan-preview `body` rule's font-size, tolerating any
@@ -302,61 +448,71 @@ const PATCH_POINTS: PatchPoint[] = [
     res: [
       /(body \{\s*font-family:[^;]+;\s*font-size:\s*)(var\(--vscode-markdown-font-size, \d+(?:\.\d+)?px\)|\d+(?:\.\d+)?px)(;)/,
     ],
+    alt: planPin("/*ccup:planText*/", "body \\{"),
   },
   {
     id: "code",
     section: "Plan Mode Markdown Preview",
     label: "code block",
     key: "planPreviewCodeBlockFontSize",
-    defaultPx: 13,
     maxPx: 24,
     file: "extension.js",
     originalPx: 13,
+    // VS Code hands every webview --vscode-editor-font-size, so the own slot's
+    // fallback never renders.
+    nativeSize: (alt, env) => (alt ? env.chatEditor : env.editor),
     style: "value",
     originalValue: "var(--vscode-editor-font-size, 13px)",
     res: [
       /(font-family: var\(--vscode-editor-font-family\);\s*font-size:\s*)(var\(--vscode-editor-font-size, \d+(?:\.\d+)?px\)|\d+(?:\.\d+)?px)(;)/,
     ],
+    alt: planPin(
+      "/*ccup:planCode*/",
+      "code \\{\\s*font-family: var\\(--vscode-editor-font-family\\);",
+    ),
   },
   {
     id: "preview",
     section: "Plan Mode Markdown Preview",
     label: "comment quote",
     key: "planPreviewCommentQuoteFontSize",
-    defaultPx: 12,
     maxPx: 24,
     file: "extension.js",
     originalPx: 12,
+    nativeSize: (alt, env, stock) => (alt ? env.chat - 1 : stock),
     style: "number",
     res: [
       /(\.selected-text-preview\s*\{[^}]*?font-size:\s*)(\d+(?:\.\d+)?)(px)/,
     ],
+    alt: planPin("/*ccup:planQuote*/", "\\.selected-text-preview\\s*\\{"),
   },
   {
     id: "input",
     section: "Plan Mode Markdown Preview",
     label: "comment input box",
     key: "planPreviewCommentInputFontSize",
-    defaultPx: 13,
     maxPx: 24,
     file: "extension.js",
     originalPx: 13,
+    nativeSize: (alt, env, stock) => (alt ? env.chat : stock),
     style: "number",
     res: [
       /(#comment-input textarea\s*\{[^}]*?font-size:\s*)(\d+(?:\.\d+)?)(px)/,
     ],
+    alt: planPin("/*ccup:planInput*/", "#comment-input textarea\\s*\\{"),
   },
   {
     id: "badge",
     section: "Plan Mode Markdown Preview",
     label: "comment badge",
     key: "planPreviewCommentBadgeFontSize",
-    defaultPx: 10,
     maxPx: 12,
     file: "extension.js",
     originalPx: 10,
+    nativeSize: (alt, env, stock) => (alt ? env.chat - 3 : stock),
     style: "number",
     res: [/(\.comment-indicator\s*\{[^}]*?font-size:\s*)(\d+(?:\.\d+)?)(px)/],
+    alt: planPin("/*ccup:planBadge*/", "\\.comment-indicator\\s*\\{"),
   },
 ];
 
@@ -517,8 +673,11 @@ const DIFF_CONTAINER_HASH_RE = /\.diffEditorContainer_([-\w]+)\{/g;
 // never reference an identifier another edit failed to introduce. Injected names are ccup-prefixed to dodge minified locals, and
 // every injected code path is try/catch-wrapped so it can never break the card.
 // ---------------------------------------------------------------------------
+// The size ahead of the swap is captured and re-emitted, never parsed: a literal
+// through Claude Code 2.1.299, a call since 2.1.300 (pinned or not by the diff
+// card knob), and whichever it is, it says nothing about the line numbers.
 const DIFF_LN_BASE_RE =
-  /(fontSize:\d+(?:\.\d+)?,)(lineNumbers:"(?:off|on)"(?:,lineNumbersMinChars:\d+)?)(,)/g;
+  /(fontSize:[^,]*,)(lineNumbers:"(?:off|on)"(?:,lineNumbersMinChars:\d+)?)(,)/g;
 const DIFF_LN_ON = 'lineNumbers:"on",lineNumbersMinChars:1';
 const DIFF_LN_OFF = 'lineNumbers:"off"';
 
@@ -6132,6 +6291,37 @@ export async function migrateLegacyKeys(): Promise<void> {
   }
 }
 
+// One-time migration for the 1.6.0 size schema. The seven patch-point sizes
+// used to default to Claude Code's stock px, where a value equal to that stock
+// meant native; they now default to 0 = native like every other size setting,
+// and any px pins. A user value still equal to its old stock (Factory Reset
+// wrote those, and a ▲/▼ round trip leaves one) is cleared, so it keeps
+// meaning native. Once only, so a stock px pinned after the upgrade stays.
+// The global scope only, the one this extension ever writes. Must run before
+// the Patcher reads settings.
+const SIZE_SCHEMA_MIGRATED_KEY = "claudeCodeUiPatch.sizeSchemaMigrated";
+
+export async function migrateSizeDefaults(
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  if (context.globalState.get<boolean>(SIZE_SCHEMA_MIGRATED_KEY)) return;
+  const cfg = vscode.workspace.getConfiguration(CONFIG_NS);
+  const capture = context.globalState.get<StockCapture>(STOCK_VALUES_KEY, {});
+  for (const p of PATCH_POINTS) {
+    const v = cfg.inspect<number>(p.key)?.globalValue;
+    if (typeof v !== "number") continue;
+    const stock = [p.originalPx, stockNumberFor(p, capture)].map(formatPx);
+    if (!stock.includes(formatPx(v))) continue;
+    try {
+      await cfg.update(p.key, undefined, vscode.ConfigurationTarget.Global);
+    } catch {
+      // best effort: a value left behind pins the old stock, which is what it
+      // renders today on every build up to Claude Code 2.1.299
+    }
+  }
+  await context.globalState.update(SIZE_SCHEMA_MIGRATED_KEY, true);
+}
+
 function togglePresent(content: string, t: TogglePoint): boolean {
   if (t.fnPresent) return t.fnPresent(content);
   t.re!.lastIndex = 0;
@@ -7275,13 +7465,16 @@ function injectFloorToRaw(
   return ip.kind === "family" || ip.kind === "align" ? floor : Number(floor);
 }
 
+// px per patch point id, where 0 means native: no edit, Claude Code's own size.
 export type SizeMap = Record<string, number>;
 
 export function readSizes(): SizeMap {
   const c = vscode.workspace.getConfiguration(CONFIG_NS);
   const m: SizeMap = {};
-  for (const p of PATCH_POINTS)
-    m[p.id] = Number(formatPx(c.get<number>(p.key, p.defaultPx)));
+  for (const p of PATCH_POINTS) {
+    const raw = c.get<number>(p.key, 0);
+    m[p.id] = typeof raw === "number" && raw > 0 ? Number(formatPx(raw)) : 0;
+  }
   return m;
 }
 
@@ -7312,7 +7505,9 @@ export function formatNativePx(n: number): string {
 // AND the settings-only family / paragraph-spacing values ask for, resolving
 // each inherit (size 0 -> chat.fontSize or the matching block knob; family "" ->
 // native). A null family means "native": the webview renders it via the
-// matching --vscode-*-font-family variable rather than a pinned family.
+// matching --vscode-*-font-family variable rather than a pinned family. A patch
+// point at 0 renders its native size, which depends on the form the analyzer
+// found, so the caller passes each point's effective px in.
 // ---------------------------------------------------------------------------
 export interface PreviewModel {
   chat: {
@@ -7343,8 +7538,7 @@ export interface PreviewModel {
   };
 }
 
-export function previewModel(): PreviewModel {
-  const sizes = readSizes();
+export function previewModel(sizes: SizeMap): PreviewModel {
   const nativeChat = nativeChatFontSizePx();
   const inj = (id: string): InjectPoint | undefined =>
     INJECT_POINTS.find((p) => p.id === id);
@@ -7405,14 +7599,35 @@ export function previewModel(): PreviewModel {
 
 // --- per-point primitives (dispatch to custom fns or the value-slot model) ---
 
-function pointPresent(content: string, p: PatchPoint): boolean {
-  return p.fnPresent
-    ? p.fnPresent(content)
-    : p.res!.some((re) => re.test(content));
+// Which model serves the bundle: the point's own slot ("own", its custom fns or
+// value-slot regexes), else its alternate form ("alt", see AltForm), else none
+// (the anchor is gone). A bundle carrying the alternate form's fragments is that
+// form's by construction: they land only where the own slot found nothing, and
+// the native code around them never changes while they are in place. Callers
+// that go on to read or edit the point pass the form along, so each decides it
+// once per bundle text.
+type PointForm = "own" | "alt" | undefined;
+function pointForm(content: string, p: PatchPoint): PointForm {
+  if (p.alt?.marked(content)) return "alt";
+  if (
+    p.fnPresent ? p.fnPresent(content) : p.res!.some((re) => re.test(content))
+  )
+    return "own";
+  return p.alt?.present(content) ? "alt" : undefined;
+}
+
+// Whether the alternate form serves, for a point that has one.
+function altServes(content: string, p: PatchPoint, form?: PointForm): boolean {
+  return !!p.alt && (form ?? pointForm(content, p)) === "alt";
 }
 
 // px string if a fixed size is in place, or undefined for the stock/native form.
-function pointCurrentPx(content: string, p: PatchPoint): string | undefined {
+function pointCurrentPx(
+  content: string,
+  p: PatchPoint,
+  form?: PointForm,
+): string | undefined {
+  if (altServes(content, p, form)) return p.alt!.currentPx(content);
   if (p.fnCurrentPx) return p.fnCurrentPx(content);
   for (const re of p.res!) {
     const m = content.match(re);
@@ -7423,7 +7638,14 @@ function pointCurrentPx(content: string, p: PatchPoint): string | undefined {
   return undefined;
 }
 
-function pointSet(content: string, p: PatchPoint, px: string): string {
+function pointSet(
+  content: string,
+  p: PatchPoint,
+  px: string,
+  form?: PointForm,
+): string {
+  if (altServes(content, p, form))
+    return p.alt!.apply(p.alt!.strip(content), px);
   if (p.fnApply) return p.fnApply(content, px);
   const value = p.style === "number" ? px : `${px}px`;
   let out = content;
@@ -7437,7 +7659,9 @@ function pointRestore(
   content: string,
   p: PatchPoint,
   stockValue: string,
+  form?: PointForm,
 ): string {
+  if (altServes(content, p, form)) return p.alt!.strip(content);
   if (p.fnRestore) return p.fnRestore(content);
   let out = content;
   for (const re of p.res!) {
@@ -7459,6 +7683,18 @@ function stockNumberFor(p: PatchPoint, capture: StockCapture): number {
   if (p.style === "number") return parseFloat(c);
   const m = c.match(/(\d+(?:\.\d+)?)px/);
   return m ? parseFloat(m[1]) : p.originalPx;
+}
+
+// The stock px of the point's slot on this bundle, which a bare-number own slot
+// reads at native (see analyze). Where the alternate form serves, the native
+// value is an expression rather than a px, so no capture is consulted (a
+// captured calc(... - 2px) would read as 2) and originalPx stands in.
+function stockPxFor(
+  p: PatchPoint,
+  capture: StockCapture,
+  form: PointForm,
+): number {
+  return form === "alt" ? p.originalPx : stockNumberFor(p, capture);
 }
 
 // The effective stock value string for restore: the captured value if
@@ -7484,10 +7720,11 @@ function captureStockValues(
   for (const p of PATCH_POINTS) {
     if (!p.style || !p.res) continue;
     const content = read(p.file);
-    if (!content || !pointPresent(content, p)) continue;
+    // Only the own slot holds a stock value to capture (see stockPxFor).
+    if (!content || pointForm(content, p) !== "own") continue;
 
     if (p.style === "value") {
-      if (pointCurrentPx(content, p) === undefined) {
+      if (pointCurrentPx(content, p, "own") === undefined) {
         for (const re of p.res) {
           const m = content.match(re);
           if (m) {
@@ -7585,7 +7822,7 @@ export function findLatestClaudeExt(
   return best;
 }
 
-export type PointState =
+export type PointState = (
   | {
       id: string;
       label: string;
@@ -7601,7 +7838,12 @@ export type PointState =
       px: string;
       want: string;
     }
-  | { id: string; label: string; section: Section; status: "missing" };
+  | { id: string; label: string; section: Section; status: "missing" }
+) & {
+  // Served by the point's alternate form (see AltForm), whose markers are owed
+  // on this install only; the anchor audit reads it.
+  alt?: true;
+};
 
 function readFileSafe(ext: ClaudeExt, rel: string): string | undefined {
   try {
@@ -7647,24 +7889,46 @@ export function analyze(
 ): PointState[] {
   const read = cacheReader(ext, cache);
   return PATCH_POINTS.map((p): PointState => {
-    const base = { id: p.id, label: p.label, section: p.section };
     const content = read(p.file);
-    if (content === undefined || !pointPresent(content, p)) {
+    const form = content === undefined ? undefined : pointForm(content, p);
+    const base = {
+      id: p.id,
+      label: p.label,
+      section: p.section,
+      ...(form === "alt" ? { alt: true as const } : {}),
+    };
+    if (content === undefined || !form) {
       return { ...base, status: "missing" };
     }
-    const stockNum = stockNumberFor(p, capture);
-    const want = formatPx(sizes[p.id]);
-    const stockWant = want === formatPx(stockNum);
-    const cur = pointCurrentPx(content, p);
+    const stockNum = stockPxFor(p, capture, form);
+    // undefined = native (the setting is 0); any px is pinned, stock or not.
+    const want = sizes[p.id] > 0 ? formatPx(sizes[p.id]) : undefined;
+    const cur = pointCurrentPx(content, p, form);
+    // A bare-number own slot reads its stock number at native, the same bytes
+    // a pin at that number writes, so either setting finds it current. Every
+    // other form, the alternate one included, reads native as undefined.
     const isStock =
-      p.style === "number" ? cur === formatPx(stockNum) : cur === undefined;
+      p.style === "number" && form === "own"
+        ? cur === formatPx(stockNum)
+        : cur === undefined;
 
-    if (stockWant && isStock)
+    if (want === undefined && isStock)
       return { ...base, status: "current", px: `${stockNum}` };
-    if (!stockWant && cur === want)
+    if (want !== undefined && cur === want)
       return { ...base, status: "current", px: cur };
-    if (isStock) return { ...base, status: "stock", px: `${stockNum}`, want };
-    return { ...base, status: "custom", px: cur ?? `${stockNum}`, want };
+    if (isStock)
+      return {
+        ...base,
+        status: "stock",
+        px: `${stockNum}`,
+        want: want ?? "native",
+      };
+    return {
+      ...base,
+      status: "custom",
+      px: cur ?? `${stockNum}`,
+      want: want ?? "native",
+    };
   });
 }
 
@@ -7850,19 +8114,21 @@ export function applyPatch(
     }
     let out = content;
     for (const p of pointsByFile.get(file) ?? []) {
-      if (!pointPresent(out, p)) continue;
-      const want = formatPx(sizes[p.id]);
-      const stockWant = want === formatPx(stockNumberFor(p, capture));
-      const cur = pointCurrentPx(out, p);
-      const next = stockWant
-        ? pointRestore(out, p, stockValueFor(p, capture))
-        : pointSet(out, p, want);
+      const form = pointForm(out, p);
+      if (!form) continue;
+      // undefined = native (the setting is 0); any px is pinned, stock or not.
+      const want = sizes[p.id] > 0 ? formatPx(sizes[p.id]) : undefined;
+      const cur = pointCurrentPx(out, p, form);
+      const next =
+        want === undefined
+          ? pointRestore(out, p, stockValueFor(p, capture), form)
+          : pointSet(out, p, want, form);
       if (next !== out) {
         out = next;
         changed.push(
-          stockWant
-            ? `${p.label} ${cur}px→stock`
-            : `${p.label} ${cur ?? "stock"}→${want}px`,
+          want === undefined
+            ? `${p.label} ${cur}px→native`
+            : `${p.label} ${cur ?? "native"}→${want}px`,
         );
       }
     }
@@ -7959,8 +8225,9 @@ export function restorePatch(
     }
     let out = content;
     for (const p of pointsByFile.get(file) ?? []) {
-      if (!pointPresent(out, p)) continue;
-      const next = pointRestore(out, p, stockValueFor(p, capture));
+      const form = pointForm(out, p);
+      if (!form) continue;
+      const next = pointRestore(out, p, stockValueFor(p, capture), form);
       if (next !== out) {
         out = next;
         changed.push(`${p.label} restored`);
@@ -8217,7 +8484,12 @@ export class Patcher {
     patchKeys.push("claudeCode.useCtrlEnterToSend");
     // chat.fontSize is no longer a knob, but the chatHistoryFontSize knob shows it
     // while inheriting, so a native change should refresh (not re-patch) the view.
-    const nativeKeys = NATIVE_KNOBS.map((k) => k.vscodeKey);
+    // The editor sizes feed what the patch knobs show at 0 (see NativeEnv).
+    const nativeKeys = [
+      ...NATIVE_KNOBS.map((k) => k.vscodeKey),
+      "chat.editor.fontSize",
+      "editor.fontSize",
+    ];
     return [
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (patchKeys.some((k) => e.affectsConfiguration(k))) {
@@ -8283,6 +8555,21 @@ export class Patcher {
   snapshot(): Snapshot | undefined {
     if (!this.ext) return undefined;
     const sizes = readSizes();
+    // Each size point's effective px: its setting, or while that is 0, what
+    // Claude Code renders natively in the form the analyzer found here.
+    const env = nativeEnv();
+    const altIds = new Set(this.states.filter((s) => s.alt).map((s) => s.id));
+    const effSizes: SizeMap = {};
+    for (const p of PATCH_POINTS) {
+      effSizes[p.id] =
+        sizes[p.id] > 0
+          ? sizes[p.id]
+          : p.nativeSize(
+              altIds.has(p.id),
+              env,
+              stockNumberFor(p, this.stockCapture),
+            );
+    }
     const toggles = readToggles();
     const statusById = new Map(this.states.map((s) => [s.id, s.status]));
     const toggleStatusById = new Map(
@@ -8308,8 +8595,7 @@ export class Patcher {
     // point left at its native value loses nothing, so it stays hidden. We treat
     // this as a partial loss only while something else is still present; when
     // nothing is present at all the "not supported" banner already covers it.
-    const sizeWanted = (p: PatchPoint) =>
-      formatPx(sizes[p.id]) !== formatPx(p.originalPx);
+    const sizeWanted = (p: PatchPoint) => sizes[p.id] > 0;
     const toggleWanted = (t: TogglePoint) => toggles[t.id] !== t.defaultOn;
     const injectWanted = (ip: InjectPoint) => readInject(ip) !== undefined;
     const sizeLost = (p: PatchPoint) =>
@@ -8375,7 +8661,7 @@ export class Patcher {
               typeof eff === "number"
                 ? eff
                 : ip.inheritFrom
-                  ? sizes[ip.inheritFrom]
+                  ? effSizes[ip.inheritFrom]
                   : nativeChatFontSizePx(),
             ),
         on: false,
@@ -8397,7 +8683,7 @@ export class Patcher {
       section: p.section,
       label: p.label,
       kind: "size" as const,
-      px: formatPx(sizes[p.id]),
+      px: formatPx(effSizes[p.id]),
       on: false,
       max: p.maxPx,
       min: MIN_PX,
@@ -8454,7 +8740,7 @@ export class Patcher {
       needsReload: this.pendingReload.size > 0,
       partialLoss,
       apply: resolveApplyAction(this.ext, this.pendingReload),
-      preview: previewModel(),
+      preview: previewModel(effSizes),
     };
   }
 
@@ -8785,11 +9071,21 @@ export class Patcher {
     await Promise.all([
       ...PATCH_POINTS.map((p) => {
         const floor = this.activationPx.get(p.id);
-        const value =
-          floor !== undefined
-            ? Number(floor)
-            : stockNumberFor(p, this.stockCapture);
-        return cfg.update(p.key, value, vscode.ConfigurationTarget.Global);
+        // The floor was native where it read undefined, or where a bare-number
+        // own slot held its stock number: a pin at that number is the same
+        // bytes there, and native is the reading that still holds after a
+        // Claude Code update. Native is cleared, never set to 0 (see restore).
+        const alt = this.states.find((s) => s.id === p.id)?.alt;
+        const native =
+          floor === undefined ||
+          (p.style === "number" &&
+            !alt &&
+            floor === formatPx(stockNumberFor(p, this.stockCapture)));
+        return cfg.update(
+          p.key,
+          native ? undefined : Number(floor),
+          vscode.ConfigurationTarget.Global,
+        );
       }),
       ...TOGGLE_POINTS.map((t) => {
         // floor is the full state string (e.g. "on+css" / "off+nocss"); its on/off
@@ -8830,11 +9126,14 @@ export class Patcher {
       return;
     }
     // Reset all patch settings to their stock values so the panel/settings
-    // reflect the restored native state, not the enlarged values.
+    // reflect the restored native state, not the enlarged values. The size
+    // settings are cleared rather than set to 0: before 1.6.0 they bottomed out
+    // at 6 and read 0 as 6px, so an explicit 0 that Settings Sync carried to a
+    // machine still on an older build would shrink its text.
     const cfg = vscode.workspace.getConfiguration(CONFIG_NS);
     await Promise.all([
       ...PATCH_POINTS.map((p) =>
-        cfg.update(p.key, p.originalPx, vscode.ConfigurationTarget.Global),
+        cfg.update(p.key, undefined, vscode.ConfigurationTarget.Global),
       ),
       ...TOGGLE_POINTS.map((t) =>
         cfg.update(t.key, t.defaultOn, vscode.ConfigurationTarget.Global),

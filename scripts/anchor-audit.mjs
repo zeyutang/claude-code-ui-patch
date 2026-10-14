@@ -207,6 +207,21 @@ const NATIVE_MARKERS = {
   diffThemeSync: ["/*ccup-theme*/"],
 };
 
+// Markers a size point emits only through its alternate form (see AltForm in
+// the patcher), which serves a build whose native value is no longer the
+// literal the point swaps in place. On a build the point still patches in place
+// they are not owed, so they leave that install's expected set; the analyzer
+// flags each point the alternate form serves. Keyed by point id; add an entry
+// whenever a point gains an alternate form.
+const ALT_MARKERS = {
+  diffCard: ["/*ccup:diffFont*/", "/*ccup:diffFontEnd*/"],
+  text: ["/*ccup:planText*/", "/*ccup:planSizeEnd*/"],
+  code: ["/*ccup:planCode*/", "/*ccup:planSizeEnd*/"],
+  preview: ["/*ccup:planQuote*/", "/*ccup:planSizeEnd*/"],
+  input: ["/*ccup:planInput*/", "/*ccup:planSizeEnd*/"],
+  badge: ["/*ccup:planBadge*/", "/*ccup:planSizeEnd*/"],
+};
+
 // "<file> <marker>" -> occurrences. Counts, not just presence, so a block that
 // loses some of its fragments shows up in the version-to-version diff.
 function inventory(dir) {
@@ -269,6 +284,14 @@ function auditInstall(P, install, expected) {
     const exempt = new Set(
       native.flatMap((s) => NATIVE_MARKERS[s.id] ?? []).map((m) => m),
     );
+    // An alternate-form marker is owed once any point it belongs to is served
+    // by that form here (planSizeEnd is shared by the five plan points).
+    const altOwed = new Set(
+      applied.filter((s) => s.alt).flatMap((s) => ALT_MARKERS[s.id] ?? []),
+    );
+    for (const m of Object.values(ALT_MARKERS).flat()) {
+      if (!altOwed.has(m)) exempt.add(m);
+    }
 
     const counts = inventory(work);
     const landed = new Set([...counts.keys()].map((k) => k.split(" ")[1]));

@@ -47,7 +47,8 @@ Chat Panel and Tab                     # chat history only, private to Claude Co
    ├── chatCodeBlockFontSize           # fenced code blocks, 0 -> native
    │      └── chatCodeInlineFontSize   # inline code, 0 -> follows chatCodeBlockFontSize
    ├── chatMathRendering               # TeX math via bundled KaTeX if On
-   │      └── chatMathFontSizeEm       # math size in em of chat text, 1.0 = match (KaTeX stock 1.21)
+   │                                   #   (Claude Code 2.1.301+ does this itself)
+   ├── chatMathFontSizeEm              # math size in em of chat text, 1.0 = match, 0 -> native
    └── diff cards                      # Edit / MultiEdit tool cards + expand modal
           ├── chatDiffCardFontSize     # diff code size, 0 -> native
           ├── chatDiffCardLineNumbers  # true file line numbers (when known) if On
@@ -134,6 +135,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   Your own sent messages are styled by `chatInputHistoryFontSize` / `chatInputHistoryFontFamily`.
 - **`chatMathRendering` bundles KaTeX into the chat webview** (MIT code, SIL OFL 1.1 fonts; licenses ship in `assets/katex/`) and removes it fully when the toggle turns off.
   Rendering covers the chat only: the Plan Mode preview's content-security policy allows no font loading.
+  Claude Code 2.1.301 and later render math themselves, and there it bundles nothing while `chatMathFontSizeEm` still sizes their math.
 - **`chatRawMarkdownButton` reveals the source of agent responses only.**
   The button rides the left gutter, centered on the line that runs through the message dots: level with the block's top while that is in view, then pinned just under the user message stuck to the top of the chat, so a long response keeps it within reach.
   It appears while the pointer is anywhere at that response's height, the gutter included, so you can travel down the line to reach it.

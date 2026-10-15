@@ -2635,8 +2635,9 @@ export function untitledStaysWebview(web: string): string | null {
 // The math size rides chatMathFontSizeEm (em, relative to the chat text):
 // KaTeX's own default is 1.21em, sized for documents; 1.0 matches the chat
 // text. The em value is baked into the css line, so a change re-applies via
-// the same stale-line reconcile as any other knob (the key is listed in
-// EXTRA_PATCH_KEYS so the config listener picks it up).
+// the same stale-line reconcile as any other knob (the key belongs to the
+// chatMathSize point, so the config listener picks it up). At 0, the native
+// setting, this renderer draws the text size, as the old default of 1 did.
 //
 // The two inline anchors are all-or-nothing: if either regex fails to match
 // this build, nothing is inserted (a wrapper without the code hook would leak
@@ -2694,23 +2695,33 @@ export function initMathAssets(extensionDir: string): void {
 }
 
 // The markdown component every agent text block renders through, found by
-// its params destructure (content/context/isPartialText, plus whatever props a
-// build adds, as 2.1.286 did with `links`). chatMath and rawMd both read their
-// sites off it, so the parse is kept per bundle text.
-const MD_KEYS = ["content", "context", "isPartialText"];
+// its params destructure: content, context, and the streaming flag, plus
+// whatever props a build adds (2.1.286 added `links`). The flag was the
+// boolean `isPartialText` through 2.1.300. 2.1.301 renamed it `streaming`,
+// where it names how the text splits into chunks and is unset once settled.
+// chatMath and rawMd both read their sites off it, so the parse is kept per
+// bundle text.
+const MD_FLAGS = ["isPartialText", "streaming"];
 const MD_PARAMS_REACH = 2000;
 let mdMemo: { input: string; unit: N | null } | undefined;
 
 function mdComponent(c: string): N | null {
   if (mdMemo?.input !== c) {
-    const units = unitsWith(
-      c,
-      "isPartialText:",
-      "function",
-      isFn,
-      MD_PARAMS_REACH,
-    ).filter((f) => hasKeys(f.params[0], MD_KEYS));
-    const u = units.length === 1 ? units[0] : null;
+    // Either flag will do, but only one component may match across both.
+    const found = new Map<number, N>();
+    for (const flag of MD_FLAGS) {
+      const keys = ["content", "context", flag];
+      for (const f of unitsWith(
+        c,
+        `${flag}:`,
+        "function",
+        isFn,
+        MD_PARAMS_REACH,
+      )) {
+        if (hasKeys(f.params[0], keys)) found.set(f.start, f);
+      }
+    }
+    const u = found.size === 1 ? [...found.values()][0] : null;
     mdMemo = {
       input: c,
       unit: u?.body.type === "BlockStatement" ? u : null,
@@ -2725,6 +2736,7 @@ const mathFrag = (tag: string, code: string): string =>
 const MATH_FRAG_RE = /\/\*ccup:math:[-\w]+\*\/[\s\S]*?\/\*ccup:mathEnd\*\//g;
 
 const MATH_KATEX_START = "/*ccup:mathKatexStart*/";
+const MATH_KATEX_END = "/*ccup:mathKatexEnd*/";
 const MATH_KATEX_BLOCK_RE =
   /\n?\/\*ccup:mathKatexStart\*\/[\s\S]*?\/\*ccup:mathKatexEnd\*\//g;
 
@@ -2733,26 +2745,36 @@ const MATH_HELPER_BLOCK_RE =
   /\n?\/\*ccup:mathHelperStart\*\/[\s\S]*?\/\*ccup:mathHelperEnd\*\//g;
 
 const MATH_CSS_MARKER = "/*ccup:mathCss*/";
+// The math size, the chatMathSize point's key: 0 = native, any other value an
+// em of the chat text. The math css line bakes it in too.
 const MATH_EM_KEY = "chatMathFontSizeEm";
 
 // Settings that feed a point's build output without being a point of their own
-// (the math css line bakes the em size in; the find-bar chord settings bake
-// into its cfg line), so a change must run autoApply and a factory reset must
-// clear them like any point key.
+// (the find-bar chord settings bake into its cfg line), so a change must run
+// autoApply and a factory reset must clear them like any point key.
 export const EXTRA_PATCH_KEYS: [string, number | string][] = [
-  [MATH_EM_KEY, 1],
   ["chatFindBarNextMatchKeys", ""],
   ["chatFindBarPreviousMatchKeys", ""],
   ["chatFindBarNextMatchBlockKeys", ""],
   ["chatFindBarPreviousMatchBlockKeys", ""],
 ];
 
+// A pinned math size in em, clamped to [0.5, 3], or undefined at native (0,
+// unset, or not a number).
+function mathEmPin(raw: unknown): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0)
+    return undefined;
+  return Math.round(Math.min(3, Math.max(0.5, raw)) * 100) / 100;
+}
+
+// The bundled renderer's size, baked into the math css line. At native it is
+// the text size: how math read before Claude Code rendered it (raw TeX in the
+// text), and what the old default of 1 drew.
 function readMathEm(): string {
   const raw = vscode.workspace
     .getConfiguration(CONFIG_NS)
-    .get<number>(MATH_EM_KEY, 1);
-  const n = typeof raw === "number" && Number.isFinite(raw) ? raw : 1;
-  return String(Math.round(Math.min(3, Math.max(0.5, n)) * 100) / 100);
+    .get<number>(MATH_EM_KEY, 0);
+  return String(mathEmPin(raw) ?? 1);
 }
 
 // Runs inside the chat webview, injected verbatim via toString(): it must stay
@@ -3083,13 +3105,36 @@ function mathHelperBlock(): string {
 
 function mathKatexBlock(): string | undefined {
   if (!mathAssets) return undefined;
-  return `${MATH_KATEX_START};(function(define,module,exports){${mathAssets.js}})();/*ccup:mathKatexEnd*/`;
+  return `${MATH_KATEX_START};(function(define,module,exports){${mathAssets.js}})();${MATH_KATEX_END}`;
 }
 
-// The math sites, found by structure. wrap: the markdown component's content
-// initializer, the declarator `isPartialText ? <split>(content) : content`,
-// which the two wrap fragments route through the KaTeX preprocessor. code: the
-// component map's `code` renderer, whose body opens `if(className)return
+// Claude Code 2.1.301 renders chat math itself: it bundles its own KaTeX
+// into the webview, renders each formula through a memoized component, and
+// styles the result under the markdown root, behind a server-side gate that is
+// on unless switched off. KaTeX's own `katex-mathml` class name outside this
+// patch's KaTeX block is what says a build ships that copy. The point then
+// reads native and writes nothing: no bundle edit, no css line, no fonts.
+// Scanned in place, since copying the bundle without the block costs about
+// 5ms a call.
+const KATEX_OWN_TOKEN = '"katex-mathml"';
+function mathNative(c: string): boolean {
+  const s = c.indexOf(MATH_KATEX_START);
+  const e = s < 0 ? -1 : c.indexOf(MATH_KATEX_END, s);
+  for (
+    let i = c.indexOf(KATEX_OWN_TOKEN);
+    i >= 0;
+    i = c.indexOf(KATEX_OWN_TOKEN, i + 1)
+  ) {
+    if (s < 0 || i < s || (e >= 0 && i > e)) return true;
+  }
+  return false;
+}
+
+// The math sites on 2.1.300 and earlier, found by structure. wrap: the
+// markdown component's content initializer, the declarator
+// `isPartialText ? <split>(content) : content`, which the two wrap fragments
+// route through the KaTeX preprocessor. code: the component map's `code`
+// renderer, whose body opens `if(className)return
 // <jsx>("code",{className,children})`; the code fragment goes in ahead of that
 // `if`. Since 2.1.282 the map sits in a memoized chunk component rather than in
 // the markdown component, so the renderer is found from its own `code:(` token
@@ -3107,6 +3152,7 @@ function mathBuild(c: string): string | null {
 }
 
 function mathBuildUncached(c: string): string | null {
+  if (mathNative(c)) return null;
   const m = mdComponent(c);
   const content = m ? boundName(m.params[0], "content") : null;
   const partial = m ? boundName(m.params[0], "isPartialText") : null;
@@ -3265,11 +3311,62 @@ function mathCssBuild(_css: string): string | undefined {
   );
 }
 
+// chatMathSize: the math size where Claude Code renders math itself (2.1.301
+// and later). One marked line sizes every formula under the markdown root, the
+// box KaTeX's own stylesheet sets at its stock 1.21em, so native (0) writes
+// nothing. A build without native math gives the point nothing to write: the
+// math css line carries the size for the bundled renderer there, and the point
+// reads inert.
+const MATH_SIZE_MARKER = "/*ccup:mathSize*/";
+const MATH_SIZE_EM_RE =
+  /\/\*ccup:mathSize\*\/\.root_[-\w]+ \.katex\{font-size:([\d.]+)em\}/;
+// A native math rule hung off the markdown root, which names the root's hash.
+const NATIVE_MATH_ROOT_RE = /\.root_([-\w]+) \.katex\{/;
+
+// Whether the install's own stylesheet carries KaTeX, both math lines of this
+// patch set aside.
+function nativeMathCss(css: string): boolean {
+  return /\.katex\{/.test(
+    cssRemoveLine(cssRemoveLine(css, MATH_CSS_MARKER), MATH_SIZE_MARKER),
+  );
+}
+// The markdown root's hash, read off a native math rule.
+function mathSizeRoot(css: string): string | undefined {
+  return cssRemoveLine(css, MATH_SIZE_MARKER).match(NATIVE_MATH_ROOT_RE)?.[1];
+}
+
+// The KaTeX fonts the install's own stylesheet loads, the math css line set
+// aside. Claude Code 2.1.301 and later ship them in this same webview/fonts
+// folder for their own math rendering, under the same 20 names and byte for
+// byte the bundled 0.19.0 set.
+const MATH_FONT_URL_RE = /url\(["']?fonts\/(KaTeX_[\w-]+\.woff2)["']?\)/g;
+function nativeMathFonts(css: string | undefined): Set<string> {
+  if (css === undefined) return new Set();
+  const own = cssRemoveLine(css, MATH_CSS_MARKER);
+  return new Set(Array.from(own.matchAll(MATH_FONT_URL_RE), (m) => m[1]));
+}
+
 // Copy the KaTeX woff2 fonts into <install>/webview/fonts when ON (skipping
 // up-to-date files); remove exactly those files (and the dir if it emptied)
-// when OFF. Same atomic stage-and-rename as the bundle writes.
+// when OFF. Same atomic stage-and-rename as the bundle writes. Fonts the
+// build's own stylesheet loads belong to the build whatever the toggle says:
+// never overwritten or removed, and put back from the bundled set when
+// missing, since 1.6.0 removed them on 2.1.301 with the toggle off.
 function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
   const dir = path.join(ext.dir, "webview", "fonts");
+  const native = nativeMathFonts(readFileSafe(ext, "webview/index.css"));
+  if (native.size) {
+    let restored = 0;
+    for (const name of mathAssets?.fontNames ?? []) {
+      const dst = path.join(dir, name);
+      if (!native.has(name) || fs.existsSync(dst)) continue;
+      fs.mkdirSync(dir, { recursive: true });
+      copyFileAtomic(path.join(mathAssets!.fontsDir, name), dst);
+      restored++;
+    }
+    if (restored) changed.push(`math fonts restored x${restored}`);
+    return;
+  }
   if (on && mathAssets) {
     fs.mkdirSync(dir, { recursive: true });
     let copied = 0;
@@ -3281,19 +3378,8 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
       } catch {
         // missing: copy below
       }
-      const tmp = `${dst}.${process.pid}.${atomicWriteCounter++}.tmp`;
-      try {
-        fs.copyFileSync(src, tmp);
-        fs.renameSync(tmp, dst);
-        copied++;
-      } catch (err) {
-        try {
-          fs.unlinkSync(tmp);
-        } catch {
-          // best effort: nothing to clean up if the temp was never created
-        }
-        throw err;
-      }
+      copyFileAtomic(src, dst);
+      copied++;
     }
     if (copied) changed.push(`math fonts x${copied}`);
     return;
@@ -6192,11 +6278,11 @@ function uceSet(c: string, on: boolean): string {
 // and it resets to rendered when the webview reloads.
 //
 // The source needs no reconstruction: the component takes
-// `{content,context,isPartialText}`, and `content` is the markdown string as it
-// arrived. Four inline fragments and one EOF line do the work, the fragments all
-// React-rendered so React keeps owning the DOM it produced (the discipline the
-// math patch follows too: no post-hoc mutation of a rendered tree, which React
-// can crash on):
+// `{content,context,isPartialText}` (`streaming` in place of the flag since
+// 2.1.301), and `content` is the markdown string as it arrived. Four inline
+// fragments and one EOF line do the work, the fragments all React-rendered so
+// React keeps owning the DOM it produced (the discipline the math patch follows
+// too: no post-hoc mutation of a rendered tree, which React can crash on):
 //
 //   hook   a useState pair appended to the component's own hook chain, holding
 //          this block's raw/rendered flag (appending keeps hook order stable)
@@ -6746,6 +6832,9 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: mathPresent,
     fnCurrentOn: mathCurrentOn,
     fnSet: mathSet,
+    // 2.1.301 and later render math themselves; the sites above serve 2.1.300
+    // and earlier.
+    nativeOn: mathNative,
     cssFile: "webview/index.css",
     cssMarker: MATH_CSS_MARKER,
     cssBuild: mathCssBuild,
@@ -6941,6 +7030,34 @@ export async function migrateSizeDefaults(
   await context.globalState.update(SIZE_SCHEMA_MIGRATED_KEY, true);
 }
 
+// One-time migration for the math size, which became 0 = native once Claude
+// Code 2.1.301 began rendering math itself. A value still at the old default
+// of 1 (Factory Reset wrote it) is cleared, so it keeps meaning native: the
+// bundled renderer draws the text size at 0 just as it drew 1, and Claude
+// Code's own math keeps its stock size. Once only, so a 1 set after the
+// upgrade stays. The global scope only, as above.
+const MATH_SIZE_MIGRATED_KEY = "claudeCodeUiPatch.mathSizeSchemaMigrated";
+
+export async function migrateMathSizeDefault(
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  if (context.globalState.get<boolean>(MATH_SIZE_MIGRATED_KEY)) return;
+  const cfg = vscode.workspace.getConfiguration(CONFIG_NS);
+  if (cfg.inspect<number>(MATH_EM_KEY)?.globalValue === 1) {
+    try {
+      await cfg.update(
+        MATH_EM_KEY,
+        undefined,
+        vscode.ConfigurationTarget.Global,
+      );
+    } catch {
+      // best effort: a 1 left behind pins the text size, which is what the
+      // bundled renderer drew for it anyway
+    }
+  }
+  await context.globalState.update(MATH_SIZE_MIGRATED_KEY, true);
+}
+
 function togglePresent(content: string, t: TogglePoint): boolean {
   if (t.fnPresent) return t.fnPresent(content);
   t.re!.lastIndex = 0;
@@ -6964,6 +7081,10 @@ function toggleStateStr(
   read: (rel: string) => string | undefined,
   t: TogglePoint,
 ): string | undefined {
+  // A build that ships the feature has no state of ours, except a leftover,
+  // whose own string makes stripping it ask the webview for a reload.
+  if (toggleNative(read, t))
+    return toggleLeftover(read, t) ? "leftover" : undefined;
   const js = read(t.file);
   if (js === undefined || !togglePresent(js, t)) return undefined;
   const jsOn = toggleCurrentOn(js, t) ? "on" : "off";
@@ -6988,6 +7109,21 @@ function toggleWantStr(t: TogglePoint, on: boolean): string {
   const js = on ? "on" : "off";
   if (!t.cssFile || !t.cssMarker) return js;
   return `${js}+${on ? "css" : "nocss"}`;
+}
+// Whether the install's build ships the toggle's feature itself (nativeOn).
+function toggleNative(read: BundleReader, t: TogglePoint): boolean {
+  const js = t.nativeOn ? read(t.file) : undefined;
+  return js !== undefined && t.nativeOn!(js);
+}
+// Whether a toggle the build now ships still carries what an earlier version
+// wrote: its own edits, or its css side-effect, which 1.6.0 went on writing on
+// Claude Code 2.1.301 beside the native KaTeX stylesheet. Apply strips both.
+function toggleLeftover(read: BundleReader, t: TogglePoint): boolean {
+  const js = read(t.file);
+  if (js !== undefined && togglePresent(js, t) && toggleCurrentOn(js, t))
+    return true;
+  const css = t.cssFile && t.cssMarker ? read(t.cssFile) : undefined;
+  return css !== undefined && css.includes(t.cssMarker!);
 }
 function toggleSet(content: string, t: TogglePoint, on: boolean): string {
   if (t.fnSet) return t.fnSet(content, on);
@@ -7248,6 +7384,13 @@ interface InjectPoint {
   current: (c: string) => InjectValue | undefined; // value in bundle, or undefined
   apply: (c: string, v: InjectValue) => string;
   remove: (c: string) => string;
+  // A build this point has nothing to write on: it reads "inert" there,
+  // satisfied and never lost, rather than "missing".
+  inert?: (c: string) => boolean;
+  // Factory Reset and a native floor clear the key rather than write
+  // defaultRaw: its default became 0 = native, and older versions of this
+  // extension read an explicit 0 as their minimum.
+  clearAtNative?: boolean;
 }
 
 // chatHistoryFontSize: size the agent message body only (.root_<hash>), NOT the
@@ -7717,6 +7860,35 @@ const INJECT_POINTS: InjectPoint[] = [
     remove: (c) => cssRemoveLine(c, CHAT_PARA_MARKER),
   },
   {
+    id: "chatMathSize",
+    section: "Chat Panel or Tab",
+    label: "math size",
+    key: MATH_EM_KEY,
+    kind: "scale",
+    file: "webview/index.css",
+    showInPanel: false,
+    max: 0,
+    defaultRaw: 0,
+    clearAtNative: true,
+    effective: (raw) => mathEmPin(raw),
+    inert: (c) => !nativeMathCss(c),
+    present: (c) => mathSizeRoot(c) !== undefined,
+    current: (c) => {
+      const m = c.match(MATH_SIZE_EM_RE);
+      return m ? Number(m[1]) : undefined;
+    },
+    apply: (c, v) => {
+      const h = mathSizeRoot(c);
+      if (!h) return c; // native math rule gone: leave native
+      return cssApplyLine(
+        c,
+        MATH_SIZE_MARKER,
+        `${MATH_SIZE_MARKER}.root_${h} .katex{font-size:${v}em}`,
+      );
+    },
+    remove: (c) => cssRemoveLine(c, MATH_SIZE_MARKER),
+  },
+  {
     id: "chatInputHistorySize",
     section: "Chat Panel or Tab",
     label: "user message history",
@@ -8083,12 +8255,14 @@ function injectStateStr(
   return cur === undefined ? "off" : String(cur);
 }
 
-// Map an activation-floor string (from injectStateStr) back to a config value.
+// Map an activation-floor string (from injectStateStr) back to a config value,
+// or undefined to clear the key.
 function injectFloorToRaw(
   ip: InjectPoint,
   floor: string | undefined,
-): InjectValue {
-  if (floor === undefined || floor === "off") return ip.defaultRaw;
+): InjectValue | undefined {
+  if (floor === undefined || floor === "off")
+    return ip.clearAtNative ? undefined : ip.defaultRaw;
   return ip.kind === "family" || ip.kind === "align" ? floor : Number(floor);
 }
 
@@ -8588,9 +8762,11 @@ export function analyzeToggles(
     const wantOn = toggles[t.id];
     // Before the anchor: on a build that ships the feature the anchor is gone by
     // design, and reading that as "missing" would flag a healthy install.
-    const js = read(t.file);
-    if (js !== undefined && t.nativeOn?.(js))
-      return { ...base, status: "native", wantOn };
+    // A leftover from before reads as drift instead, so a pass strips it.
+    if (toggleNative(read, t)) {
+      const status = toggleLeftover(read, t) ? "custom" : "native";
+      return { ...base, status, wantOn };
+    }
     const cur = toggleStateStr(read, t);
     if (cur === undefined) return { ...base, status: "missing", wantOn };
     if (cur === toggleWantStr(t, wantOn))
@@ -8636,7 +8812,7 @@ export function analyzeAlways(
   });
 }
 
-export type InjectStatus = "current" | "stock" | "custom" | "missing";
+export type InjectStatus = "current" | "stock" | "custom" | "missing" | "inert";
 export interface InjectState {
   id: string;
   label: string;
@@ -8647,7 +8823,8 @@ export interface InjectState {
 
 // Same shape as analyze()/analyzeToggles() for the string/size/rows injections:
 // "stock" = bundle native and the setting wants an injection; "custom" = the
-// bundle carries an injection differing from the setting (leftover or drifted).
+// bundle carries an injection differing from the setting (leftover or drifted);
+// "inert" = this build gives the point nothing to write (see InjectPoint.inert).
 export function analyzeInjects(
   ext: ClaudeExt,
   cache?: ReadCache,
@@ -8657,6 +8834,9 @@ export function analyzeInjects(
     const base = { id: ip.id, label: ip.label, section: ip.section };
     const want = readInject(ip);
     const content = read(ip.file);
+    if (content !== undefined && ip.inert?.(content)) {
+      return { ...base, status: "inert", value: want };
+    }
     if (content === undefined || !ip.present(content)) {
       return { ...base, status: "missing", value: want };
     }
@@ -8686,6 +8866,20 @@ function byFile(): Map<string, PatchPoint[]> {
 // apply, or Claude Code loading the bundle) never observes a half-written file.
 // The temp name is per-process + counter so parallel writers never collide.
 let atomicWriteCounter = 0;
+function copyFileAtomic(src: string, dst: string): void {
+  const tmp = `${dst}.${process.pid}.${atomicWriteCounter++}.tmp`;
+  try {
+    fs.copyFileSync(src, tmp);
+    fs.renameSync(tmp, dst);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // best effort: nothing to clean up if the temp was never created
+    }
+    throw err;
+  }
+}
 function writeFileAtomic(abs: string, data: string): void {
   const tmp = `${abs}.${process.pid}.${atomicWriteCounter++}.tmp`;
   try {
@@ -8775,7 +8969,8 @@ export function applyPatch(
     }
     for (const t of togglesByFile.get(file) ?? []) {
       if (!togglePresent(out, t)) continue;
-      const wantOn = toggles[t.id];
+      // A build that ships the feature is owed none of it (see nativeOn).
+      const wantOn = toggles[t.id] && !t.nativeOn?.(out);
       const cur = toggleCurrentOn(out, t);
       const next = toggleSet(out, t, wantOn);
       if (next !== out) {
@@ -8787,7 +8982,7 @@ export function applyPatch(
     }
     for (const t of TOGGLE_POINTS) {
       if (t.cssFile !== file || !t.cssMarker || !t.cssBuild) continue;
-      const wantOn = toggles[t.id];
+      const wantOn = toggles[t.id] && !toggleNative(read, t);
       const rule = wantOn ? t.cssBuild(out) : undefined;
       const next = rule
         ? cssApplyLine(out, t.cssMarker, rule)
@@ -8814,8 +9009,14 @@ export function applyPatch(
     seed(file, out);
   }
   // Math rendering ships webfont FILES alongside the bundle edits: keep them in
-  // step with the toggle (copied when on, removed when off).
-  syncMathFonts(ext, toggles["chatMath"] === true, changed);
+  // step with the toggle (copied when on, removed when off). A build that
+  // renders math itself owns its fonts, see syncMathFonts.
+  const math = TOGGLE_POINTS.find((t) => t.id === "chatMath")!;
+  syncMathFonts(
+    ext,
+    toggles["chatMath"] === true && !toggleNative(read, math),
+    changed,
+  );
   return { version: ext.version, changed };
 }
 
@@ -9036,7 +9237,7 @@ export interface Knob {
   step: number; // increment per ▲/▼ click (px sizes step finer than weights)
   unit: string; // suffix rendered after the value ("px", or "" for a weight)
   native: boolean;
-  state: "current" | "stock" | "custom" | "missing" | "native";
+  state: "current" | "stock" | "custom" | "missing" | "native" | "inert";
   pendingReload: boolean; // this row's bundle was written but window not reloaded
   lost: boolean; // wanted (non-native) but its anchor is absent on this version
   nativeKey?: string;
@@ -9210,8 +9411,9 @@ export class Patcher {
     const presentToggles = this.toggleStates.filter(
       (s) => s.status !== "missing",
     );
+    // An inert point has nothing to write here: neither present nor lost.
     const presentInjects = this.injectStates.filter(
-      (s) => s.status !== "missing",
+      (s) => s.status !== "missing" && s.status !== "inert",
     );
     const anyPresent =
       presentSizes.length + presentToggles.length + presentInjects.length > 0;
@@ -9714,21 +9916,30 @@ export class Patcher {
           vscode.ConfigurationTarget.Global,
         );
       }),
-      ...TOGGLE_POINTS.map((t) => {
+      ...TOGGLE_POINTS.flatMap((t) => {
         // floor is the full state string (e.g. "on+css" / "off+nocss"); its on/off
         // is the leading token.
         const floor = this.activationPx.get(t.id);
+        // A build that ships the feature has no floor of ours, and the setting
+        // is inert there, so it stays as the user left it.
+        const status = this.toggleStates.find((s) => s.id === t.id)?.status;
+        if (floor === "leftover" || status === "native") return [];
         const value =
           floor !== undefined ? floor.startsWith("on") : t.defaultOn;
-        return cfg.update(t.key, value, vscode.ConfigurationTarget.Global);
+        return [cfg.update(t.key, value, vscode.ConfigurationTarget.Global)];
       }),
-      ...INJECT_POINTS.map((ip) =>
-        cfg.update(
-          ip.key,
-          injectFloorToRaw(ip, this.activationPx.get(ip.id)),
-          vscode.ConfigurationTarget.Global,
-        ),
-      ),
+      ...INJECT_POINTS.flatMap((ip) => {
+        // Nor does an inert point: another point carries its setting here.
+        const status = this.injectStates.find((s) => s.id === ip.id)?.status;
+        if (status === "inert") return [];
+        return [
+          cfg.update(
+            ip.key,
+            injectFloorToRaw(ip, this.activationPx.get(ip.id)),
+            vscode.ConfigurationTarget.Global,
+          ),
+        ];
+      }),
     ]);
     this.refresh();
   }
@@ -9756,7 +9967,8 @@ export class Patcher {
     // reflect the restored native state, not the enlarged values. The size
     // settings are cleared rather than set to 0: before 1.6.0 they bottomed out
     // at 6 and read 0 as 6px, so an explicit 0 that Settings Sync carried to a
-    // machine still on an older build would shrink its text.
+    // machine still on an older build would shrink its text. The math size is
+    // cleared for the same reason (older builds read its 0 as 0.5em).
     const cfg = vscode.workspace.getConfiguration(CONFIG_NS);
     await Promise.all([
       ...PATCH_POINTS.map((p) =>
@@ -9766,7 +9978,11 @@ export class Patcher {
         cfg.update(t.key, t.defaultOn, vscode.ConfigurationTarget.Global),
       ),
       ...INJECT_POINTS.map((ip) =>
-        cfg.update(ip.key, ip.defaultRaw, vscode.ConfigurationTarget.Global),
+        cfg.update(
+          ip.key,
+          ip.clearAtNative ? undefined : ip.defaultRaw,
+          vscode.ConfigurationTarget.Global,
+        ),
       ),
       ...EXTRA_PATCH_KEYS.map(([k, v]) =>
         cfg.update(k, v, vscode.ConfigurationTarget.Global),

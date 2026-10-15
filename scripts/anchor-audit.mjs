@@ -205,6 +205,25 @@ const OLD_FORM_MARKERS = ["/*ccup-uce*/"];
 // a point gains a nativeOn.
 const NATIVE_MARKERS = {
   diffThemeSync: ["/*ccup-theme*/"],
+  chatMath: [
+    "/*ccup:math:wrapA*/",
+    "/*ccup:math:wrapB*/",
+    "/*ccup:math:code*/",
+    "/*ccup:mathEnd*/",
+    "/*ccup:mathKatexStart*/",
+    "/*ccup:mathKatexEnd*/",
+    "/*ccup:mathHelperStart*/",
+    "/*ccup:mathHelperEnd*/",
+    "/*ccup:mathCss*/",
+  ],
+};
+
+// Markers a point emits only on a build that gives it something to write. An
+// "inert" point owes none there: the math size on a build without native math,
+// where the math css line carries the size for the bundled renderer instead.
+// Keyed by point id; add an entry whenever a point gains an inert hook.
+const INERT_MARKERS = {
+  chatMathSize: ["/*ccup:mathSize*/"],
 };
 
 // Markers a size point emits only through its alternate form (see AltForm in
@@ -275,15 +294,19 @@ function auditInstall(P, install, expected) {
       (s) =>
         s.status !== "current" &&
         s.status !== "missing" &&
-        s.status !== "native",
+        s.status !== "native" &&
+        s.status !== "inert",
     );
     const native = applied.filter((s) => s.status === "native");
+    const inert = applied.filter((s) => s.status === "inert");
     // A native point emits none of its markers, legitimately, so they drop out
     // of this install's expected set and out of the regression diff below.
     // Otherwise absorbing a feature upstream would read as anchor drift forever.
-    const exempt = new Set(
-      native.flatMap((s) => NATIVE_MARKERS[s.id] ?? []).map((m) => m),
-    );
+    // An inert one has nothing to write here, so the same goes for its markers.
+    const exempt = new Set([
+      ...native.flatMap((s) => NATIVE_MARKERS[s.id] ?? []),
+      ...inert.flatMap((s) => INERT_MARKERS[s.id] ?? []),
+    ]);
     // An alternate-form marker is owed once any point it belongs to is served
     // by that form here (planSizeEnd is shared by the five plan points).
     const altOwed = new Set(
@@ -312,6 +335,7 @@ function auditInstall(P, install, expected) {
       unpatchable,
       stale,
       native,
+      inert,
       exempt,
       missing,
       landed: landed.size,
@@ -360,9 +384,10 @@ for (const r of results) {
   console.log(`\nClaude Code ${r.version}  ${r.dir}`);
   const bad = r.unpatchable.length;
   const nat = r.native.length;
+  const inr = r.inert.length;
   console.log(
     pad(
-      `  points     ${r.total - bad - nat} patchable, ${bad} unpatchable${nat ? `, ${nat} native` : ""}`,
+      `  points     ${r.total - bad - nat - inr} patchable, ${bad} unpatchable${nat ? `, ${nat} native` : ""}${inr ? `, ${inr} inert` : ""}`,
     ) + (bad ? "FAIL" : "ok"),
   );
   for (const s of r.unpatchable) {
@@ -375,6 +400,9 @@ for (const r of results) {
   }
   for (const s of r.native) {
     console.log(`    ${s.kind} ${s.id} built in here: ${s.label}`);
+  }
+  for (const s of r.inert) {
+    console.log(`    ${s.kind} ${s.id} has nothing to write here: ${s.label}`);
   }
   // Exempted markers are not owed on this install, so they leave the denominator
   // rather than sitting in it as a permanent shortfall.

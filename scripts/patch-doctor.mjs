@@ -357,9 +357,11 @@ const st = states(P, ext);
 // "native" is satisfied, not a finding: this build ships the feature, so there
 // is no anchor to patch and no edit owed. It is listed anyway, without failing
 // the run, because a point going native is worth noticing after an update.
+// "inert" is satisfied too: the build gives that point nothing to write.
 const native = st.filter((s) => s.status === "native");
 const notCurrent = st.filter(
-  (s) => s.status !== "current" && s.status !== "native",
+  (s) =>
+    s.status !== "current" && s.status !== "native" && s.status !== "inert",
 );
 line(
   `status       ${st.length - notCurrent.length} current of ${st.length}`,

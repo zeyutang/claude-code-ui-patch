@@ -137,14 +137,14 @@
         "claudeCodeUiPatch.chatMathRendering": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Render TeX math in agent messages with a bundled KaTeX (`$...$`, `$$...$$`, `\\(...\\)`, `\\[...\\]`). Code blocks and inline code are left alone, and currency like `$5 and $10` stays literal. `$$...$$` alone on its line(s) is display math, inline otherwise. Off = native (raw TeX shown)."
+          "markdownDescription": "Render TeX math in agent messages with a bundled KaTeX (`$...$`, `$$...$$`, `\\(...\\)`, `\\[...\\]`). Code blocks and inline code are left alone, and currency like `$5 and $10` stays literal. `$$...$$` alone on its line(s) is display math, inline otherwise. Off = native (raw TeX shown). Claude Code 2.1.301 and later render math themselves, so there this does nothing."
         },
         "claudeCodeUiPatch.chatMathFontSizeEm": {
           "type": "number",
-          "default": 1,
-          "minimum": 0.5,
+          "default": 0,
+          "minimum": 0,
           "maximum": 3,
-          "markdownDescription": "Math size in `em` of the chat text, while `#claudeCodeUiPatch.chatMathRendering#` is on. `1.0` matches the text; KaTeX's stock is `1.21`."
+          "markdownDescription": "Math size in `em` of the chat text, `1.0` matching the text, from `0.5` up. `0` = native: KaTeX's stock `1.21` on Claude Code 2.1.301 and later, which render math themselves, and the text size under `#claudeCodeUiPatch.chatMathRendering#` before that."
         },
         "claudeCodeUiPatch.chatPermissionCodeMatchChatCodeBlock": {
           "type": "boolean",

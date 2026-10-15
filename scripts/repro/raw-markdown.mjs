@@ -52,8 +52,10 @@ const MD_ROOT_RE = /\.root_([-\w]+) code\{font-family/; // stylesheet, not js
 // positions its copy button to one hash; the shared copy-button module carries
 // that button's own box. Together they are the clearance check's anchor: a
 // build that moves the copy button off the top right has to show up here.
+// Other keys may sit between root and the wrapper (2.1.301 put its KaTeX
+// classes there).
 const MD_MODULE_RE =
-  /root:"root_([-\w]+)",codeBlockWrapper:"codeBlockWrapper_\1",copyButton:"copyButton_\1"/;
+  /root:"root_([-\w]+)",(?:"?[-\w]+"?:"[-\w]+",)*codeBlockWrapper:"codeBlockWrapper_\1",copyButton:"copyButton_\1"/;
 const COPY_MODULE_RE =
   /copyButton:"copyButton_([-\w]+)",copyIcon:"copyIcon_([-\w]+)"/;
 const COPY_POS_RE = (h) =>

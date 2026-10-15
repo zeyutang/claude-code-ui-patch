@@ -6,6 +6,12 @@
   Clicking one jumps to it as the jump buttons do, and the list stays open so you can hop between messages until `Escape` closes it.
 - Opening the chat's history dropdown while on an Untitled session no longer switches the chat to the session you had open before it, a running one included.
   Always applied, no setting.
+- `chatRawMarkdownButton` works again on Claude Code 2.1.301 and later, where agent responses had lost their raw markdown button.
+- Claude Code 2.1.301 and later render math in agent responses themselves, so there `chatMathRendering` shows as Native and bundles nothing.
+- `chatMathFontSizeEm` now defaults to `0`, which keeps the native math size, and on Claude Code 2.1.301 and later it sizes the math Claude Code renders, with `chatMathRendering` on or off.
+  A setting still at its old default of `1` is reset once on upgrade, so nothing you see changes.
+- With `chatMathRendering` off, or after a restore, math in agent responses on Claude Code 2.1.301 and later renders in its own KaTeX fonts again rather than fallback glyphs.
+  The next apply puts back the font files 1.6.0 had removed.
 
 ## 1.6.0
 

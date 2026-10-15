@@ -7,6 +7,7 @@ import {
   initFindKeys,
   initMathAssets,
   migrateLegacyKeys,
+  migrateMathSizeDefault,
   migrateSizeDefaults,
 } from "./patcher";
 import { StatusBar } from "./statusBar";
@@ -60,6 +61,8 @@ export async function activate(
   // Then clear size values still at their pre-1.6.0 stock, which meant native
   // under the old schema and would pin under the new one.
   await migrateSizeDefaults(context);
+  // And the math size at its old default of 1, which 0 = native replaced.
+  await migrateMathSizeDefault(context);
   // Load the vendored KaTeX payloads and the keybindings.json location before
   // the Patcher's constructor analyzes the bundle (the math toggle reports
   // missing without the former; the find-bar cfg line bakes chords from the

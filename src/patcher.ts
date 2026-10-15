@@ -103,6 +103,7 @@ const KNOB_ORDER: string[] = [
   "findBar", // in-chat find bar (Cmd/Ctrl+F)
   "histKeys", // input history recall on Cmd/Ctrl+Up/Down
   "jumpMsg", // jump to previous/next message
+  "promptHist", // prompt history list
   "rawMd", // raw markdown of a response
   "scrollDot", // scroll-to-bottom dot
   "permCode",
@@ -3416,7 +3417,9 @@ const HOVER_TIP_JS =
 // marker replaced and why). Unlike ccup-btn-host it has to come off again, the
 // container outliving the popup, so it is toggled both ways, each direction
 // guarded by a contains() check so the observers see one mutation per
-// transition. It reads the container through sc(), which both callers declare.
+// transition. It reads the container through sc(), which every caller declares.
+// The prompt history line passes dim=false: it borrows the hosts and leaves
+// the popup dim to the two buttons that own it.
 const PERM_WRAP_HASH_RE =
   /permissionsContainer:"permissionsContainer_([-\w]+)"/;
 const PERM_REQ_HASH_RE =
@@ -3498,6 +3501,7 @@ function btnHostsJs(
   host: string,
   perm: string | undefined,
   preq: string | undefined,
+  dim = true,
 ): string {
   const base = `var a=[].slice.call(document.querySelectorAll("${host}"))`;
   if (!perm || !preq) return `function hosts(){${base};return a}`;
@@ -3506,9 +3510,11 @@ function btnHostsJs(
     `for(var i=0;i<p.length;i++){var w=p[i].closest(".permissionsContainer_${perm}");` +
     `if(w){if(!w.classList.contains("ccup-btn-host"))w.classList.add("ccup-btn-host");` +
     `if(a.indexOf(w)<0)a.push(w)}}` +
-    `var m=sc();if(m){var dm=m.classList.contains("${DIM_CLASS}");` +
-    `if(p.length&&!dm)m.classList.add("${DIM_CLASS}");` +
-    `else if(!p.length&&dm)m.classList.remove("${DIM_CLASS}")}` +
+    (dim
+      ? `var m=sc();if(m){var dm=m.classList.contains("${DIM_CLASS}");` +
+        `if(p.length&&!dm)m.classList.add("${DIM_CLASS}");` +
+        `else if(!p.length&&dm)m.classList.remove("${DIM_CLASS}")}`
+      : "") +
     `return a}`
   );
 }
@@ -4095,6 +4101,332 @@ function jumpMsgSet(c: string, on: boolean): string {
   const line = jumpMsgBuild(stripped);
   if (line === undefined) return c; // anchors gone: leave the file as it is
   return `${stripped}\n${line}`;
+}
+
+// Prompt history button (ON): a fourth 26px square in the composer's button
+// row that opens a list of the conversation's user messages, one entry per
+// sticky header, numbered from 1 in transcript order, so any turn is one click
+// away instead of a run of jump clicks. When ON we append a marked,
+// self-contained IIFE at the end of webview/index.js, the jumpMsg pattern.
+//
+// The button sits left of every other button in the row, on the same 30px
+// pitch: right:95px with both the jump pair and the scroll-to-bottom button
+// on, 65px with the pair alone, 35px with the scroll button alone, 5px with
+// neither. The slot is baked at patch time from the jumpMsg and scrollDot
+// markers in the bundle, which is sound because toggles apply in TOGGLE_POINTS
+// order (both precede this point), and a later flip of either re-applies this
+// line through the staleness check, exactly as jumpMsg follows scrollDot. The
+// square copies the nav buttons' look and adds a pressed state (the doubled
+// ghost hover) while the list is open, with the shared hover tip ("Prompt
+// History") suppressed for as long as that lasts, since the list sits over the
+// strip the tip would take. Mounting, the data-show/data-off fades, the hide
+// rule for the composer's own dropdowns and overlay banners (btnHideCss), and
+// the hosts() collector (so the button rides the permission/question popup's
+// wrapper while one replaces the composer) all mirror the jump pair. The
+// collector is called with dim=false, so this point never touches the popup
+// dim the other two buttons own. The button dims inert while the transcript
+// has no user message.
+//
+// The list (.ccup-hist-pane) is one element per document, mounted into the
+// host whose button opened it:
+//   place   position:absolute;right:0 on the host, which is the composer
+//           wrapper, unbordered and unpadded, so its right edge is the input
+//           box's right edge. Its bottom sits 6px above the button row
+//           (bottom:calc(100% + 40px), the row being top:-34px and 26px tall).
+//   width   shrink-to-fit between min-width:min(260px,100%) and
+//           max-width:100%, the host's own width: a list of short messages
+//           stays a compact right-aligned popover, long ones widen it up to
+//           the input box, and an input box squeezed below 260px caps the
+//           floor too. The native composer menus anchored to one side size
+//           the same way.
+//   height  JS-set max-height so the list, the 6px gap, the button row and
+//           the composer stack together stay within two thirds of the
+//           viewport (2/3 innerHeight - 40px - host height), floored at 120px
+//           for a composer grown tall, and never past 8px below the viewport
+//           top. Re-fit on every pass, so a growing composer or a resize
+//           shrinks it. overflow-y:auto with overscroll-behavior:contain, so
+//           a wheel over the list never scrolls the transcript.
+//   entry   the number, right-aligned in a column as wide as the largest
+//           number's digits, then the message text clamped to two lines
+//           (-webkit-line-clamp). Each run of line breaks becomes one muted
+//           monospace "\n" per break, so the text flows on instead of
+//           breaking lines, and other whitespace collapses. Past 1000
+//           characters the source is cut, far more than two lines can show.
+//
+// The text is the message as rendered, read off the header's DOM rather than
+// any React state: each .userMessage_<chat> block of the header contributes
+// either its expandable's content element (.content_<box>, the plain-text
+// span the prompt renders into, @file mentions spelled as typed, the "Show
+// more" button outside it) or, for a slash-command echo, the block itself.
+// Attachment chips render outside both and are skipped. A header with neither
+// falls back to its visually hidden turn heading (whitespace-collapsed and
+// truncated by the app, so line breaks are lost there), with the "You: "
+// prefix dropped. The class hashes come from the bundle's class maps: the
+// expandable's whole map (one hash from expandableContainer through
+// collapseButton, see EXPANDABLE_MAP_RE) and the userMessage key on the
+// stickyHeader's hash are required, the slash-command and heading keys are
+// optional (each fallback drops out alone).
+//
+// A click on an entry is a jump-button jump to that message: the header's
+// natural (unstuck) position, read with its sticky shift neutralized for one
+// synchronous pass and summed up the offsetParent chain (see jumpMsg for both),
+// reached with the same 100ms ease-out glide, clamped to the scroll range and
+// instant under prefers-reduced-motion. The list stays open, so successive
+// clicks hop between messages while each lands pinned at the top of the chat,
+// in the third of the viewport the height rule keeps clear. The current entry
+// carries data-cur and aria-current, re-marked on every pass, and opening the
+// list centers it. The first rule that applies picks it: (1) a clicked entry,
+// while its glide runs and for as long as the view stays where the glide put
+// it, since the last few turns can share the final screen, where a natural
+// position clamps to the bottom and rule (3) would name a neighbor, (2) the
+// last entry, with the view within 8px of the bottom (the scroll button's
+// threshold), where a short last turn sits under the previous turn's stuck
+// header, (3) the turn whose header is stuck at the top (the last header at or
+// above the scroll top, the census jumpMsg runs), or entry 1 above the first
+// header.
+//
+// Focus follows the menu-button pattern without disturbing the composer: the
+// button and the list swallow mousedown (preventDefault + stopPropagation, as
+// the jump buttons do), so a click never moves focus or the composer's caret,
+// and opening focuses the list itself (no ring). Up/Down/Home/End then move a
+// focused entry, Enter or Space jumps to it, Escape or Tab closes and hands
+// focus back to whatever held it before (the composer, with its caret where it
+// was, or the popup card), and the handled keys stop at the list, ahead of
+// the app's root listeners and VS Code's key forwarder. A pointerdown outside
+// the list and the button row closes it and goes on to whatever it pressed,
+// with no focus hand-back. Clicks on the jump and scroll buttons keep it open,
+// so stepping a turn at a time stays available while it is up. The list
+// closes on its own when the transcript empties or its host leaves the page or
+// stops rendering (a popup hiding the composer), and while open it rebuilds
+// whenever the header set changes.
+//
+// The rAF-coalesced updater (capture-phase scroll, resize, body
+// MutationObserver) mounts the buttons and, while the list is open, refits,
+// re-marks, and rebuilds. Every write happens only on change, and the
+// observer drops records from inside the list and from the sticky-header
+// measurements (this line's and jumpMsg's), so it settles. The required
+// anchors are messageInput, messagesContainer, stickyHeader with its
+// userMessage key, and the expandable's map. If any is gone the point reports
+// missing and the bundle stays native. try/catch wraps the whole body, and the
+// /*ccup:promptHist*/ marker makes the ON state detectable. A marked line that
+// no longer matches the current build reads as OFF, so the next apply rebuilds
+// it in place or strips it.
+const PROMPT_HIST_MARKER = "/*ccup:promptHist*/";
+const PROMPT_HIST_LINE_RE = /\n?\/\*ccup:promptHist\*\/[^\n]*/g;
+// Width floor of the list, and the pane's gap above the button row.
+const PROMPT_HIST_MIN_W = 260;
+const PROMPT_HIST_GAP = 40; // the row's 34px offset plus 6px of air
+
+// The full marked line for this bundle, or undefined when a required anchor is
+// gone. Deterministic given the bundle content, so equality against the on-disk
+// line doubles as the staleness check.
+function promptHistBuild(c: string): string | undefined {
+  const input = c.match(JUMP_MSG_INPUT_HASH_RE)?.[1];
+  const chat = c.match(JUMP_MSG_CHAT_HASH_RE)?.[1];
+  const sticky = c.match(JUMP_MSG_STICKY_HASH_RE)?.[1];
+  const box = c.match(EXPANDABLE_MAP_RE)?.[1];
+  if (!input || !chat || !sticky || !box) return undefined;
+  // The header's own module names its message blocks, and the two fallbacks
+  // are read off the same map as optional.
+  if (!c.includes(`userMessage:"userMessage_${sticky}"`)) return undefined;
+  const slash = c.includes(
+    `slashCommandMessage:"slashCommandMessage_${sticky}"`,
+  );
+  const heading = c.includes(
+    `screenReaderTurnHeading:"screenReaderTurnHeading_${sticky}"`,
+  );
+  const perm = c.match(PERM_WRAP_HASH_RE)?.[1];
+  const preq = c.match(PERM_REQ_HASH_RE)?.[1];
+  const wrap = c.match(BTN_WRAP_HASH_RE)?.[1];
+  const host = btnHostSel(input, wrap);
+  // One 30px slot per button already in the row to its right.
+  const right =
+    5 +
+    30 *
+      ((c.includes(JUMP_MSG_MARKER) ? 2 : 0) +
+        (c.includes(SCROLL_DOT_MARKER) ? 1 : 0));
+  const ghost2 =
+    "linear-gradient(var(--app-ghost-button-hover-background),var(--app-ghost-button-hover-background)),linear-gradient(var(--app-ghost-button-hover-background),var(--app-ghost-button-hover-background))";
+  const css =
+    `.ccup-hist-btn{box-sizing:border-box;position:absolute;top:-34px;right:${right}px;display:flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0;padding:0;border:1px solid var(--app-input-border);border-radius:5px;background:var(--app-input-secondary-background);color:var(--app-primary-foreground);box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .15s ease,transform .15s ease,filter .15s ease;z-index:21}` +
+    ".ccup-hist-btn[data-show]{opacity:1;transform:none;pointer-events:auto}" +
+    ".ccup-hist-btn[data-show][data-off]{opacity:.35;cursor:default}" +
+    `.ccup-hist-btn${HOVER},.ccup-hist-btn[aria-expanded=true]{background:${ghost2},var(--app-input-secondary-background);border-color:var(--app-secondary-foreground)}` +
+    `.ccup-hist-btn[data-off]${HOVER}{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}` +
+    ".ccup-hist-btn:not([data-off]):active{filter:brightness(.85)}" +
+    ".ccup-hist-btn svg{display:block;width:20px;height:20px}" +
+    `.ccup-hist-pane{box-sizing:border-box;position:absolute;right:0;bottom:calc(100% + ${PROMPT_HIST_GAP}px);z-index:22;width:max-content;min-width:min(${PROMPT_HIST_MIN_W}px,100%);max-width:100%;max-height:50vh;overflow-y:auto;overscroll-behavior:contain;margin:0;padding:4px;border:1px solid var(--app-input-border);border-radius:var(--corner-radius-large,8px);background:var(--app-menu-background);color:var(--app-primary-foreground);box-shadow:0 4px 12px var(--vscode-widget-shadow,#0000005c);font-family:var(--vscode-chat-font-family);font-size:var(--vscode-chat-font-size,13px);line-height:1.4;text-align:left;outline:none;animation:fadeIn .15s ease-out}` +
+    ".ccup-hist-item{display:flex;align-items:baseline;gap:8px;padding:4px 8px;border-radius:var(--app-list-border-radius,4px);cursor:pointer;outline:none}" +
+    `.ccup-hist-item${HOVER}{background:var(--app-list-hover-background)}` +
+    ".ccup-hist-item[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
+    ".ccup-hist-item:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
+    ".ccup-hist-num{flex:none;min-width:var(--ccup-hist-w,1ch);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-secondary-foreground)}" +
+    ".ccup-hist-item[data-cur] .ccup-hist-num{color:inherit;opacity:.75}" +
+    ".ccup-hist-txt{flex:1 1 auto;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere}" +
+    ".ccup-hist-nl{margin:0 .3em;color:var(--app-secondary-foreground);opacity:.7;font-family:var(--app-monospace-font-family,monospace);font-size:.85em}" +
+    btnHideCss(input, wrap, ".ccup-hist-btn") +
+    btnHostCss(wrap, perm, preq) +
+    HOVER_TIP_CSS;
+  // Three bars in currentColor, stroked like the chevrons. Single-quoted
+  // attributes embed in the double-quoted JS string below unescaped.
+  const bars =
+    "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><path d='M5 7h14'/><path d='M5 12h14'/><path d='M5 17h14'/></svg>";
+  // A message block's text: the expandable's content, or a slash-command echo.
+  const blockText = slash
+    ? `c?c.textContent:a[i].classList.contains("slashCommandMessage_${sticky}")?a[i].textContent:""`
+    : `c?c.textContent:""`;
+  const js =
+    `(function(){try{` +
+    `if(window.__ccupPromptHist)return;window.__ccupPromptHist=1;` +
+    `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
+    `var BARS="${bars}",T="Prompt History",NL=String.fromCharCode(92)+"n",raf=0,gen=0,gl=0,` +
+    `P=null,on=0,pBox=null,pBtn=null,pFoc=null,pHs=[],pCur=-1,pin=-1,pinTop=0;` +
+    HOVER_TIP_JS +
+    `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
+    btnHostsJs(host, perm, preq, false) +
+    `function hh(t){return t?[].slice.call(t.querySelectorAll(".stickyHeader_${sticky}")):[]}` +
+    `function same(a,b){if(a.length!==b.length)return!1;for(var i=0;i<a.length;i++)if(a[i]!==b[i])return!1;return!0}` +
+    // Offset within container t, summed up the offsetParent chain (see jumpMsg).
+    `function ot(e,t){var y=0,n=e;while(n&&n!==t){y+=n.offsetTop;n=n.offsetParent}return y}` +
+    // The jump buttons' glide: fixed 100ms ease-out to a clamped scrollTop,
+    // which it returns, and gl names the glide in flight.
+    `function go(to){var t=sc();if(!t)return;var top=Math.max(0,Math.min(to,t.scrollHeight-t.clientHeight));` +
+    `if(matchMedia("(prefers-reduced-motion:reduce)").matches){t.scrollTop=top;return top}` +
+    `var g=++gen,f=t.scrollTop,t0;gl=g;function stp(now){if(g!==gen)return;if(t0===void 0)t0=now;` +
+    `var k=Math.min(1,(now-t0)/100),e=1-(1-k)*(1-k);t.scrollTop=f+(top-f)*e;if(k<1)requestAnimationFrame(stp);else if(gl===g)gl=0}` +
+    `requestAnimationFrame(stp);return top}` +
+    // A header's message text, its blocks joined by line breaks.
+    `function txt(h){var a=h.querySelectorAll(".userMessage_${sticky}"),p=[],i,c,s;` +
+    `for(i=0;i<a.length;i++){c=a[i].querySelector(".content_${box}");s=${blockText};` +
+    `s=s.replace(/\\r/g,"").trim();if(s)p.push(s)}` +
+    (heading
+      ? `if(!p.length){c=h.querySelector(".screenReaderTurnHeading_${sticky}");` +
+        `if(c)p.push(c.textContent.replace(/^You: /,""))}`
+      : "") +
+    `return p.join("\\n")}` +
+    // Text runs as text nodes, and each run of breaks as one muted \n per break.
+    `function fill(el,s){if(s.length>1000)s=s.slice(0,1000);var a=s.split(/(\\n+)/),i,m;` +
+    `for(i=0;i<a.length;i++){if(!a[i])continue;` +
+    `if(i%2){m=document.createElement("span");m.className="ccup-hist-nl";m.textContent=Array(a[i].length+1).join(NL);el.appendChild(m)}` +
+    `else el.appendChild(document.createTextNode(a[i]))}}` +
+    // Keep a focused entry's index across a rebuild.
+    `function build(hs){var ae=document.activeElement,fi=ae&&ae.parentNode===P?+ae.getAttribute("data-i"):-1,` +
+    `f=document.createDocumentFragment(),i,it,nu,tx;pHs=hs;pCur=-1;pin=-1;` +
+    `for(i=0;i<hs.length;i++){it=document.createElement("div");it.className="ccup-hist-item";` +
+    `it.setAttribute("role","option");it.setAttribute("data-i",i);it.tabIndex=-1;` +
+    `nu=document.createElement("span");nu.className="ccup-hist-num";nu.textContent=i+1;` +
+    `tx=document.createElement("span");tx.className="ccup-hist-txt";fill(tx,txt(hs[i]));` +
+    `it.appendChild(nu);it.appendChild(tx);f.appendChild(it)}` +
+    `P.textContent="";P.appendChild(f);P.style.setProperty("--ccup-hist-w",String(hs.length).length+"ch");` +
+    `if(fi>=0&&hs.length)foc(Math.min(fi,hs.length-1))}` +
+    // The current entry: a clicked one while the view stays where its glide
+    // put it, the last at the bottom, else the last header at or above the
+    // scroll top (the jump census, headers sitting in document order), else
+    // the first.
+    `function cur(t,hs){var c=t.scrollTop,n=hs.length,k=-1,i;` +
+    `if(pin>=0&&pin<n){if(gl||Math.abs(c-pinTop)<=1)return pin;pin=-1}` +
+    `if(n&&t.scrollHeight-c-t.clientHeight<=8)return n-1;` +
+    `for(i=0;i<n;i++){if(ot(hs[i],t)>c+4)break;k=i}return k<0&&n?0:k}` +
+    `function mark(k){if(k===pCur)return;var it=P.children,o=it[pCur],n=it[k];` +
+    `if(o){o.removeAttribute("data-cur");o.removeAttribute("aria-current")}` +
+    `if(n){n.setAttribute("data-cur","");n.setAttribute("aria-current","true")}pCur=k}` +
+    // Two thirds of the viewport for list, gap, row and composer together.
+    `function fit(){var r=pBox.getBoundingClientRect(),H=window.innerHeight||0,` +
+    `m=Math.max(0,Math.min(r.top-${PROMPT_HIST_GAP + 8},Math.max(120,Math.floor(H*2/3-${PROMPT_HIST_GAP}-r.height))))+"px";` +
+    `if(P.style.maxHeight!==m)P.style.maxHeight=m}` +
+    `function foc(i){var it=P.children[i];if(!it)return;it.focus({preventScroll:!0});` +
+    `var y=it.offsetTop,b=y+it.offsetHeight;if(y<P.scrollTop)P.scrollTop=y-4;else if(b>P.scrollTop+P.clientHeight)P.scrollTop=b-P.clientHeight+4}` +
+    // A header's natural position, its sticky shift neutralized for one read.
+    `function jumpTo(i){var t=sc(),h=pHs[i];if(!t||!h||!h.isConnected)return;` +
+    `h.style.position="static";var y=ot(h,t);h.style.position="";y=go(y);` +
+    `if(y!==void 0){pin=i;pinTop=y;mark(i)}}` +
+    `function keys(e){if(e.isComposing||e.metaKey||e.ctrlKey||e.altKey)return;` +
+    `var k=e.key,n=P.children.length,ae=document.activeElement,i=ae&&ae.parentNode===P?+ae.getAttribute("data-i"):-1;` +
+    `if(k==="Escape"||k==="Tab")close(1);` +
+    `else if(k==="ArrowDown"||k==="ArrowUp")foc(i<0?Math.max(0,pCur):Math.max(0,Math.min(n-1,i+(k==="ArrowDown"?1:-1))));` +
+    `else if(k==="Home"||k==="End")foc(k==="Home"?0:n-1);` +
+    `else if(k==="Enter"||k===" "){if(i>=0)jumpTo(i)}` +
+    `else return;e.preventDefault();e.stopPropagation()}` +
+    `function stop(e){e.stopPropagation()}` +
+    `function open(b){var t=sc(),hs=hh(t),box=b.parentNode;if(!t||!hs.length||!box)return;` +
+    `if(!P){P=document.createElement("div");P.className="ccup-hist-pane";P.setAttribute("role","listbox");` +
+    `P.setAttribute("aria-label",T);P.tabIndex=-1;` +
+    `P.addEventListener("mousedown",function(e){e.preventDefault();e.stopPropagation()});` +
+    `["pointerdown","pointerup","mouseup","dblclick"].forEach(function(n){P.addEventListener(n,stop)});` +
+    `P.addEventListener("click",function(e){e.stopPropagation();var it=e.target&&e.target.closest?e.target.closest(".ccup-hist-item"):null;` +
+    `if(it&&it.parentNode===P)jumpTo(+it.getAttribute("data-i"))});` +
+    `P.addEventListener("keydown",keys)}` +
+    `pFoc=document.activeElement;pBox=box;pBtn=b;on=1;hideTip();box.appendChild(P);build(hs);fit();mark(cur(t,hs));` +
+    `var it=P.children[pCur];P.scrollTop=it?it.offsetTop-(P.clientHeight-it.offsetHeight)/2:P.scrollHeight;` +
+    `b.setAttribute("aria-expanded","true");P.focus({preventScroll:!0})}` +
+    // back: hand focus back to what held it at opening, if the list still has it.
+    `function close(back){if(!on)return;on=0;var f=P.contains(document.activeElement);P.remove();` +
+    `if(pBtn)pBtn.setAttribute("aria-expanded","false");` +
+    `if(back&&f&&pFoc&&pFoc.isConnected&&pFoc.focus)try{pFoc.focus({preventScroll:!0})}catch(e){}` +
+    `pBox=pBtn=pFoc=null;pHs=[];pCur=-1;pin=-1}` +
+    `function mk(){var b=document.createElement("button");b.type="button";b.className="ccup-hist-btn";` +
+    `b.setAttribute("aria-label",T);b.setAttribute("aria-haspopup","listbox");b.setAttribute("aria-expanded","false");b.innerHTML=BARS;` +
+    `b.addEventListener("mouseenter",function(){if(tipT)clearTimeout(tipT);` +
+    `tipT=setTimeout(function(){tipT=0;if(!(on&&pBtn===b))try{showTip(b,T)}catch(e){}},250)});` +
+    `b.addEventListener("mouseleave",hideTip);` +
+    `b.addEventListener("mousedown",function(e){e.preventDefault();e.stopPropagation();hideTip()});` +
+    `b.addEventListener("click",function(e){e.stopPropagation();hideTip();if(on&&pBtn===b){close(1);return}` +
+    `if(on)close(0);if(!b.hasAttribute("data-off"))open(b)});return b}` +
+    // Toggle data-show/data-off only on an actual change (outside the observer filter).
+    `function ss(el,show,off){var s=el.hasAttribute("data-show");if(show&&!s)el.setAttribute("data-show","");else if(!show&&s)el.removeAttribute("data-show");var o=el.hasAttribute("data-off");if(off&&!o)el.setAttribute("data-off","");else if(!off&&o)el.removeAttribute("data-off")}` +
+    `function upd(){raf=0;var t=sc(),hs=hh(t),n=hs.length,boxes=hosts(),i,b;` +
+    `for(i=0;i<boxes.length;i++){b=boxes[i].querySelector(".ccup-hist-btn");if(!b){b=mk();boxes[i].appendChild(b)}ss(b,!0,!n)}` +
+    `if(!on)return;` +
+    `if(!n||!P.isConnected||!pBox.isConnected||!pBox.getClientRects().length||!pBtn.isConnected){close(0);return}` +
+    `if(!same(hs,pHs))build(hs);fit();mark(cur(t,hs))}` +
+    `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
+    `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
+    // Outside the list and the button row: close, and let the press go on.
+    `document.addEventListener("pointerdown",function(e){if(!on)return;var el=e.target;` +
+    `if(el&&el.nodeType===1&&(P.contains(el)||el.closest(".ccup-hist-btn,.ccup-nav-btn,.ccup-scroll-btn")))return;close(0)},!0);` +
+    // Drop records from inside the list and from sticky measurements.
+    `new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var r=rs[i],tg=r.target;` +
+    `if(P&&(tg===P||P.contains(tg)))continue;` +
+    `if(r.type==="attributes"&&r.attributeName==="style"&&tg.classList&&tg.classList.contains("stickyHeader_${sticky}"))continue;` +
+    `que();return}})` +
+    `.observe(document.body,{childList:!0,subtree:!0,characterData:!0,attributes:!0,attributeFilter:["class","style"]});` +
+    `que()` +
+    `}catch(e){}})();`;
+  return `${PROMPT_HIST_MARKER}${js}`;
+}
+
+function promptHistPresent(c: string): boolean {
+  return c.includes(PROMPT_HIST_MARKER) || promptHistBuild(c) !== undefined;
+}
+// true = ON (marked line present and matching this build, or present but
+// unrebuildable so an orphaned line stays removable), false = OFF or stale,
+// undefined = anchors gone and nothing to remove.
+function promptHistCurrentOn(c: string): boolean | undefined {
+  const cur = cssMarkedLine(c, PROMPT_HIST_MARKER);
+  const want = promptHistBuild(c);
+  if (cur !== undefined) return want === undefined || cur === want;
+  return want === undefined ? undefined : false;
+}
+function promptHistSet(c: string, on: boolean): string {
+  if (on && promptHistCurrentOn(c) === true) return c; // stable: no EOF reshuffle
+  const stripped = c.replace(PROMPT_HIST_LINE_RE, "");
+  if (!on) return stripped;
+  const line = promptHistBuild(stripped);
+  if (line === undefined) return c; // anchors gone: leave the file as it is
+  return `${stripped}\n${line}`;
+}
+
+// The webview bundle with the prompt history line in and the scroll-to-bottom
+// and jump lines set as asked (the history button's slot follows them), or
+// null when an anchor is gone. scripts/repro's prompt-history.mjs serves this,
+// so it runs exactly what an apply writes and doubles as the drift canary.
+export function promptHistWebview(
+  js: string,
+  dot: boolean,
+  jump: boolean,
+): string | null {
+  const out = promptHistSet(jumpMsgSet(scrollDotSet(js, dot), jump), true);
+  return promptHistCurrentOn(out) === true ? out : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -6429,6 +6761,18 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnPresent: jumpMsgPresent,
     fnCurrentOn: jumpMsgCurrentOn,
     fnSet: jumpMsgSet,
+  },
+  {
+    // After scrollDot and jumpMsg: its button's slot reads both markers.
+    id: "promptHist",
+    section: "Behavior",
+    label: "Chat panel or tab: list sent msgs to jump to one",
+    key: "chatPromptHistoryButton",
+    defaultOn: false,
+    file: "webview/index.js",
+    fnPresent: promptHistPresent,
+    fnCurrentOn: promptHistCurrentOn,
+    fnSet: promptHistSet,
   },
   {
     id: "rawMd",

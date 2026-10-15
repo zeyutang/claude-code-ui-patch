@@ -73,6 +73,7 @@ Behavior
    ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
    ├── chatPopupInputMaxLines          # question "Other" + permission box: N lines, 0 -> native
    ├── chatJumpToMessageButtons        # prev/next above input/permission box: jump turns, if On
+   ├── chatPromptHistoryButton         # button left of prev/next: pick a message to jump to, if On
    ├── chatRawMarkdownButton           # response hover button: show its markdown source, if On
    ├── chatScrollToBottomDot           # button above input/permission box: scroll to newest, if On
    │                                   #   also auto-scrolls on a permission/question box only when

@@ -59,6 +59,7 @@ const PROBES = [
   ["chatScrollToBottomDot", "window.__ccupScrollDot"],
   ["chatScrollToBottomDot", "window.__ccupPermGlide"],
   ["chatJumpToMessageButtons", "window.__ccupJumpMsg"],
+  ["chatPromptHistoryButton", "window.__ccupPromptHist"],
   ["chatDiffCardLineNumbers", "window.__ccupAbsLn"],
   ["chatMathRendering", "window.__ccupMathW"],
   ["chatMathRendering", "window.__ccupMathR"],

@@ -166,6 +166,11 @@
           "default": false,
           "markdownDescription": "Show previous/next buttons above the chat input box's top-right corner that jump between turns (each user message pins to the top as a sticky header). A direction with nowhere to go dims, and the pair sits on the permission/question box when one replaces the input box, which dims the history unless the find bar is open. With `#claudeCodeUiPatch.chatScrollToBottomDot#` on, the pair lines up on its left."
         },
+        "claudeCodeUiPatch.chatPromptHistoryButton": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show a button above the chat input box's top-right corner that lists your messages in this conversation, numbered from 1, each in at most two lines with line breaks shown as `\\n`. Clicking one jumps to it like the jump buttons. It lines up left of `#claudeCodeUiPatch.chatJumpToMessageButtons#` and `#claudeCodeUiPatch.chatScrollToBottomDot#`."
+        },
         "claudeCodeUiPatch.chatRawMarkdownButton": {
           "type": "boolean",
           "default": false,

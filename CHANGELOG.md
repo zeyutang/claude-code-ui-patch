@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New `chatPromptHistoryButton` setting: a button above the input box, left of the jump buttons, lists your messages in the conversation, numbered from 1, each in at most two lines with line breaks shown as `\n`.
+  Clicking one jumps to it as the jump buttons do, and the list stays open so you can hop between messages until `Escape` closes it.
 - Opening the chat's history dropdown while on an Untitled session no longer switches the chat to the session you had open before it, a running one included.
   Always applied, no setting.
 

@@ -7,8 +7,9 @@
 //             button, or alone in the corner slot when the others are off
 //   list      one entry per user message, numbered from 1, the text read back
 //             with each run of line breaks as one muted \n per break (a slash
-//             command as its command line), every entry at most two lines
-//             tall, the long prompt clamped
+//             command as its command line), every entry at line-height 2 and
+//             at most two lines tall, the long prompt clamped, and a 1px
+//             divider between entries that hides beside the current one
 //   geometry  right edge on the input box's, width between min(260px, input
 //             box) and the input box (a compact list of short prompts, a full
 //             width one of long prompts, a narrow panel capping the floor),
@@ -379,14 +380,17 @@ export async function run(ctx) {
     );
     await ctx.shot("open");
 
-    // Entries: numbers, text, \n markers, two lines at most.
+    // Entries: numbers, text, \n markers, two lines at most, dividers.
     const entries = await json(
       `[...document.querySelectorAll("${PANE} .ccup-hist-item")].map(function(it){` +
-        `var t=it.querySelector(".ccup-hist-txt"),cs=getComputedStyle(t),lh=parseFloat(cs.lineHeight);` +
+        `var t=it.querySelector(".ccup-hist-txt"),cs=getComputedStyle(t),lh=parseFloat(cs.lineHeight),` +
+        `d=getComputedStyle(it,"::before");` +
         `return{n:it.querySelector(".ccup-hist-num").textContent,txt:t.textContent,` +
         `nl:[...t.querySelectorAll(".ccup-hist-nl")].map(function(e){return e.textContent}),` +
         `nlColor:t.querySelector(".ccup-hist-nl")?getComputedStyle(t.querySelector(".ccup-hist-nl")).color:"",` +
-        `color:cs.color,h:t.getBoundingClientRect().height,lh:lh,clamped:t.scrollHeight>t.clientHeight+1}})`,
+        `color:cs.color,h:t.getBoundingClientRect().height,lh:lh,fs:parseFloat(cs.fontSize),` +
+        `clamped:t.scrollHeight>t.clientHeight+1,cur:it.hasAttribute("data-cur"),` +
+        `div:{content:d.content,h:d.height,bg:d.backgroundColor,vis:d.visibility}}})`,
     );
     check(
       "list: one entry per user message",
@@ -419,6 +423,35 @@ export async function run(ctx) {
         `line ${entries[0].lh}px`,
     );
     check("list: the long prompt is clamped", entries[2].clamped);
+    check(
+      "list: entries at line-height 2",
+      entries.every((e) => Math.abs(e.lh / e.fs - 2) < 0.01),
+      `${entries[0].lh}px on ${entries[0].fs}px`,
+    );
+    check(
+      "list: a 1px divider between entries, none above the first",
+      entries[0].div.content === "none" &&
+        entries
+          .slice(1)
+          .every(
+            (e) =>
+              e.div.content === '""' &&
+              e.div.h === "1px" &&
+              e.div.bg !== "rgba(0, 0, 0, 0)",
+          ),
+      `${entries[1].div.h} ${entries[1].div.bg}`,
+    );
+    const k = entries.findIndex((e) => e.cur);
+    check(
+      "list: the divider hides beside the current entry only",
+      k > 1 &&
+        entries[k].div.vis === "hidden" &&
+        (k + 1 >= entries.length || entries[k + 1].div.vis === "hidden") &&
+        entries
+          .filter((_, i) => i > 0 && i !== k && i !== k + 1)
+          .every((e) => e.div.vis === "visible"),
+      `current ${k + 1}`,
+    );
 
     // Geometry against the input box and the viewport.
     const g = await json(

@@ -4148,10 +4148,16 @@ function jumpMsgSet(c: string, on: boolean): string {
 //           a wheel over the list never scrolls the transcript.
 //   entry   the number, right-aligned in a column as wide as the largest
 //           number's digits, then the message text clamped to two lines
-//           (-webkit-line-clamp). Each run of line breaks becomes one muted
-//           monospace "\n" per break, so the text flows on instead of
-//           breaking lines, and other whitespace collapses. Past 1000
-//           characters the source is cut, far more than two lines can show.
+//           (-webkit-line-clamp), at line-height 2 for readability. Each run
+//           of line breaks becomes one muted monospace "\n" per break, so the
+//           text flows on instead of breaking lines, and other whitespace
+//           collapses. Past 1000 characters the source is cut, far more than
+//           two lines can show.
+//   divider a 1px line between entries in the native menu divider's color
+//           (--app-input-border), inset to the text edges. It is a ::before
+//           on every entry but the first, so it takes no layout height, and
+//           it hides on both sides of the current, hovered, or focused entry,
+//           where it would cut across that entry's rounded highlight.
 //
 // The text is the message as rendered, read off the header's DOM rather than
 // any React state: each .userMessage_<chat> block of the header contributes
@@ -4255,8 +4261,12 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-btn[data-off]${HOVER}{background:var(--app-input-secondary-background);border-color:var(--app-input-border)}` +
     ".ccup-hist-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-hist-btn svg{display:block;width:20px;height:20px}" +
-    `.ccup-hist-pane{box-sizing:border-box;position:absolute;right:0;bottom:calc(100% + ${PROMPT_HIST_GAP}px);z-index:22;width:max-content;min-width:min(${PROMPT_HIST_MIN_W}px,100%);max-width:100%;max-height:50vh;overflow-y:auto;overscroll-behavior:contain;margin:0;padding:4px;border:1px solid var(--app-input-border);border-radius:var(--corner-radius-large,8px);background:var(--app-menu-background);color:var(--app-primary-foreground);box-shadow:0 4px 12px var(--vscode-widget-shadow,#0000005c);font-family:var(--vscode-chat-font-family);font-size:var(--vscode-chat-font-size,13px);line-height:1.4;text-align:left;outline:none;animation:fadeIn .15s ease-out}` +
-    ".ccup-hist-item{display:flex;align-items:baseline;gap:8px;padding:4px 8px;border-radius:var(--app-list-border-radius,4px);cursor:pointer;outline:none}" +
+    `.ccup-hist-pane{box-sizing:border-box;position:absolute;right:0;bottom:calc(100% + ${PROMPT_HIST_GAP}px);z-index:22;width:max-content;min-width:min(${PROMPT_HIST_MIN_W}px,100%);max-width:100%;max-height:50vh;overflow-y:auto;overscroll-behavior:contain;margin:0;padding:4px;border:1px solid var(--app-input-border);border-radius:var(--corner-radius-large,8px);background:var(--app-menu-background);color:var(--app-primary-foreground);box-shadow:0 4px 12px var(--vscode-widget-shadow,#0000005c);font-family:var(--vscode-chat-font-family);font-size:var(--vscode-chat-font-size,13px);text-align:left;outline:none;animation:fadeIn .15s ease-out}` +
+    ".ccup-hist-item{position:relative;display:flex;align-items:baseline;gap:8px;padding:2px 8px;border-radius:var(--app-list-border-radius,4px);line-height:2;cursor:pointer;outline:none}" +
+    `.ccup-hist-item+.ccup-hist-item::before{content:"";position:absolute;top:0;left:8px;right:8px;height:1px;background:var(--app-input-border);pointer-events:none}` +
+    `.ccup-hist-item[data-cur]::before,.ccup-hist-item[data-cur]+.ccup-hist-item::before,` +
+    `.ccup-hist-item:focus-visible::before,.ccup-hist-item:focus-visible+.ccup-hist-item::before,` +
+    `.ccup-hist-item${HOVER}::before,.ccup-hist-item${HOVER}+.ccup-hist-item::before{visibility:hidden}` +
     `.ccup-hist-item${HOVER}{background:var(--app-list-hover-background)}` +
     ".ccup-hist-item[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
     ".ccup-hist-item:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +

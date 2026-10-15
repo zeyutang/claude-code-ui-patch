@@ -92,7 +92,8 @@ Always applied                         # no setting; installing this patch is th
    ├── question answer box reveal      # typing keeps the "Other" box's border and padding in view
    ├── expanded prompt header          # "Show more" keeps the prompt on top in its own scroller
    ├── hidden cursor                   # macOS: a cursor hidden by typing hovers nothing until moved
-   └── session delete button           # session list rows: move a conversation to the Trash
+   ├── session delete button           # session list rows: move a conversation to the Trash
+   └── untitled session stays          # opening the history keeps you on an Untitled session
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)

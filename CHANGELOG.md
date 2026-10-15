@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Opening the chat's history dropdown while on an Untitled session no longer switches the chat to the session you had open before it, a running one included.
+  Always applied, no setting.
+
 ## 1.6.0
 
 - `chatCodeBlockFontSize`, `chatDiffCardFontSize`, and the five plan preview sizes now default to `0`, which keeps Claude Code's native size, as the other size settings already did.

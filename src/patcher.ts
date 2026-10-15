@@ -19,6 +19,7 @@ import {
   keyName,
   memberProp,
   methodAt,
+  parseUnitAt,
   propOf,
   unitAround,
   unitsReparse,
@@ -2316,6 +2317,270 @@ export function sessionDeleteWebview(web: string, host: string): string | null {
   return sessionDeleteRowPatch(sdelStrip(web), (rel) =>
     rel === SDEL_HOST_FILE ? host : undefined,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Untitled session stays (always on): a chat view mirrors the session it shows
+// into its own URL as `?session=<id>` (history.replaceState), and when it moves
+// to a session that has no id yet it leaves the last id there. Every re-read
+// of the session list ends in a restore meant for a reload, which makes the
+// session that URL names active again unless the active session is a blank the
+// user made (the New session button) or one holding a prompt or reply. The
+// blank a view opens with is neither (createSession gets isExplicit false), so
+// picking it again from the history dropdown and then opening the dropdown
+// once more, which re-reads the list, jumps to whichever session was on screen
+// before it, a running one included.
+//
+// The restore is meant for an id-less session only while it is a placeholder
+// waiting for the URL's session: createSession marks a non-explicit session
+// isLoading when the URL already names one, and otherwise only a session with
+// an id loading its transcript is ever isLoading. So the guard gains one more
+// alternative, `||!<active>.isLoading.value`: a blank that is not waiting
+// stays, a placeholder still resolves to the URL's session, and the URL, the
+// list's id adoption and the restore itself stay native.
+//
+// One fragment, /*ccup:untitledStays*/.../*ccup:untitledStaysEnd*/, at the end
+// of the guard's alternatives in the session manager's doListSessions, found
+// by structure (src/derive.ts). The guard is the declarator
+// `<M>=<D>!==void 0&&!<D>.sessionId.value&&(this.createdByUser.has(<D>)||
+// <D>.hasPromptOrReply.peek())`, with D the method's own
+// `this.activeSession.value`. M must be read only by the restore's test and
+// its else branch, the restore must make a session active, its other condition
+// must call the URL reader (a function returning
+// `new URLSearchParams(...).get("session")`), and the method must read
+// `.isLoading.value` off a session. Builds through 2.1.284 guard the restore
+// with createdByUser alone (2.1.280) or not at all (2.1.270), so the point
+// reads missing there.
+// ---------------------------------------------------------------------------
+const STAY_MARKER = "/*ccup:untitledStays*/";
+const STAY_END = "/*ccup:untitledStaysEnd*/";
+const STAY_FRAG_RE =
+  /\/\*ccup:untitledStays\*\/[\s\S]*?\/\*ccup:untitledStaysEnd\*\//g;
+const STAY_FILE = "webview/index.js";
+// How far ahead of doListSessions its class may start (the session manager
+// spans about 28KB).
+const STAY_CLASS_REACH = 200000;
+
+// The operands of a chain of one logical operator, left to right (the node
+// alone when it is no such chain).
+function chainOf(n: N, op: string): N[] {
+  return n.type === "LogicalExpression" && n.operator === op
+    ? [...chainOf(n.left, op), ...chainOf(n.right, op)]
+    : [n];
+}
+
+// `obj.prop.value` or `obj.prop.peek()`: a read of a signal field.
+function readsSignal(n: N, obj: string, prop: string): boolean {
+  if (memberProp(n) === "value") return isMember(n.object, obj, prop);
+  return (
+    n.type === "CallExpression" &&
+    n.arguments.length === 0 &&
+    memberProp(n.callee) === "peek" &&
+    isMember(n.callee.object, obj, prop)
+  );
+}
+
+// Whether the function declared as `name`, once in the bundle, reads the URL's
+// session parameter: `new URLSearchParams(...).get("session")`.
+function stayIsUrlReader(c: string, name: string): boolean {
+  const decl = `function ${name}(`;
+  const at = c.indexOf(decl);
+  if (at < 0 || c.indexOf(decl, at + 1) >= 0) return false;
+  const fn = parseUnitAt(c, at, isFn);
+  if (!fn) return false;
+  let hit = false;
+  walkOwn(fn, (n) => {
+    if (hit) return false;
+    if (
+      n.type === "CallExpression" &&
+      memberProp(n.callee) === "get" &&
+      n.arguments.length === 1 &&
+      isStr(n.arguments[0], "session") &&
+      n.callee.object.type === "NewExpression" &&
+      idName(n.callee.object.callee) === "URLSearchParams"
+    )
+      hit = true;
+  });
+  return hit;
+}
+
+// The session manager and the insertion that lets a blank stay, or null.
+function untitledStaysFind(c: string): { unit: N; edit: Edit } | null {
+  const mgrs = unitsWith(
+    c,
+    "doListSessions(",
+    "class ",
+    isClass,
+    STAY_CLASS_REACH,
+  ).filter(
+    (k) => sdelMethod(k, "doListSessions") && sdelField(k, "createdByUser"),
+  );
+  if (mgrs.length !== 1) return null;
+  const mgr = mgrs[0];
+  const fn: N = sdelMethod(mgr, "doListSessions")!.value;
+  const decls = (name: string): N[] => {
+    const found: N[] = [];
+    walkOwn(fn, (n) => {
+      if (n.type === "VariableDeclarator" && idName(n.id) === name)
+        found.push(n);
+    });
+    return found;
+  };
+
+  // The guard: a declarator whose `&&` chain dereferences the active session
+  // (`!<D>.sessionId.value`) ahead of the blanks it keeps,
+  // `(this.createdByUser.has(<D>)||<D>.hasPromptOrReply.peek())`.
+  const guards: { decl: N; d: string; group: N }[] = [];
+  walkOwn(fn, (n) => {
+    if (n.type !== "VariableDeclarator" || !n.init || !idName(n.id)) return;
+    const ands = chainOf(n.init, "&&");
+    for (let i = 0; i < ands.length; i++) {
+      const o = ands[i];
+      if (
+        o.type !== "UnaryExpression" ||
+        o.operator !== "!" ||
+        memberProp(o.argument) !== "value" ||
+        memberProp(o.argument.object) !== "sessionId"
+      )
+        continue;
+      const d = idName(o.argument.object.object);
+      if (!d) continue;
+      for (const group of ands.slice(i + 1)) {
+        if (group.type !== "LogicalExpression" || group.operator !== "||")
+          continue;
+        const alts = chainOf(group, "||");
+        const userMade = alts.some(
+          (x) =>
+            x.type === "CallExpression" &&
+            x.arguments.length === 1 &&
+            idName(x.arguments[0]) === d &&
+            memberProp(x.callee) === "has" &&
+            sdelIsThisMember(x.callee.object, "createdByUser"),
+        );
+        if (userMade && alts.some((x) => readsSignal(x, d, "hasPromptOrReply")))
+          guards.push({ decl: n, d, group });
+      }
+    }
+  });
+  if (guards.length !== 1) return null;
+  const { decl, d, group } = guards[0];
+  const m = idName(decl.id)!;
+
+  // D is the method's own `this.activeSession.value`, as the guard sees it.
+  const ds = decls(d).filter(
+    (n) =>
+      memberProp(n.init) === "value" &&
+      sdelIsThisMember(n.init.object, "activeSession"),
+  );
+  if (ds.length !== 1) return null;
+  const dScope = bindingSite(ds[0], d, fn);
+  if (!dScope || bindingSite(group, d, fn) !== dScope) return null;
+
+  // The restore: an if whose `&&` test reads `!<M>` and whose body makes a
+  // session active.
+  const restores: N[] = [];
+  walkOwn(fn, (n) => {
+    if (
+      n.type === "IfStatement" &&
+      chainOf(n.test, "&&").some(
+        (o) =>
+          o.type === "UnaryExpression" &&
+          o.operator === "!" &&
+          idName(o.argument) === m,
+      )
+    )
+      restores.push(n);
+  });
+  if (restores.length !== 1) return null;
+  const restore = restores[0];
+  let activates = false;
+  walkOwn(restore.consequent, (n) => {
+    if (activates) return false;
+    if (
+      n.type === "AssignmentExpression" &&
+      memberProp(n.left) === "value" &&
+      sdelIsThisMember(n.left.object, "activeSession")
+    )
+      activates = true;
+  });
+  if (!activates) return null;
+
+  // Nothing else reads M: the restore's test and the test of its else branch
+  // are the only places the wider guard reaches.
+  const mScope = bindingSite(decl, m, fn);
+  if (!mScope) return null;
+  const alt =
+    restore.alternate?.type === "IfStatement" ? restore.alternate : null;
+  const within = (n: N, root: N | null | undefined): boolean =>
+    !!root && root.start <= n.start && n.end <= root.end;
+  let strayRead = false;
+  walk(fn, (n) => {
+    if (strayRead) return false;
+    if (n.type !== "Identifier" || n.name !== m || n === decl.id) return;
+    const p = n.parent;
+    if (p?.type === "MemberExpression" && p.property === n && !p.computed)
+      return;
+    if (p?.type === "Property" && p.key === n && !p.computed) return;
+    if (bindingSite(n, m, fn) !== mScope) return;
+    if (!within(n, restore.test) && !within(n, alt?.test)) strayRead = true;
+  });
+  if (strayRead) return null;
+
+  // The restore's other condition holds the URL's session: `<H>` with
+  // `<H>=<reader>()`, the reader bound outside the method.
+  const readsUrl = chainOf(restore.test, "&&").some((o) => {
+    const h = idName(o);
+    if (!h) return false;
+    const hs = decls(h);
+    if (hs.length !== 1 || bindingSite(o, h, fn) !== bindingSite(hs[0], h, fn))
+      return false;
+    const init = hs[0].init;
+    const reader = init?.type === "CallExpression" ? idName(init.callee) : null;
+    return (
+      !!reader &&
+      init.arguments.length === 0 &&
+      bindingSite(init.callee, reader, fn) === null &&
+      stayIsUrlReader(c, reader)
+    );
+  });
+  if (!readsUrl) return null;
+
+  // Sessions carry the signal the new alternative reads.
+  let readsLoading = false;
+  walkOwn(fn, (n) => {
+    if (readsLoading) return false;
+    if (memberProp(n) === "value" && memberProp(n.object) === "isLoading")
+      readsLoading = true;
+  });
+  if (!readsLoading) return null;
+
+  return {
+    unit: mgr,
+    edit: {
+      pos: group.end,
+      text: `${STAY_MARKER}||!${d}.isLoading.value${STAY_END}`,
+    },
+  };
+}
+
+// The native webview bundle with the fragment in, or null when a site is
+// missing or the edit would not parse.
+const untitledStaysBuild = sdelMemo((native) => {
+  const site = untitledStaysFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, [site.edit]);
+  return unitsReparse(out, [site.edit], [[site.unit, isClass]]) ? out : null;
+});
+function untitledStaysPatch(native: string): string | null {
+  return untitledStaysBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its sites are gone. scripts/repro's untitled-stays.mjs serves
+// this, so it runs exactly what the patcher writes and doubles as the drift
+// canary.
+export function untitledStaysWebview(web: string): string | null {
+  return untitledStaysBuild(web.replace(STAY_FRAG_RE, ""));
 }
 
 // ---------------------------------------------------------------------------
@@ -6494,6 +6759,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: SDEL_HOST_FILE,
     frags: SDEL_FRAG_RE,
     patch: sessionDeleteHostPatch,
+  },
+  {
+    kind: "inline",
+    id: "untitledStays",
+    label: "untitled session stays",
+    file: STAY_FILE,
+    frags: STAY_FRAG_RE,
+    patch: untitledStaysPatch,
   },
 ];
 

@@ -25,6 +25,12 @@
 //   keys      Up/Down then Enter jump from the keyboard, and Escape closes and
 //             hands focus back to the input box with its caret where it was
 //   close     a click on the transcript closes it, and so does the button
+//   hide      an entry's hover button folds it away without a jump, a
+//             neighbor joins the same fold, the other numbers stay, the fold
+//             survives a reload (stored under the conversation's id), and a
+//             click on it brings the run back; from the keyboard, Delete
+//             hides and Enter on the fold restores, and a hidden current
+//             entry hands its highlight to the fold
 //   popup     a permission request hiding the composer closes an open list,
 //             and the button riding the popup's wrapper opens one aligned
 //             to that wrapper
@@ -642,6 +648,170 @@ export async function run(ctx) {
     await clickSel(BTN);
     await ctx.sleep(150);
     check("close: the button toggles it shut", !(await isOpen()));
+
+    // Hide: hover an entry, click its button, and read the folds back.
+    const moveTo = (p) =>
+      ctx.cdp("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: p.x,
+        y: p.y,
+      });
+    const hideBtn = (i) =>
+      `${PANE} .ccup-hist-item[data-i="${i}"] .ccup-hist-hide`;
+    const hideVia = async (i) => {
+      await ctx.evaluate(
+        `(function(){var p=${q(PANE)},it=p.querySelector('.ccup-hist-item[data-i="${i}"]');` +
+          `p.scrollTop=it.offsetTop-(p.clientHeight-it.offsetHeight)/2})()`,
+      );
+      await moveTo(center(await entryBox(i)));
+      await ctx.sleep(60);
+      const vis = await ctx.evaluate(
+        `getComputedStyle(${q(hideBtn(i))}).visibility`,
+      );
+      await click(center(await rect(hideBtn(i))));
+      await ctx.sleep(100);
+      return vis;
+    };
+    const folds = () =>
+      json(
+        `[...document.querySelectorAll("${PANE} .ccup-hist-fold")].map(function(g){` +
+          `return{a:+g.getAttribute("data-a"),b:+g.getAttribute("data-b"),` +
+          `n:g.querySelector(".ccup-hist-fold-n").textContent,` +
+          `r:g.querySelector(".ccup-hist-fold-r").textContent,cur:g.hasAttribute("data-cur")}})`,
+      );
+    const stored = () =>
+      json(
+        `(function(){try{return JSON.parse(localStorage.getItem("ccup-prompt-history-hidden")||"{}")}catch(e){return null}})()`,
+      );
+    const has = (i) =>
+      ctx.evaluate(`!!${q(`${PANE} .ccup-hist-item[data-i="${i}"]`)}`);
+
+    await clickSel(BTN);
+    await ctx.sleep(200);
+    const stH = await scrollTop();
+    const hv = await hideVia(3);
+    check("hide: the button shows on hover", hv === "visible", hv);
+    let fs = await folds();
+    check(
+      "hide: entry 4 folds into one row",
+      fs.length === 1 &&
+        fs[0].a === 3 &&
+        fs[0].b === 3 &&
+        fs[0].n === "1 hidden" &&
+        fs[0].r === "4" &&
+        !(await has(3)),
+      JSON.stringify(fs),
+    );
+    check(
+      "hide: the click neither jumps nor closes",
+      Math.abs((await scrollTop()) - stH) < 1 && (await isOpen()),
+    );
+    await hideVia(4);
+    fs = await folds();
+    check(
+      "hide: a neighbor joins the same fold",
+      fs.length === 1 &&
+        fs[0].a === 3 &&
+        fs[0].b === 4 &&
+        fs[0].n === "2 hidden" &&
+        fs[0].r === "4–5",
+      JSON.stringify(fs),
+    );
+    const nums = await json(
+      `[...document.querySelectorAll("${PANE} .ccup-hist-item .ccup-hist-num")]` +
+        `.map(function(e){return e.textContent}).join(",")`,
+    );
+    check(
+      "hide: the other entries keep their numbers",
+      nums === "1,2,3,6,7,8,9,10,11,12,13,14",
+      nums,
+    );
+    const sid = await ctx.evaluate(
+      `new URLSearchParams(location.search).get("session")||""`,
+    );
+    let sto = await stored();
+    check(
+      "hide: stored under the conversation's id",
+      sid === R && !!sto && !!sto[R] && sto[R].k.length === 2,
+      `session=${sid} ${JSON.stringify(sto)}`,
+    );
+    await ctx.shot("hidden");
+
+    // The fold survives a reload, and a click on it brings the run back.
+    check("hide: remounts", !!(await boot()));
+    await ctx.sleep(300);
+    await clickSel(BTN);
+    await ctx.sleep(250);
+    fs = await folds();
+    check(
+      "hide: the fold survives a reload",
+      fs.length === 1 && fs[0].a === 3 && fs[0].b === 4,
+      JSON.stringify(fs),
+    );
+    await ctx.evaluate(
+      `(function(){var p=${q(PANE)},g=p.querySelector(".ccup-hist-fold");` +
+        `p.scrollTop=g.offsetTop-(p.clientHeight-g.offsetHeight)/2})()`,
+    );
+    const stF = await scrollTop();
+    await clickSel(`${PANE} .ccup-hist-fold`);
+    await ctx.sleep(100);
+    check(
+      "hide: clicking the fold brings both back, with no jump",
+      (await folds()).length === 0 &&
+        (await has(3)) &&
+        (await has(4)) &&
+        Math.abs((await scrollTop()) - stF) < 1,
+    );
+    sto = await stored();
+    check(
+      "hide: and clears the conversation's marks",
+      !!sto && !sto[R],
+      JSON.stringify(sto),
+    );
+
+    // Keyboard: Delete hides the focused entry and leaves focus on its fold,
+    // Enter there restores it. The current entry's fold takes the highlight.
+    await ctx.evaluate(`${q(PANE)}.focus()`);
+    await key("Home", "Home", 36);
+    await key("Delete", "Delete", 46);
+    await ctx.sleep(80);
+    const kf = await json(
+      `(function(){var a=document.activeElement;` +
+        `return{fold:!!a&&a.classList.contains("ccup-hist-fold"),a:a&&a.getAttribute("data-a")}})()`,
+    );
+    check(
+      "hide: Delete hides the focused entry, focus on its fold",
+      kf.fold && kf.a === "0",
+      JSON.stringify(kf),
+    );
+    await key("Enter", "Enter", 13);
+    await ctx.sleep(80);
+    const ke = await ctx.evaluate(
+      `document.activeElement&&document.activeElement.getAttribute("data-i")`,
+    );
+    check(
+      "hide: Enter on the fold restores it, focus on the entry",
+      ke === "0" && (await folds()).length === 0,
+      ke,
+    );
+    await key("End", "End", 35);
+    await key("Delete", "Delete", 46);
+    await ctx.sleep(80);
+    fs = await folds();
+    check(
+      "hide: a hidden current entry hands the highlight to its fold",
+      fs.length === 1 && fs[0].a === PROMPTS.length - 1 && fs[0].cur,
+      JSON.stringify(fs),
+    );
+    await key("Enter", "Enter", 13);
+    await ctx.sleep(80);
+    check(
+      "hide: and comes back current",
+      (await curEntry()) === PROMPTS.length - 1,
+    );
+    await ctx.evaluate(`localStorage.removeItem("ccup-prompt-history-hidden")`);
+    await key("Escape", "Escape", 27);
+    await ctx.sleep(100);
 
     // Popup: a permission request replaces the composer under an open list.
     await clickSel(BTN);

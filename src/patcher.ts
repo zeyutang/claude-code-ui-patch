@@ -4283,14 +4283,31 @@ function jumpMsgSet(c: string, on: boolean): string {
 // above the scroll top, the census jumpMsg runs), or entry 1 above the first
 // header.
 //
+// Entries can be hidden, for the "yes please" kind of message that only
+// clutters the outline. Each entry carries an eye-off button at its right end,
+// shown on hover or keyboard focus (Delete or Backspace does the same from the
+// keyboard), and a run of consecutive hidden entries renders as one slim fold
+// row in their place ("2 hidden" and the range, e.g. 23-24, behind a chevron
+// in the number column). A click on the fold, or Enter on it, brings the run
+// back. Visible entries keep their transcript numbers, and when the current
+// entry is hidden its fold carries the highlight. Headers carry no message id,
+// so an entry is named by its position and an FNV-1a hash of its text: a
+// rewound or edited transcript, where a position now holds another message,
+// never hides the wrong one. The marks persist per conversation in the
+// webview's localStorage (where Claude Code keeps its own UI flags), keyed by
+// the ?session= id the webview mirrors into its URL, the 200 most recently
+// touched conversations kept. A brand-new conversation has no id until its
+// first reply arrives, so marks made in that moment land under the URL's
+// previous id (or none) and fail to match once the id comes in.
+//
 // Focus follows the menu-button pattern without disturbing the composer: the
 // button and the list swallow mousedown (preventDefault + stopPropagation, as
 // the jump buttons do), so a click never moves focus or the composer's caret,
 // and opening focuses the list itself (no ring). Up/Down/Home/End then move a
-// focused entry, Enter or Space jumps to it, Escape or Tab closes and hands
-// focus back to whatever held it before (the composer, with its caret where it
-// was, or the popup card), and the handled keys stop at the list, ahead of
-// the app's root listeners and VS Code's key forwarder. A pointerdown outside
+// focused row, Enter or Space jumps to an entry or opens a fold, Escape or Tab
+// closes and hands focus back to whatever held it before (the composer, with
+// its caret where it was, or the popup card), and the handled keys stop at the
+// list, ahead of the app's root listeners and VS Code's key forwarder. A pointerdown outside
 // the list and the button row closes it and goes on to whatever it pressed,
 // with no focus hand-back. Clicks on the jump and scroll buttons keep it open,
 // so stepping a turn at a time stays available while it is up. The list
@@ -4314,6 +4331,10 @@ const PROMPT_HIST_LINE_RE = /\n?\/\*ccup:promptHist\*\/[^\n]*/g;
 // Width floor of the list, and the pane's gap above the button row.
 const PROMPT_HIST_MIN_W = 260;
 const PROMPT_HIST_GAP = 40; // the row's 34px offset plus 6px of air
+// The localStorage item holding hidden entries, and how many conversations
+// it keeps (most recently touched first).
+const PROMPT_HIST_STORE = "ccup-prompt-history-hidden";
+const PROMPT_HIST_STORE_CAP = 200;
 
 // The full marked line for this bundle, or undefined when a required anchor is
 // gone. Deterministic given the bundle content, so equality against the on-disk
@@ -4361,11 +4382,27 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-item${HOVER}::before,.ccup-hist-item${HOVER}+.ccup-hist-item::before{visibility:hidden}` +
     `.ccup-hist-item${HOVER}{background:var(--app-list-hover-background)}` +
     ".ccup-hist-item[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
-    ".ccup-hist-item:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
+    ".ccup-hist-item:focus-visible,.ccup-hist-fold:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
     ".ccup-hist-num{flex:none;min-width:var(--ccup-hist-w,1ch);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-claude-orange,#d97757)}" +
     ".ccup-hist-item[data-cur] .ccup-hist-num{color:inherit;opacity:.75}" +
     ".ccup-hist-txt{flex:1 1 auto;min-width:0;height:2lh;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere}" +
     ".ccup-hist-nl{margin:0 .3em;color:var(--app-secondary-foreground);opacity:.7;font-family:var(--app-monospace-font-family,monospace);font-size:.85em}" +
+    // The hide button, on the first line's axis (font:inherit, or the button's
+    // own UA font would size 1lh), shown with its entry's hover or focus.
+    ".ccup-hist-hide{flex:none;align-self:flex-start;display:flex;align-items:center;justify-content:center;width:20px;height:20px;margin:calc((1lh - 20px)/2) -4px 0 0;padding:0;border:none;border-radius:4px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}" +
+    ".ccup-hist-hide svg{display:block;width:14px;height:14px}" +
+    `.ccup-hist-item${HOVER} .ccup-hist-hide,.ccup-hist-item:focus-visible .ccup-hist-hide{visibility:visible}` +
+    `.ccup-hist-hide${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
+    ".ccup-hist-item[data-cur] .ccup-hist-hide{color:inherit}" +
+    // The fold standing in for a run of hidden entries: one slim muted row.
+    ".ccup-hist-fold{display:flex;align-items:center;gap:8px;padding:1px 8px;border-radius:var(--app-list-border-radius,4px);line-height:1.6;color:var(--app-secondary-foreground);cursor:pointer;outline:none}" +
+    ".ccup-hist-fold .ccup-hist-num{color:inherit}" +
+    ".ccup-hist-fold .ccup-hist-num svg{display:inline-block;width:12px;height:12px;vertical-align:-1px}" +
+    ".ccup-hist-fold-n,.ccup-hist-fold-r{font-size:.85em}" +
+    ".ccup-hist-fold-r{color:var(--app-claude-orange,#d97757);font-variant-numeric:tabular-nums}" +
+    `.ccup-hist-fold${HOVER}{background:var(--app-list-hover-background);color:var(--app-primary-foreground)}` +
+    ".ccup-hist-fold[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
+    ".ccup-hist-fold[data-cur] .ccup-hist-fold-r{color:inherit}" +
     btnHideCss(input, wrap, ".ccup-hist-btn") +
     btnHostCss(wrap, perm, preq) +
     HOVER_TIP_CSS;
@@ -4373,6 +4410,11 @@ function promptHistBuild(c: string): string | undefined {
   // attributes embed in the double-quoted JS string below unescaped.
   const bars =
     "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><path d='M5 7h14'/><path d='M5 12h14'/><path d='M5 17h14'/></svg>";
+  // An eye struck through for the hide button, and the fold's chevron.
+  const eyeOff =
+    "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2 12Q12 2 22 12Q12 22 2 12Z'/><circle cx='12' cy='12' r='3'/><path d='M4 4l16 16'/></svg>";
+  const chevron =
+    "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 6l6 6-6 6'/></svg>";
   // A message block's text: the expandable's content, or a slash-command echo.
   const blockText = slash
     ? `c?c.textContent:a[i].classList.contains("slashCommandMessage_${sticky}")?a[i].textContent:""`
@@ -4381,8 +4423,9 @@ function promptHistBuild(c: string): string | undefined {
     `(function(){try{` +
     `if(window.__ccupPromptHist)return;window.__ccupPromptHist=1;` +
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
-    `var BARS="${bars}",T="Prompt History",NL=String.fromCharCode(92)+"n",raf=0,gen=0,gl=0,` +
-    `P=null,on=0,pBox=null,pBtn=null,pFoc=null,pHs=[],pCur=-1,pin=-1,pinTop=0;` +
+    `var BARS="${bars}",EYE="${eyeOff}",CHEV="${chevron}",T="Prompt History",NL=String.fromCharCode(92)+"n",` +
+    `SK="${PROMPT_HIST_STORE}",raf=0,gen=0,gl=0,P=null,on=0,pBox=null,pBtn=null,pFoc=null,pHs=[],pCur=-1,` +
+    `pin=-1,pinTop=0,rowOf=[],keyOf=[],curEl=null;` +
     HOVER_TIP_JS +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
     btnHostsJs(host, perm, preq, false) +
@@ -4411,16 +4454,40 @@ function promptHistBuild(c: string): string | undefined {
     `for(i=0;i<a.length;i++){if(!a[i])continue;` +
     `if(i%2){m=document.createElement("span");m.className="ccup-hist-nl";m.textContent=Array(a[i].length+1).join(NL);el.appendChild(m)}` +
     `else el.appendChild(document.createTextNode(a[i]))}}` +
-    // Keep a focused entry's index across a rebuild.
-    `function build(hs){var ae=document.activeElement,fi=ae&&ae.parentNode===P?+ae.getAttribute("data-i"):-1,` +
-    `f=document.createDocumentFragment(),i,it,nu,tx;pHs=hs;pCur=-1;pin=-1;` +
-    `for(i=0;i<hs.length;i++){it=document.createElement("div");it.className="ccup-hist-item";` +
-    `it.setAttribute("role","option");it.setAttribute("data-i",i);it.tabIndex=-1;` +
-    `nu=document.createElement("span");nu.className="ccup-hist-num";nu.textContent=i+1;` +
-    `tx=document.createElement("span");tx.className="ccup-hist-txt";fill(tx,txt(hs[i]));` +
-    `it.appendChild(nu);it.appendChild(tx);f.appendChild(it)}` +
-    `P.textContent="";P.appendChild(f);P.style.setProperty("--ccup-hist-w",String(hs.length).length+"ch");` +
-    `if(fi>=0&&hs.length)foc(Math.min(fi,hs.length-1))}` +
+    // Hidden marks, per conversation (the URL's session id), each entry named
+    // by its position and a hash of its text. Storage failures are no-ops.
+    `function sid(){try{return new URLSearchParams(location.search).get("session")||""}catch(e){return""}}` +
+    `function hsh(s){for(var h=2166136261,i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return(h>>>0).toString(36)}` +
+    `function store(){try{var o=JSON.parse(localStorage.getItem(SK)||"{}");return o&&typeof o==="object"&&!Array.isArray(o)?o:{}}catch(e){return{}}}` +
+    `function hidden(){var e=store()[sid()];return new Set(e&&Array.isArray(e.k)?e.k:[])}` +
+    `function keep(set){try{var o=store(),s=sid(),k=Array.from(set);if(k.length)o[s]={t:Date.now(),k:k};else delete o[s];` +
+    `var ids=Object.keys(o);if(ids.length>${PROMPT_HIST_STORE_CAP}){ids.sort(function(a,b){return((o[b]&&o[b].t)||0)-((o[a]&&o[a].t)||0)});` +
+    `for(var i=${PROMPT_HIST_STORE_CAP};i<ids.length;i++)delete o[ids[i]]}localStorage.setItem(SK,JSON.stringify(o))}catch(e){}}` +
+    `function entry(i,s){var it=document.createElement("div"),nu=document.createElement("span"),` +
+    `tx=document.createElement("span"),hb=document.createElement("button");` +
+    `it.className="ccup-hist-item";it.setAttribute("role","option");it.setAttribute("data-i",i);it.tabIndex=-1;` +
+    `nu.className="ccup-hist-num";nu.textContent=i+1;tx.className="ccup-hist-txt";fill(tx,s);` +
+    `hb.type="button";hb.className="ccup-hist-hide";hb.tabIndex=-1;hb.setAttribute("aria-label","Hide "+(i+1));hb.innerHTML=EYE;` +
+    `it.appendChild(nu);it.appendChild(tx);it.appendChild(hb);return it}` +
+    `function fold(a,b){var g=document.createElement("div"),c=document.createElement("span"),` +
+    `l=document.createElement("span"),r=document.createElement("span");` +
+    `g.className="ccup-hist-fold";g.setAttribute("role","option");g.setAttribute("data-a",a);g.setAttribute("data-b",b);g.tabIndex=-1;` +
+    `c.className="ccup-hist-num";c.innerHTML=CHEV;l.className="ccup-hist-fold-n";l.textContent=(b-a+1)+" hidden";` +
+    `r.className="ccup-hist-fold-r";r.textContent=a===b?String(a+1):(a+1)+"\\u2013"+(b+1);` +
+    `g.setAttribute("aria-label","Show "+l.textContent+", "+r.textContent);` +
+    `g.appendChild(c);g.appendChild(l);g.appendChild(r);return g}` +
+    // The first header a row stands for.
+    `function anchor(r){var a=r.getAttribute("data-i");return a!==null?+a:+r.getAttribute("data-a")}` +
+    // Rows in transcript order, a run of hidden entries folded into one, and
+    // rowOf mapping every header to its row. A focused row's header, the
+    // highlight, and the list's scroll position all survive the rebuild.
+    `function build(hs){var ae=document.activeElement,fi=ae&&ae.parentNode===P?anchor(ae):-1,st=P.scrollTop,` +
+    `hid=hidden(),f=document.createDocumentFragment(),n=hs.length,tx=hs.map(txt),i,j,q,g;` +
+    `pHs=hs;rowOf=[];keyOf=[];curEl=null;for(i=0;i<n;i++)keyOf[i]=i+":"+hsh(tx[i]);` +
+    `for(i=0;i<n;i=j+1){j=i;if(hid.has(keyOf[i])){while(j+1<n&&hid.has(keyOf[j+1]))j++;g=fold(i,j)}else g=entry(i,tx[i]);` +
+    `for(q=i;q<=j;q++)rowOf[q]=g;f.appendChild(g)}` +
+    `P.textContent="";P.appendChild(f);P.scrollTop=st;P.style.setProperty("--ccup-hist-w",String(n).length+"ch");` +
+    `if(pCur>=0)mark(pCur);if(fi>=0&&n)focRow(rowOf[Math.min(fi,n-1)])}` +
     // The current entry: a clicked one while the view stays where its glide
     // put it, the last at the bottom, else the last header at or above the
     // scroll top (the jump census, headers sitting in document order), else
@@ -4429,25 +4496,35 @@ function promptHistBuild(c: string): string | undefined {
     `if(pin>=0&&pin<n){if(gl||Math.abs(c-pinTop)<=1)return pin;pin=-1}` +
     `if(n&&t.scrollHeight-c-t.clientHeight<=8)return n-1;` +
     `for(i=0;i<n;i++){if(ot(hs[i],t)>c+4)break;k=i}return k<0&&n?0:k}` +
-    `function mark(k){if(k===pCur)return;var it=P.children,o=it[pCur],n=it[k];` +
-    `if(o){o.removeAttribute("data-cur");o.removeAttribute("aria-current")}` +
-    `if(n){n.setAttribute("data-cur","");n.setAttribute("aria-current","true")}pCur=k}` +
+    // The current header's row carries the highlight (a fold, when hidden).
+    `function mark(k){pCur=k;var el=k>=0&&rowOf[k]||null;if(el===curEl)return;` +
+    `if(curEl){curEl.removeAttribute("data-cur");curEl.removeAttribute("aria-current")}` +
+    `if(el){el.setAttribute("data-cur","");el.setAttribute("aria-current","true")}curEl=el}` +
     // Two thirds of the viewport for list, gap, row and composer together.
     `function fit(){var r=pBox.getBoundingClientRect(),H=window.innerHeight||0,` +
     `m=Math.max(0,Math.min(r.top-${PROMPT_HIST_GAP + 8},Math.max(120,Math.floor(H*2/3-${PROMPT_HIST_GAP}-r.height))))+"px";` +
     `if(P.style.maxHeight!==m)P.style.maxHeight=m}` +
-    `function foc(i){var it=P.children[i];if(!it)return;it.focus({preventScroll:!0});` +
-    `var y=it.offsetTop,b=y+it.offsetHeight;if(y<P.scrollTop)P.scrollTop=y-4;else if(b>P.scrollTop+P.clientHeight)P.scrollTop=b-P.clientHeight+4}` +
+    `function focRow(r){if(!r)return;r.focus({preventScroll:!0});` +
+    `var y=r.offsetTop,b=y+r.offsetHeight;if(y<P.scrollTop)P.scrollTop=y-4;else if(b>P.scrollTop+P.clientHeight)P.scrollTop=b-P.clientHeight+4}` +
+    `function hide(i){var s=hidden();s.add(keyOf[i]);keep(s);build(pHs)}` +
+    `function unhide(a,b){var s=hidden();for(var i=a;i<=b;i++)s.delete(keyOf[i]);keep(s);build(pHs)}` +
+    // An entry jumps, a fold brings its run back.
+    `function act(r){if(r.hasAttribute("data-i"))jumpTo(+r.getAttribute("data-i"));` +
+    `else unhide(+r.getAttribute("data-a"),+r.getAttribute("data-b"))}` +
     // A header's natural position, its sticky shift neutralized for one read.
     `function jumpTo(i){var t=sc(),h=pHs[i];if(!t||!h||!h.isConnected)return;` +
     `h.style.position="static";var y=ot(h,t);h.style.position="";y=go(y);` +
     `if(y!==void 0){pin=i;pinTop=y;mark(i)}}` +
+    // Keys move between rows, and the first arrow from the list itself lands
+    // on the current row.
     `function keys(e){if(e.isComposing||e.metaKey||e.ctrlKey||e.altKey)return;` +
-    `var k=e.key,n=P.children.length,ae=document.activeElement,i=ae&&ae.parentNode===P?+ae.getAttribute("data-i"):-1;` +
+    `var k=e.key,rs=P.children,n=rs.length,ae=document.activeElement,r=ae&&ae.parentNode===P?[].indexOf.call(rs,ae):-1;` +
     `if(k==="Escape"||k==="Tab")close(1);` +
-    `else if(k==="ArrowDown"||k==="ArrowUp")foc(i<0?Math.max(0,pCur):Math.max(0,Math.min(n-1,i+(k==="ArrowDown"?1:-1))));` +
-    `else if(k==="Home"||k==="End")foc(k==="Home"?0:n-1);` +
-    `else if(k==="Enter"||k===" "){if(i>=0)jumpTo(i)}` +
+    `else if(k==="ArrowDown"||k==="ArrowUp")focRow(rs[r<0?Math.max(0,[].indexOf.call(rs,rowOf[Math.max(0,pCur)])):` +
+    `Math.max(0,Math.min(n-1,r+(k==="ArrowDown"?1:-1)))]);` +
+    `else if(k==="Home"||k==="End")focRow(rs[k==="Home"?0:n-1]);` +
+    `else if(k==="Enter"||k===" "){if(r>=0)act(rs[r])}` +
+    `else if(k==="Delete"||k==="Backspace"){if(r>=0&&rs[r].hasAttribute("data-i"))hide(+rs[r].getAttribute("data-i"))}` +
     `else return;e.preventDefault();e.stopPropagation()}` +
     `function stop(e){e.stopPropagation()}` +
     `function open(b){var t=sc(),hs=hh(t),box=b.parentNode;if(!t||!hs.length||!box)return;` +
@@ -4455,17 +4532,18 @@ function promptHistBuild(c: string): string | undefined {
     `P.setAttribute("aria-label",T);P.tabIndex=-1;` +
     `P.addEventListener("mousedown",function(e){e.preventDefault();e.stopPropagation()});` +
     `["pointerdown","pointerup","mouseup","dblclick"].forEach(function(n){P.addEventListener(n,stop)});` +
-    `P.addEventListener("click",function(e){e.stopPropagation();var it=e.target&&e.target.closest?e.target.closest(".ccup-hist-item"):null;` +
-    `if(it&&it.parentNode===P)jumpTo(+it.getAttribute("data-i"))});` +
+    `P.addEventListener("click",function(e){e.stopPropagation();var t=e.target;if(!t||!t.closest)return;` +
+    `var r=t.closest(".ccup-hist-item,.ccup-hist-fold");if(!r||r.parentNode!==P)return;` +
+    `if(t.closest(".ccup-hist-hide"))hide(+r.getAttribute("data-i"));else act(r)});` +
     `P.addEventListener("keydown",keys)}` +
     `pFoc=document.activeElement;pBox=box;pBtn=b;on=1;hideTip();box.appendChild(P);build(hs);fit();mark(cur(t,hs));` +
-    `var it=P.children[pCur];P.scrollTop=it?it.offsetTop-(P.clientHeight-it.offsetHeight)/2:P.scrollHeight;` +
+    `var it=rowOf[pCur];P.scrollTop=it?it.offsetTop-(P.clientHeight-it.offsetHeight)/2:P.scrollHeight;` +
     `b.setAttribute("aria-expanded","true");P.focus({preventScroll:!0})}` +
     // back: hand focus back to what held it at opening, if the list still has it.
     `function close(back){if(!on)return;on=0;var f=P.contains(document.activeElement);P.remove();` +
     `if(pBtn)pBtn.setAttribute("aria-expanded","false");` +
     `if(back&&f&&pFoc&&pFoc.isConnected&&pFoc.focus)try{pFoc.focus({preventScroll:!0})}catch(e){}` +
-    `pBox=pBtn=pFoc=null;pHs=[];pCur=-1;pin=-1}` +
+    `pBox=pBtn=pFoc=curEl=null;pHs=[];rowOf=[];keyOf=[];pCur=-1;pin=-1}` +
     `function mk(){var b=document.createElement("button");b.type="button";b.className="ccup-hist-btn";` +
     `b.setAttribute("aria-label",T);b.setAttribute("aria-haspopup","listbox");b.setAttribute("aria-expanded","false");b.innerHTML=BARS;` +
     `b.addEventListener("mouseenter",function(){if(tipT)clearTimeout(tipT);` +
@@ -4480,7 +4558,7 @@ function promptHistBuild(c: string): string | undefined {
     `for(i=0;i<boxes.length;i++){b=boxes[i].querySelector(".ccup-hist-btn");if(!b){b=mk();boxes[i].appendChild(b)}ss(b,!0,!n)}` +
     `if(!on)return;` +
     `if(!n||!P.isConnected||!pBox.isConnected||!pBox.getClientRects().length||!pBtn.isConnected){close(0);return}` +
-    `if(!same(hs,pHs))build(hs);fit();mark(cur(t,hs))}` +
+    `if(!same(hs,pHs)){pin=-1;build(hs)}fit();mark(cur(t,hs))}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
     `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
     // Outside the list and the button row: close, and let the press go on.

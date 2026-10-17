@@ -4,6 +4,7 @@
 
 - New `chatPromptHistoryButton` setting: a button above the input box, left of the jump buttons, lists your messages in the conversation, numbered from 1, each in at most two lines with line breaks shown as `\n`.
   Clicking one jumps to it as the jump buttons do, and the list stays open so you can hop between messages until `Escape` closes it.
+  A message's hover button hides it behind a slim fold that brings it back on a click, and it stays hidden in that conversation.
 - Opening the chat's history dropdown while on an Untitled session no longer switches the chat to the session you had open before it, a running one included.
   Always applied, no setting.
 - `chatRawMarkdownButton` works again on Claude Code 2.1.301 and later, where agent responses had lost their raw markdown button.

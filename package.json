@@ -169,7 +169,7 @@
         "claudeCodeUiPatch.chatPromptHistoryButton": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show a button above the chat input box's top-right corner that lists your messages in this conversation, numbered from 1, each in at most two lines with line breaks shown as `\\n`. Clicking one jumps to it like the jump buttons. It lines up left of `#claudeCodeUiPatch.chatJumpToMessageButtons#` and `#claudeCodeUiPatch.chatScrollToBottomDot#`."
+          "markdownDescription": "Show a button above the chat input box's top-right corner that lists your messages in this conversation, numbered from 1, each in at most two lines with line breaks shown as `\\n`. Clicking one jumps to it like the jump buttons, and hiding one from its hover button leaves a fold that brings it back. It lines up left of `#claudeCodeUiPatch.chatJumpToMessageButtons#` and `#claudeCodeUiPatch.chatScrollToBottomDot#`."
         },
         "claudeCodeUiPatch.chatRawMarkdownButton": {
           "type": "boolean",

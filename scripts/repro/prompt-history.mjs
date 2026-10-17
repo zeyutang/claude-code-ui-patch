@@ -8,8 +8,10 @@
 //   list      one entry per user message, numbered from 1, the text read back
 //             with each run of line breaks as one muted \n per break (a slash
 //             command as its command line), every entry at line-height 2 and
-//             at most two lines tall, the long prompt clamped, and a 1px
-//             divider between entries that hides beside the current one
+//             exactly two lines tall (one-line messages included, \n markers
+//             not growing a line), the long prompt clamped, numbers in
+//             Claude's clay except on the current entry, and a 1px divider
+//             between entries that hides beside the current one
 //   geometry  right edge on the input box's, width between min(260px, input
 //             box) and the input box (a compact list of short prompts, a full
 //             width one of long prompts, a narrow panel capping the floor),
@@ -380,17 +382,23 @@ export async function run(ctx) {
     );
     await ctx.shot("open");
 
-    // Entries: numbers, text, \n markers, two lines at most, dividers.
+    // Entries: numbers, text, \n markers, two lines each, dividers. nat is
+    // the text's own height with the fixed two-line box lifted, which shrinks
+    // the list for a moment, so its scroll position is put back afterwards.
     const entries = await json(
-      `[...document.querySelectorAll("${PANE} .ccup-hist-item")].map(function(it){` +
+      `(function(){var p=${q(PANE)},s0=p.scrollTop,` +
+        `r=[...p.querySelectorAll(".ccup-hist-item")].map(function(it){` +
         `var t=it.querySelector(".ccup-hist-txt"),cs=getComputedStyle(t),lh=parseFloat(cs.lineHeight),` +
-        `d=getComputedStyle(it,"::before");` +
-        `return{n:it.querySelector(".ccup-hist-num").textContent,txt:t.textContent,` +
+        `d=getComputedStyle(it,"::before"),num=it.querySelector(".ccup-hist-num");` +
+        `t.style.height="auto";var nat=t.getBoundingClientRect().height;t.style.height="";` +
+        `return{n:num.textContent,txt:t.textContent,nat:nat,rowH:it.getBoundingClientRect().height,` +
+        `numColor:getComputedStyle(num).color,rowColor:getComputedStyle(it).color,` +
         `nl:[...t.querySelectorAll(".ccup-hist-nl")].map(function(e){return e.textContent}),` +
         `nlColor:t.querySelector(".ccup-hist-nl")?getComputedStyle(t.querySelector(".ccup-hist-nl")).color:"",` +
         `color:cs.color,h:t.getBoundingClientRect().height,lh:lh,fs:parseFloat(cs.fontSize),` +
         `clamped:t.scrollHeight>t.clientHeight+1,cur:it.hasAttribute("data-cur"),` +
-        `div:{content:d.content,h:d.height,bg:d.backgroundColor,vis:d.visibility}}})`,
+        `div:{content:d.content,h:d.height,bg:d.backgroundColor,vis:d.visibility}}});` +
+        `p.scrollTop=s0;return r})()`,
     );
     check(
       "list: one entry per user message",
@@ -415,14 +423,31 @@ export async function run(ctx) {
         entries[1].nlColor !== entries[1].color,
       `${JSON.stringify(entries[1].nl)} ${entries[1].nlColor} vs ${entries[1].color}`,
     );
-    const tall = entries.filter((e) => e.h > 2 * e.lh + 1);
+    const off = entries.filter((e) => Math.abs(e.h - 2 * e.lh) > 0.5);
+    const rows = entries.map((e) => e.rowH);
     check(
-      "list: no entry taller than two lines",
-      tall.length === 0,
-      tall.map((e) => `${e.n}:${e.h.toFixed(1)}`).join(" ") ||
-        `line ${entries[0].lh}px`,
+      "list: every entry exactly two lines tall, one-liners included",
+      off.length === 0 && Math.max(...rows) - Math.min(...rows) < 0.5,
+      off.map((e) => `${e.n}:${e.h.toFixed(1)}`).join(" ") ||
+        `${entries[0].h}px text, ${rows[0]}px rows`,
+    );
+    const ones = entries.filter((e) => e.nat < 1.5 * e.lh);
+    check(
+      "list: a \\n marker leaves its line box at one line height",
+      ones.includes(entries[1]) &&
+        ones.every((e) => Math.abs(e.nat - e.lh) < 0.5),
+      ones.map((e) => `${e.n}:${e.nat.toFixed(2)}`).join(" "),
     );
     check("list: the long prompt is clamped", entries[2].clamped);
+    const clay = "rgb(217, 119, 87)";
+    const numsOff = entries.filter((e) =>
+      e.cur ? e.numColor !== e.rowColor : e.numColor !== clay,
+    );
+    check(
+      "list: numbers in Claude's clay, the current one in its row's color",
+      numsOff.length === 0,
+      numsOff.map((e) => `${e.n}:${e.numColor}`).join(" ") || clay,
+    );
     check(
       "list: entries at line-height 2",
       entries.every((e) => Math.abs(e.lh / e.fs - 2) < 0.01),

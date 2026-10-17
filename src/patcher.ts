@@ -4232,11 +4232,17 @@ function jumpMsgSet(c: string, on: boolean): string {
 //           top. Re-fit on every pass, so a growing composer or a resize
 //           shrinks it. overflow-y:auto with overscroll-behavior:contain, so
 //           a wheel over the list never scrolls the transcript.
-//   entry   the number, right-aligned in a column as wide as the largest
+//   entry   the number in Claude's clay (--app-claude-orange, the native
+//           link color), right-aligned in a column as wide as the largest
 //           number's digits, then the message text clamped to two lines
-//           (-webkit-line-clamp), at line-height 2 for readability. Each run
-//           of line breaks becomes one muted monospace "\n" per break, so the
-//           text flows on instead of breaking lines, and other whitespace
+//           (-webkit-line-clamp), at line-height 2 for readability. On the
+//           current entry the number takes the selection's foreground
+//           instead, since clay on a blue selection loses its contrast (about
+//           3.8:1 in the default dark theme, under 2:1 on light ones). Every
+//           entry is exactly two lines tall (height:2lh), a one-line message
+//           leaving its second line blank, so the rows keep one rhythm. Each
+//           run of line breaks becomes one muted monospace "\n" per break, so
+//           the text flows on instead of breaking lines, and other whitespace
 //           collapses. Past 1000 characters the source is cut, far more than
 //           two lines can show.
 //   divider a 1px line between entries in the native menu divider's color
@@ -4356,9 +4362,9 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-item${HOVER}{background:var(--app-list-hover-background)}` +
     ".ccup-hist-item[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
     ".ccup-hist-item:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
-    ".ccup-hist-num{flex:none;min-width:var(--ccup-hist-w,1ch);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-secondary-foreground)}" +
+    ".ccup-hist-num{flex:none;min-width:var(--ccup-hist-w,1ch);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-claude-orange,#d97757)}" +
     ".ccup-hist-item[data-cur] .ccup-hist-num{color:inherit;opacity:.75}" +
-    ".ccup-hist-txt{flex:1 1 auto;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere}" +
+    ".ccup-hist-txt{flex:1 1 auto;min-width:0;height:2lh;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere}" +
     ".ccup-hist-nl{margin:0 .3em;color:var(--app-secondary-foreground);opacity:.7;font-family:var(--app-monospace-font-family,monospace);font-size:.85em}" +
     btnHideCss(input, wrap, ".ccup-hist-btn") +
     btnHostCss(wrap, perm, preq) +

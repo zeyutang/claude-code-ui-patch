@@ -26,11 +26,12 @@
 //             hands focus back to the input box with its caret where it was
 //   close     a click on the transcript closes it, and so does the button
 //   hide      an entry's hover button folds it away without a jump, a
-//             neighbor joins the same fold, the other numbers stay, the fold
-//             survives a reload (stored under the conversation's id), and a
-//             click on it brings the run back; from the keyboard, Delete
-//             hides and Enter on the fold restores, and a hidden current
-//             entry hands its highlight to the fold
+//             neighbor joins the same fold, which carries the dividers an
+//             entry does, the other numbers stay, the fold survives a reload
+//             (stored under the conversation's id), and a click on it brings
+//             the run back. From the keyboard, Delete hides and Enter on the
+//             fold restores, and a hidden current entry hands its highlight
+//             to the fold
 //   popup     a permission request hiding the composer closes an open list,
 //             and the button riding the popup's wrapper opens one aligned
 //             to that wrapper
@@ -717,6 +718,17 @@ export async function run(ctx) {
         fs[0].r === "4–5",
       JSON.stringify(fs),
     );
+    // A fold is a row like an entry: a divider above it and one below.
+    const fd = await json(
+      `(function(){var g=${q(`${PANE} .ccup-hist-fold`)},n=g.nextElementSibling,` +
+        `a=getComputedStyle(g,"::before"),b=n?getComputedStyle(n,"::before"):null;` +
+        `return{above:a.content+" "+a.height,below:b?b.content+" "+b.height:"none"}})()`,
+    );
+    check(
+      "hide: the fold has a divider above and below, like an entry",
+      fd.above === '"" 1px' && fd.below === '"" 1px',
+      JSON.stringify(fd),
+    );
     const nums = await json(
       `[...document.querySelectorAll("${PANE} .ccup-hist-item .ccup-hist-num")]` +
         `.map(function(e){return e.textContent}).join(",")`,
@@ -752,6 +764,7 @@ export async function run(ctx) {
       `(function(){var p=${q(PANE)},g=p.querySelector(".ccup-hist-fold");` +
         `p.scrollTop=g.offsetTop-(p.clientHeight-g.offsetHeight)/2})()`,
     );
+    await ctx.shot("fold");
     const stF = await scrollTop();
     await clickSel(`${PANE} .ccup-hist-fold`);
     await ctx.sleep(100);

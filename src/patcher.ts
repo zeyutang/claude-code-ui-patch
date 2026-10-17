@@ -4245,11 +4245,12 @@ function jumpMsgSet(c: string, on: boolean): string {
 //           the text flows on instead of breaking lines, and other whitespace
 //           collapses. Past 1000 characters the source is cut, far more than
 //           two lines can show.
-//   divider a 1px line between entries in the native menu divider's color
+//   divider a 1px line between rows in the native menu divider's color
 //           (--app-input-border), inset to the text edges. It is a ::before
-//           on every entry but the first, so it takes no layout height, and
-//           it hides on both sides of the current, hovered, or focused entry,
-//           where it would cut across that entry's rounded highlight.
+//           on every row but the first, entries and folds alike (the shared
+//           ccup-hist-row class), so it takes no layout height, and it hides
+//           on both sides of the current, hovered, or focused row, where it
+//           would cut across that row's rounded highlight.
 //
 // The text is the message as rendered, read off the header's DOM rather than
 // any React state: each .userMessage_<chat> block of the header contributes
@@ -4375,11 +4376,13 @@ function promptHistBuild(c: string): string | undefined {
     ".ccup-hist-btn:not([data-off]):active{filter:brightness(.85)}" +
     ".ccup-hist-btn svg{display:block;width:20px;height:20px}" +
     `.ccup-hist-pane{box-sizing:border-box;position:absolute;right:0;bottom:calc(100% + ${PROMPT_HIST_GAP}px);z-index:22;width:max-content;min-width:min(${PROMPT_HIST_MIN_W}px,100%);max-width:100%;max-height:50vh;overflow-y:auto;overscroll-behavior:contain;margin:0;padding:4px;border:1px solid var(--app-input-border);border-radius:var(--corner-radius-large,8px);background:var(--app-menu-background);color:var(--app-primary-foreground);box-shadow:0 4px 12px var(--vscode-widget-shadow,#0000005c);font-family:var(--vscode-chat-font-family);font-size:var(--vscode-chat-font-size,13px);text-align:left;outline:none;animation:fadeIn .15s ease-out}` +
-    ".ccup-hist-item{position:relative;display:flex;align-items:baseline;gap:8px;padding:2px 8px;border-radius:var(--app-list-border-radius,4px);line-height:2;cursor:pointer;outline:none}" +
-    `.ccup-hist-item+.ccup-hist-item::before{content:"";position:absolute;top:0;left:8px;right:8px;height:1px;background:var(--app-input-border);pointer-events:none}` +
-    `.ccup-hist-item[data-cur]::before,.ccup-hist-item[data-cur]+.ccup-hist-item::before,` +
-    `.ccup-hist-item:focus-visible::before,.ccup-hist-item:focus-visible+.ccup-hist-item::before,` +
-    `.ccup-hist-item${HOVER}::before,.ccup-hist-item${HOVER}+.ccup-hist-item::before{visibility:hidden}` +
+    // Entries and folds alike: the row box, its shape, and the dividers.
+    ".ccup-hist-row{position:relative;border-radius:var(--app-list-border-radius,4px);cursor:pointer;outline:none}" +
+    ".ccup-hist-item{display:flex;align-items:baseline;gap:8px;padding:2px 8px;line-height:2}" +
+    `.ccup-hist-row+.ccup-hist-row::before{content:"";position:absolute;top:0;left:8px;right:8px;height:1px;background:var(--app-input-border);pointer-events:none}` +
+    `.ccup-hist-row[data-cur]::before,.ccup-hist-row[data-cur]+.ccup-hist-row::before,` +
+    `.ccup-hist-row:focus-visible::before,.ccup-hist-row:focus-visible+.ccup-hist-row::before,` +
+    `.ccup-hist-row${HOVER}::before,.ccup-hist-row${HOVER}+.ccup-hist-row::before{visibility:hidden}` +
     `.ccup-hist-item${HOVER}{background:var(--app-list-hover-background)}` +
     ".ccup-hist-item[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
     ".ccup-hist-item:focus-visible,.ccup-hist-fold:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
@@ -4395,7 +4398,7 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-hide${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-hide{color:inherit}" +
     // The fold standing in for a run of hidden entries: one slim muted row.
-    ".ccup-hist-fold{display:flex;align-items:center;gap:8px;padding:1px 8px;border-radius:var(--app-list-border-radius,4px);line-height:1.6;color:var(--app-secondary-foreground);cursor:pointer;outline:none}" +
+    ".ccup-hist-fold{display:flex;align-items:center;gap:8px;padding:1px 8px;line-height:1.6;color:var(--app-secondary-foreground)}" +
     ".ccup-hist-fold .ccup-hist-num{color:inherit}" +
     ".ccup-hist-fold .ccup-hist-num svg{display:inline-block;width:12px;height:12px;vertical-align:-1px}" +
     ".ccup-hist-fold-n,.ccup-hist-fold-r{font-size:.85em}" +
@@ -4465,13 +4468,13 @@ function promptHistBuild(c: string): string | undefined {
     `for(var i=${PROMPT_HIST_STORE_CAP};i<ids.length;i++)delete o[ids[i]]}localStorage.setItem(SK,JSON.stringify(o))}catch(e){}}` +
     `function entry(i,s){var it=document.createElement("div"),nu=document.createElement("span"),` +
     `tx=document.createElement("span"),hb=document.createElement("button");` +
-    `it.className="ccup-hist-item";it.setAttribute("role","option");it.setAttribute("data-i",i);it.tabIndex=-1;` +
+    `it.className="ccup-hist-row ccup-hist-item";it.setAttribute("role","option");it.setAttribute("data-i",i);it.tabIndex=-1;` +
     `nu.className="ccup-hist-num";nu.textContent=i+1;tx.className="ccup-hist-txt";fill(tx,s);` +
     `hb.type="button";hb.className="ccup-hist-hide";hb.tabIndex=-1;hb.setAttribute("aria-label","Hide "+(i+1));hb.innerHTML=EYE;` +
     `it.appendChild(nu);it.appendChild(tx);it.appendChild(hb);return it}` +
     `function fold(a,b){var g=document.createElement("div"),c=document.createElement("span"),` +
     `l=document.createElement("span"),r=document.createElement("span");` +
-    `g.className="ccup-hist-fold";g.setAttribute("role","option");g.setAttribute("data-a",a);g.setAttribute("data-b",b);g.tabIndex=-1;` +
+    `g.className="ccup-hist-row ccup-hist-fold";g.setAttribute("role","option");g.setAttribute("data-a",a);g.setAttribute("data-b",b);g.tabIndex=-1;` +
     `c.className="ccup-hist-num";c.innerHTML=CHEV;l.className="ccup-hist-fold-n";l.textContent=(b-a+1)+" hidden";` +
     `r.className="ccup-hist-fold-r";r.textContent=a===b?String(a+1):(a+1)+"\\u2013"+(b+1);` +
     `g.setAttribute("aria-label","Show "+l.textContent+", "+r.textContent);` +

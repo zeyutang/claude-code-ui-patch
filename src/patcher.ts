@@ -4285,12 +4285,14 @@ function jumpMsgSet(c: string, on: boolean): string {
 // header.
 //
 // Entries can be hidden, for the "yes please" kind of message that only
-// clutters the outline. Each entry carries an eye-off button at its right end,
-// shown on hover or keyboard focus (Delete or Backspace does the same from the
-// keyboard), and a run of consecutive hidden entries renders as one slim fold
-// row in their place ("2 hidden" and the range, e.g. 23-24, behind a chevron
-// in the number column). A click on the fold, or Enter on it, brings the run
-// back. Visible entries keep their transcript numbers, and when the current
+// clutters the outline. Each entry carries an eye-off button under its number,
+// on the number column's otherwise empty second line, shown on hover or
+// keyboard focus (Delete or Backspace does the same from the keyboard). The
+// right end, where it first sat, is where the list's own scrollbar draws, and
+// the number column is at least as wide as the button. A run of consecutive
+// hidden entries renders as one slim fold row in their place ("2 hidden" and
+// the range, e.g. 23-24, behind a chevron in the number column). A click on
+// the fold, or Enter on it, brings the run back. Visible entries keep their transcript numbers, and when the current
 // entry is hidden its fold carries the highlight. Headers carry no message id,
 // so an entry is named by its position and an FNV-1a hash of its text: a
 // rewound or edited transcript, where a position now holds another message,
@@ -4336,6 +4338,8 @@ const PROMPT_HIST_GAP = 40; // the row's 34px offset plus 6px of air
 // it keeps (most recently touched first).
 const PROMPT_HIST_STORE = "ccup-prompt-history-hidden";
 const PROMPT_HIST_STORE_CAP = 200;
+// The hide button's square, and so the number column's floor.
+const PROMPT_HIST_HIDE_PX = 24;
 
 // The full marked line for this bundle, or undefined when a required anchor is
 // gone. Deterministic given the bundle content, so equality against the on-disk
@@ -4386,13 +4390,15 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-item${HOVER}{background:var(--app-list-hover-background)}` +
     ".ccup-hist-item[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
     ".ccup-hist-item:focus-visible,.ccup-hist-fold:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
-    ".ccup-hist-num{flex:none;min-width:var(--ccup-hist-w,1ch);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-claude-orange,#d97757)}" +
+    `.ccup-hist-num{flex:none;min-width:max(var(--ccup-hist-w,1ch),${PROMPT_HIST_HIDE_PX}px);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-claude-orange,#d97757)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-num{color:inherit;opacity:.75}" +
     ".ccup-hist-txt{flex:1 1 auto;min-width:0;height:2lh;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere}" +
     ".ccup-hist-nl{margin:0 .3em;color:var(--app-secondary-foreground);opacity:.7;font-family:var(--app-monospace-font-family,monospace);font-size:.85em}" +
-    // The hide button, on the first line's axis (font:inherit, or the button's
-    // own UA font would size 1lh), shown with its entry's hover or focus.
-    ".ccup-hist-hide{flex:none;align-self:flex-start;display:flex;align-items:center;justify-content:center;width:24px;height:24px;margin:calc((1lh - 24px)/2) -4px 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}" +
+    // The number over the hide button in one column, the button on the second
+    // line's axis and flush right under the number (font:inherit, or the
+    // button's own UA font would size 1lh), shown with its entry's hover or focus.
+    ".ccup-hist-lead{flex:none;display:flex;flex-direction:column}" +
+    `.ccup-hist-hide{flex:none;align-self:flex-end;display:flex;align-items:center;justify-content:center;width:${PROMPT_HIST_HIDE_PX}px;height:${PROMPT_HIST_HIDE_PX}px;margin:calc((1lh - ${PROMPT_HIST_HIDE_PX}px)/2) 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
     ".ccup-hist-hide svg{display:block;width:16px;height:16px}" +
     `.ccup-hist-item${HOVER} .ccup-hist-hide,.ccup-hist-item:focus-visible .ccup-hist-hide{visibility:visible}` +
     `.ccup-hist-hide${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
@@ -4466,12 +4472,12 @@ function promptHistBuild(c: string): string | undefined {
     `function keep(set){try{var o=store(),s=sid(),k=Array.from(set);if(k.length)o[s]={t:Date.now(),k:k};else delete o[s];` +
     `var ids=Object.keys(o);if(ids.length>${PROMPT_HIST_STORE_CAP}){ids.sort(function(a,b){return((o[b]&&o[b].t)||0)-((o[a]&&o[a].t)||0)});` +
     `for(var i=${PROMPT_HIST_STORE_CAP};i<ids.length;i++)delete o[ids[i]]}localStorage.setItem(SK,JSON.stringify(o))}catch(e){}}` +
-    `function entry(i,s){var it=document.createElement("div"),nu=document.createElement("span"),` +
-    `tx=document.createElement("span"),hb=document.createElement("button");` +
+    `function entry(i,s){var it=document.createElement("div"),ld=document.createElement("span"),` +
+    `nu=document.createElement("span"),tx=document.createElement("span"),hb=document.createElement("button");` +
     `it.className="ccup-hist-row ccup-hist-item";it.setAttribute("role","option");it.setAttribute("data-i",i);it.tabIndex=-1;` +
-    `nu.className="ccup-hist-num";nu.textContent=i+1;tx.className="ccup-hist-txt";fill(tx,s);` +
+    `ld.className="ccup-hist-lead";nu.className="ccup-hist-num";nu.textContent=i+1;tx.className="ccup-hist-txt";fill(tx,s);` +
     `hb.type="button";hb.className="ccup-hist-hide";hb.tabIndex=-1;hb.setAttribute("aria-label","Hide "+(i+1));hb.innerHTML=EYE;` +
-    `it.appendChild(nu);it.appendChild(tx);it.appendChild(hb);return it}` +
+    `ld.appendChild(nu);ld.appendChild(hb);it.appendChild(ld);it.appendChild(tx);return it}` +
     `function fold(a,b){var g=document.createElement("div"),c=document.createElement("span"),` +
     `l=document.createElement("span"),r=document.createElement("span");` +
     `g.className="ccup-hist-row ccup-hist-fold";g.setAttribute("role","option");g.setAttribute("data-a",a);g.setAttribute("data-b",b);g.tabIndex=-1;` +

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The prompt history's hide button is larger, so it is easier to hit.
+- The prompt history's hide button is larger and sits under the message number, where the list's scrollbar no longer covers it.
 
 ## 1.6.1
 

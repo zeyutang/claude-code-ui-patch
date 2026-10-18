@@ -25,7 +25,9 @@
 //   keys      Up/Down then Enter jump from the keyboard, and Escape closes and
 //             hands focus back to the input box with its caret where it was
 //   close     a click on the transcript closes it, and so does the button
-//   hide      an entry's hover button folds it away without a jump, a
+//   hide      an entry's hover button, under its number and clear of the
+//             list's right edge where the scrollbar draws, folds it away
+//             without a jump, a
 //             neighbor joins the same fold, which carries the dividers an
 //             entry does, the other numbers stay, the fold survives a reload
 //             (stored under the conversation's id), and a click on it brings
@@ -669,8 +671,13 @@ export async function run(ctx) {
       await moveTo(center(await entryBox(i)));
       await ctx.sleep(60);
       const b = await json(
-        `(function(){var b=${q(hideBtn(i))},r=b.getBoundingClientRect(),s=b.querySelector("svg").getBoundingClientRect();` +
-          `return{vis:getComputedStyle(b).visibility,box:r.width+"x"+r.height,icon:s.width+"x"+s.height}})()`,
+        `(function(){var b=${q(hideBtn(i))},r=b.getBoundingClientRect(),s=b.querySelector("svg").getBoundingClientRect(),` +
+          `it=b.closest(".ccup-hist-item"),n=it.querySelector(".ccup-hist-num").getBoundingClientRect(),` +
+          `t=it.querySelector(".ccup-hist-txt").getBoundingClientRect(),w=it.getBoundingClientRect(),` +
+          `p=${q(PANE)}.getBoundingClientRect();` +
+          `return{vis:getComputedStyle(b).visibility,box:r.width+"x"+r.height,icon:s.width+"x"+s.height,` +
+          `under:r.top>=n.bottom-0.5,flush:Math.abs(r.right-n.right)<0.6,beforeText:r.right<=t.left+0.5,` +
+          `inRow:r.bottom<=w.bottom+0.5,fromRight:Math.round(p.right-r.right)}})()`,
       );
       if (shot) {
         await moveTo(center(await rect(hideBtn(i))));
@@ -702,6 +709,11 @@ export async function run(ctx) {
     check(
       "hide: a 24px button with a 16px icon shows on hover",
       hv.vis === "visible" && hv.box === "24x24" && hv.icon === "16x16",
+      JSON.stringify(hv),
+    );
+    check(
+      "hide: it sits under the number, flush right, before the text, clear of the scrollbar edge",
+      hv.under && hv.flush && hv.beforeText && hv.inRow && hv.fromRight > 100,
       JSON.stringify(hv),
     );
     let fs = await folds();

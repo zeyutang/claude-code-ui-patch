@@ -4392,8 +4392,8 @@ function promptHistBuild(c: string): string | undefined {
     ".ccup-hist-nl{margin:0 .3em;color:var(--app-secondary-foreground);opacity:.7;font-family:var(--app-monospace-font-family,monospace);font-size:.85em}" +
     // The hide button, on the first line's axis (font:inherit, or the button's
     // own UA font would size 1lh), shown with its entry's hover or focus.
-    ".ccup-hist-hide{flex:none;align-self:flex-start;display:flex;align-items:center;justify-content:center;width:20px;height:20px;margin:calc((1lh - 20px)/2) -4px 0 0;padding:0;border:none;border-radius:4px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}" +
-    ".ccup-hist-hide svg{display:block;width:14px;height:14px}" +
+    ".ccup-hist-hide{flex:none;align-self:flex-start;display:flex;align-items:center;justify-content:center;width:24px;height:24px;margin:calc((1lh - 24px)/2) -4px 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}" +
+    ".ccup-hist-hide svg{display:block;width:16px;height:16px}" +
     `.ccup-hist-item${HOVER} .ccup-hist-hide,.ccup-hist-item:focus-visible .ccup-hist-hide{visibility:visible}` +
     `.ccup-hist-hide${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-hide{color:inherit}" +

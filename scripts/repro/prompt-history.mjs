@@ -659,19 +659,27 @@ export async function run(ctx) {
       });
     const hideBtn = (i) =>
       `${PANE} .ccup-hist-item[data-i="${i}"] .ccup-hist-hide`;
-    const hideVia = async (i) => {
+    // Hovers entry i, reads its hide button (visibility, box and icon size),
+    // optionally shoots it hovered, then clicks it.
+    const hideVia = async (i, shot) => {
       await ctx.evaluate(
         `(function(){var p=${q(PANE)},it=p.querySelector('.ccup-hist-item[data-i="${i}"]');` +
           `p.scrollTop=it.offsetTop-(p.clientHeight-it.offsetHeight)/2})()`,
       );
       await moveTo(center(await entryBox(i)));
       await ctx.sleep(60);
-      const vis = await ctx.evaluate(
-        `getComputedStyle(${q(hideBtn(i))}).visibility`,
+      const b = await json(
+        `(function(){var b=${q(hideBtn(i))},r=b.getBoundingClientRect(),s=b.querySelector("svg").getBoundingClientRect();` +
+          `return{vis:getComputedStyle(b).visibility,box:r.width+"x"+r.height,icon:s.width+"x"+s.height}})()`,
       );
+      if (shot) {
+        await moveTo(center(await rect(hideBtn(i))));
+        await ctx.sleep(60);
+        await ctx.shot(shot);
+      }
       await click(center(await rect(hideBtn(i))));
       await ctx.sleep(100);
-      return vis;
+      return b;
     };
     const folds = () =>
       json(
@@ -690,8 +698,12 @@ export async function run(ctx) {
     await clickSel(BTN);
     await ctx.sleep(200);
     const stH = await scrollTop();
-    const hv = await hideVia(3);
-    check("hide: the button shows on hover", hv === "visible", hv);
+    const hv = await hideVia(3, "hide-hover");
+    check(
+      "hide: a 24px button with a 16px icon shows on hover",
+      hv.vis === "visible" && hv.box === "24x24" && hv.icon === "16x16",
+      JSON.stringify(hv),
+    );
     let fs = await folds();
     check(
       "hide: entry 4 folds into one row",

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The prompt history's hide button is larger, so it is easier to hit.
+
 ## 1.6.1
 
 - New `chatPromptHistoryButton` setting: a button above the input box, left of the jump buttons, lists your messages in the conversation, numbered from 1, each in at most two lines with line breaks shown as `\n`.

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.1
 
 - New `chatPromptHistoryButton` setting: a button above the input box, left of the jump buttons, lists your messages in the conversation, numbered from 1, each in at most two lines with line breaks shown as `\n`.
   Clicking one jumps to it as the jump buttons do, and the list stays open so you can hop between messages until `Escape` closes it.

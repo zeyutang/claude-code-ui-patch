@@ -73,7 +73,9 @@ export const WEIGHT_STEP = 100;
 export const NATIVE_BOLD_WEIGHT = 700;
 
 export type Section =
-  "Chat Panel or Tab" | "Plan Mode Markdown Preview" | "Behavior";
+  | "Chat Panel or Tab"
+  | "Plan Mode Markdown Preview"
+  | "Behavior";
 export const SECTION_ORDER: Section[] = [
   "Chat Panel or Tab",
   "Plan Mode Markdown Preview",
@@ -1744,7 +1746,7 @@ function gateHovers(css: string): { out: string; count: number } {
   // Index just past the "}" that closes the block opened at j.
   const blockEnd = (j: number): number => {
     let depth = 0;
-    for (let k = j; k < n;) {
+    for (let k = j; k < n; ) {
       const a = atomEnd(k);
       if (a !== k) {
         k = a;
@@ -1759,7 +1761,7 @@ function gateHovers(css: string): { out: string; count: number } {
   // The selector text from s to e with the gate after each :hover.
   const gate = (s: number, e: number): string => {
     let r = "";
-    for (let k = s; k < e;) {
+    for (let k = s; k < e; ) {
       const a = atomEnd(k);
       if (a !== k) {
         r += css.slice(k, a);
@@ -7838,7 +7840,7 @@ const TOGGLE_POINTS: TogglePoint[] = [
     // After scrollDot and jumpMsg: its button's slot reads both markers.
     id: "promptHist",
     section: "Behavior",
-    label: "Chat panel or tab: list sent msgs to jump to one",
+    label: "Chat panel or tab: list history of sent msgs to jump to one",
     key: "chatPromptHistoryButton",
     defaultOn: false,
     file: "webview/index.js",
@@ -9747,7 +9749,11 @@ export function analyze(
 // "missing": a missing anchor means a wanted customization silently can't apply
 // and the panel should say so, whereas here the user gets the behavior anyway.
 export type ToggleStatus =
-  "current" | "stock" | "custom" | "missing" | "native";
+  | "current"
+  | "stock"
+  | "custom"
+  | "missing"
+  | "native";
 export interface ToggleState {
   id: string;
   label: string;

@@ -97,6 +97,7 @@ Always applied                         # no setting; installing this patch is th
    ├── session delete button           # session list rows: move a conversation to the Trash
    ├── untitled session stays          # opening the history keeps you on an Untitled session
    ├── editor selection colors         # selected text in the editor's selection colors
+   ├── input box redraw                # selecting chat text no longer redraws the input box
    └── inline math spans               # fix for math rendering
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native

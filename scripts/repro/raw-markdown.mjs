@@ -118,8 +118,7 @@ function rawMdCss(railLeft) {
     "box-shadow:0 1px 3px #00000033;cursor:pointer;opacity:0;pointer-events:none;" +
     "transition:opacity .15s ease;z-index:2";
   return (
-    ".ccup-rawmd-host{position:relative}" +
-    '[data-testid="assistant-message"]>.ccup-rawmd-host{align-self:stretch}' +
+    '[data-testid="assistant-message"]>.ccup-rawmd-host{position:relative;align-self:stretch}' +
     ".ccup-rawmd{margin:0;white-space:pre-wrap;overflow-wrap:break-word;tab-size:4}" +
     `.ccup-rawmd-rail{${rail}}` +
     '[data-testid="assistant-message"]>.ccup-rawmd-host>.ccup-rawmd-rail{display:block}' +
@@ -324,7 +323,9 @@ export async function run(ctx) {
   );
 
   // --- serve the live stylesheet plus the point's own line ----------------
-  const sheet = `${css}\n${rawMdCss(railLeft)}`;
+  // A live install carrying the point has its own copy of the line, possibly
+  // an older form, which would compete with the mirror under test.
+  const sheet = `${css.replace(/\n?\/\*ccup:rawMdCss\*\/[^\n]*/g, "")}\n${rawMdCss(railLeft)}`;
   const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="/index.css">
 <style>
@@ -489,6 +490,7 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
           return {
             display: s.display, opacity: num(s.opacity), pe: s.pointerEvents,
             position: s.position, top: s.top, zIndex: s.zIndex,
+            hostPos: hostEl ? getComputedStyle(hostEl).position : null,
             btn: q, turn: box(turn), turnPad: pad(turn),
             host: hostEl ? box(hostEl) : null,
             rail: railEl ? box(railEl) : null,
@@ -599,6 +601,18 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       "the rail itself never takes the pointer",
       r.patched.railPe === "none",
       r.patched.railPe,
+    );
+    // Every positioned box costs Blink's hit test a visit, so only a host that
+    // anchors a rail is one.
+    check(
+      "a response's host anchors the rail",
+      r.patched.hostPos === "relative",
+      r.patched.hostPos,
+    );
+    check(
+      "hosts on other surfaces take no layer",
+      r.nested.hostPos === "static" && r.thinking.hostPos === "static",
+      `tool-result=${r.nested.hostPos} thinking=${r.thinking.hostPos}`,
     );
 
     // --- geometry ----------------------------------------------------------

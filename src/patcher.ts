@@ -2674,6 +2674,200 @@ export function untitledStaysWebview(web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Input box selection redraw (always on): the input box's mention and
+// slash-command detector (the hook yielding `{atMention,slashCommand,...}`)
+// subscribes to `selectionchange` on the whole document and answers every one
+// by bumping a state counter, `()=>{<set>(n=>n+1)}`, which re-renders the
+// whole input area. A drag across the transcript fires one per mouse move, so
+// the input area re-rendered at the pointer's rate while nothing in it could
+// change: the hook's own memo leaves the counter out of its deps, and every
+// read of the selection in that component sits in an event callback, never
+// in render. On a 150-turn transcript that was about half of a drag's script
+// time, roughly 0.4ms a move.
+//
+// One fragment, /*ccup:mentionRedraw*/.../*ccup:mentionRedrawEnd*/, at the
+// head of the listener's body lets the bump through only when the selection
+// touches the editable (an end inside it, or the editable inside the range)
+// or touched it at the previous change. A caret move, a selection inside the
+// box, and the change that leaves it all re-render exactly as natively, and a
+// selection that never comes near the box stays out of React. The previous
+// answer rides on the editable as an expando, and any error lets the bump
+// through.
+//
+// Found by structure (src/derive.ts): in a function that builds an object
+// carrying both atMention and slashCommand, an effect `<eff>(()=>{...},[J])`
+// whose callback returns early on `!J`, calls
+// `document.addEventListener("selectionchange",U)` and
+// `J.addEventListener("keydown",H)`, and declares U itself as exactly that
+// one-statement counter bump, with J the function's own parameter wherever the
+// fragment reads it.
+// ---------------------------------------------------------------------------
+const MREDRAW_MARKER = "/*ccup:mentionRedraw*/";
+const MREDRAW_END = "/*ccup:mentionRedrawEnd*/";
+const MREDRAW_FRAG_RE =
+  /\/\*ccup:mentionRedraw\*\/[\s\S]*?\/\*ccup:mentionRedrawEnd\*\//g;
+const MREDRAW_FILE = "webview/index.js";
+// Set on the editable: whether the previous selection change touched it.
+const MREDRAW_IN_PROP = "__ccupMentionIn";
+// How far ahead of a "selectionchange" token its function may start (the
+// detector spans about 900 chars on 2.1.304).
+const MREDRAW_REACH = 20000;
+
+// `<obj>.addEventListener("<type>",<fn>)` with both identifiers, as their
+// names, or null.
+function mredrawListener(n: N, type: string): [string, string] | null {
+  if (
+    n.type !== "CallExpression" ||
+    n.arguments.length !== 2 ||
+    memberProp(n.callee) !== "addEventListener" ||
+    !isStr(n.arguments[0], type)
+  )
+    return null;
+  const obj = idName(n.callee.object);
+  const fn = idName(n.arguments[1]);
+  return obj && fn ? [obj, fn] : null;
+}
+
+// `<set>(n=>n+1)`: one call of an identifier on an arrow adding 1 to its only
+// parameter.
+function mredrawIsBump(st: N | undefined): boolean {
+  if (!st || st.type !== "ExpressionStatement") return false;
+  const call = st.expression;
+  if (
+    call.type !== "CallExpression" ||
+    !idName(call.callee) ||
+    call.arguments.length !== 1
+  )
+    return false;
+  const f = call.arguments[0];
+  if (f.type !== "ArrowFunctionExpression" || f.params.length !== 1)
+    return false;
+  const p = idName(f.params[0]);
+  const b = f.body;
+  return (
+    !!p &&
+    b.type === "BinaryExpression" &&
+    b.operator === "+" &&
+    idName(b.left) === p &&
+    b.right.type === "Literal" &&
+    b.right.value === 1
+  );
+}
+
+// The gate the fragment puts ahead of the bump, reading the editable as J.
+function mredrawGate(j: string): string {
+  const p = MREDRAW_IN_PROP;
+  return (
+    `if(!function(e){try{var s=document.getSelection(),` +
+    `t=!!s&&s.rangeCount>0&&(e.contains(s.anchorNode)||e.contains(s.focusNode)||s.containsNode(e,!0)),` +
+    `w=!!e.${p};e.${p}=t;return t||w}catch(x){return!0}}(${j}))return;`
+  );
+}
+
+function mentionRedrawFind(c: string): { unit: N; edit: Edit } | null {
+  const detectors = unitsWith(
+    c,
+    '"selectionchange"',
+    "function",
+    isFn,
+    MREDRAW_REACH,
+  ).filter((f) => {
+    let found = false;
+    walk(f, (n) => {
+      if (found) return false;
+      if (hasKeys(n, ["atMention", "slashCommand"])) found = true;
+    });
+    return found;
+  });
+  const sites: { unit: N; edit: Edit }[] = [];
+  for (const hook of detectors) {
+    walk(hook, (n) => {
+      const sel = mredrawListener(n, "selectionchange");
+      if (!sel || sel[0] !== "document") return;
+      // The effect callback making the call, and the effect keyed on [J].
+      let eff = n.parent;
+      while (eff && !isFn(eff)) eff = eff.parent;
+      if (!eff || eff === hook || eff.body.type !== "BlockStatement") return;
+      const call = eff.parent;
+      const deps = call?.arguments?.[1];
+      if (
+        call?.type !== "CallExpression" ||
+        call.arguments[0] !== eff ||
+        deps?.type !== "ArrayExpression" ||
+        deps.elements.length !== 1
+      )
+        return;
+      const j = idName(deps.elements[0]);
+      if (!j || !hook.params.some((p: N) => idName(p) === j)) return;
+      const first = eff.body.body[0];
+      if (
+        first?.type !== "IfStatement" ||
+        first.test.type !== "UnaryExpression" ||
+        first.test.operator !== "!" ||
+        idName(first.test.argument) !== j ||
+        first.consequent.type !== "ReturnStatement"
+      )
+        return;
+      let keys = false;
+      walkOwn(eff, (m) => {
+        if (keys) return false;
+        if (mredrawListener(m, "keydown")?.[0] === j) keys = true;
+      });
+      if (!keys) return;
+      // U, declared in the callback as the bump, is what the call passes.
+      const u = sel[1];
+      const decls: N[] = [];
+      walkOwn(eff, (m) => {
+        if (m.type === "VariableDeclarator" && idName(m.id) === u)
+          decls.push(m);
+      });
+      if (decls.length !== 1) return;
+      const fn = decls[0].init;
+      if (
+        fn?.type !== "ArrowFunctionExpression" ||
+        fn.params.length !== 0 ||
+        fn.body.type !== "BlockStatement" ||
+        fn.body.body.length !== 1 ||
+        !mredrawIsBump(fn.body.body[0])
+      )
+        return;
+      const uScope = bindingSite(n.arguments[1], u, hook);
+      if (!uScope || decls[0].parent?.parent !== uScope) return;
+      if (bindingSite(fn.body.body[0], j, hook) !== hook) return;
+      sites.push({
+        unit: hook,
+        edit: {
+          pos: fn.body.start + 1,
+          text: `${MREDRAW_MARKER}${mredrawGate(j)}${MREDRAW_END}`,
+        },
+      });
+    });
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The native webview bundle with the fragment in, or null when the site is
+// missing or the edit would not parse.
+const mentionRedrawBuild = sdelMemo((native) => {
+  const site = mentionRedrawFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, [site.edit]);
+  return unitsReparse(out, [site.edit], [[site.unit, isFn]]) ? out : null;
+});
+
+function mentionRedrawPatch(native: string): string | null {
+  return mentionRedrawBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its site is gone. scripts/repro's mention-redraw.mjs serves
+// this, so it runs exactly what the patcher writes and doubles as the drift
+// canary.
+export function mentionRedrawWebview(web: string): string | null {
+  return mentionRedrawBuild(web.replace(MREDRAW_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
 // Chat math rendering (ON): the chat webview renders agent markdown through
 // react-markdown with no math support, so TeX like $\mathcal{G}$ shows as raw
 // source. When ON we render it with a bundled KaTeX (vendored under this
@@ -7406,9 +7600,10 @@ function rawMdRailLeft(css: string): number {
 // (deliberately short) rules, the rail, and the button. The rail carries the
 // scope gate: only a text block that is a direct child of an assistant turn
 // grows one, which is what keeps the button off thinking blocks, tool-result
-// text and the other surfaces the component serves. It is absolute and
-// pointer-events:none, so it neither takes flow space nor shadows anything it
-// covers. Its `left` is negative, reaching back out of the host and into the
+// text and the other surfaces the component serves, and the host is
+// positioned only there, the one place a rail needs an anchor. It is absolute
+// and pointer-events:none, so it neither takes flow space nor shadows anything
+// it covers. Its `left` is negative, reaching back out of the host and into the
 // turn's padding, where nothing clips it: an assistant message is always a
 // .timelineMessage_ (the class list carrying the testid the gate keys on says
 // so), and the chat scroller's own 20px side padding leaves the 26px square
@@ -7443,6 +7638,16 @@ function rawMdRailLeft(css: string): number {
 // clickable. z-index puts it in the
 // header's own layer, where tree order paints it on top: should an offset ever
 // go stale the button overlaps the header instead of vanishing under it.
+//
+// The button keeps that layer at rest on purpose. Blink's hit test visits
+// every positioned or translucent box in the chat, so a sticky button on each
+// response costs every pointer move in a long conversation something, but
+// dropping the layer at rest and raising it on hover measured slower for drag
+// selection: each row the pointer crosses then creates or destroys a layer,
+// the churn costs more main-thread time than the leaner tree saves, and a
+// color fade in place of opacity repaints the chat every frame where the
+// opacity fade runs on the compositor. The hosts of the other surfaces, which
+// never show a button, carry no layer at all.
 function rawMdCssBuild(css: string): string | undefined {
   const railLeft = rawMdRailLeft(css);
   const rail =
@@ -7461,8 +7666,7 @@ function rawMdCssBuild(css: string): string | undefined {
   const on = `color:var(--app-primary-foreground);border-color:var(--app-secondary-foreground)`;
   const dim = `opacity:${RAWMD_DIM}`;
   return (
-    `${RAWMD_CSS_MARKER}.${RAWMD_HOST_CLASS}{position:relative}` +
-    `${RAWMD_ROW_SEL}>.${RAWMD_HOST_CLASS}{align-self:stretch}` +
+    `${RAWMD_CSS_MARKER}${RAWMD_ROW_SEL}>.${RAWMD_HOST_CLASS}{position:relative;align-self:stretch}` +
     `.${RAWMD_PRE_CLASS}{margin:0;white-space:pre-wrap;overflow-wrap:break-word;tab-size:4}` +
     `.${RAWMD_RAIL_CLASS}{${rail}}` +
     `${RAWMD_ROW_SEL}>.${RAWMD_HOST_CLASS}>.${RAWMD_RAIL_CLASS}{display:block}` +
@@ -8003,6 +8207,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: "webview/index.js",
     marker: SELECTION_MARKER,
     build: selectionWatchBuild,
+  },
+  {
+    kind: "inline",
+    id: "mentionRedraw",
+    label: "input box selection redraw",
+    file: MREDRAW_FILE,
+    frags: MREDRAW_FRAG_RE,
+    patch: mentionRedrawPatch,
   },
   {
     kind: "inline",

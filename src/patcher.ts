@@ -1386,6 +1386,20 @@ function permNoWrapSet(c: string, on: boolean): string {
 // <svg> takes no tint either way). A missing variable falls back to the system
 // Highlight rather than to an invisible selection.
 //
+// The composer is the one place the highlight has to carry the text as well.
+// Its editable draws its own text transparent (color and
+// -webkit-text-fill-color both #0000) over a mirror sibling that renders the
+// visible text with the mentions styled, so the native translucent highlight
+// let the mirror show through where the editor's opaque color covers it, and
+// a selection there read as a blank block. The line therefore paints the
+// editable's selected glyphs itself, in the mirror's own color: the highlight
+// pseudo needs both `color` (Blink paints selected text on its own only when
+// the highlight's color is set) and `-webkit-text-fill-color` (the element's
+// transparent fill would win otherwise). Found by the mirror rule and the
+// editable rule sharing one hash, and skipped when that pair is gone; the
+// repro's composer check is the canary. In high contrast the selection
+// foreground takes over the fill as well, so its rule comes last.
+//
 // The focus switch is the JS half (selectionColors), since no selector
 // follows frame focus (:window-inactive tracks the OS window, so it stays
 // active while the editor has focus). On window blur it marks the selection's
@@ -1411,15 +1425,29 @@ const SELECTION_INACTIVE_ATTR = "data-ccup-sel-inactive";
 // The JS half's once-only guard on window.
 const SELECTION_FLAG = "__ccupSelectionColors";
 
-function selectionCssBuild(): string {
+// The composer's mirror pair: the mirror rule's hash and text color, and the
+// editable of the same hash drawing its own text transparent.
+const SELECTION_MIRROR_RE =
+  /\.mentionMirror_([-\w]+)\{(?:[^}]*;)?color:([^;}]+)/;
+const selectionEditableRe = (hash: string): RegExp =>
+  new RegExp(`\\.messageInput_${hash}\\{(?:[^}]*;)?color:#0000[;}]`);
+
+function selectionCssBuild(css: string): string {
   const v = "--ccup-selection";
+  const hc = "var(--vscode-editor-selectionForeground,currentcolor)";
+  const mirror = css.match(SELECTION_MIRROR_RE);
+  const composer =
+    mirror && selectionEditableRe(mirror[1]).test(css)
+      ? `.messageInput_${mirror[1]}::selection{color:${mirror[2]};-webkit-text-fill-color:${mirror[2]}}`
+      : "";
   return (
     SELECTION_CSS_MARKER +
     `:root{${v}:var(--vscode-editor-selectionBackground,Highlight)}` +
     `[${SELECTION_INACTIVE_ATTR}]{${v}:var(--vscode-editor-inactiveSelectionBackground,Highlight)}` +
     `::selection{background-color:var(${v})}` +
     `img::selection{background-color:color-mix(in srgb,var(${v}) 50%,transparent)}` +
-    `.vscode-high-contrast ::selection{color:var(--vscode-editor-selectionForeground,currentcolor)}`
+    composer +
+    `.vscode-high-contrast ::selection{color:${hc};-webkit-text-fill-color:${hc}}`
   );
 }
 
@@ -1448,7 +1476,7 @@ export function selectionColorsWebview(
 ): { js: string; css: string } {
   return {
     js: cssApplyLine(js, SELECTION_MARKER, selectionWatchBuild()),
-    css: cssApplyLine(css, SELECTION_CSS_MARKER, selectionCssBuild()),
+    css: cssApplyLine(css, SELECTION_CSS_MARKER, selectionCssBuild(css)),
   };
 }
 
@@ -7600,10 +7628,9 @@ function rawMdRailLeft(css: string): number {
 // (deliberately short) rules, the rail, and the button. The rail carries the
 // scope gate: only a text block that is a direct child of an assistant turn
 // grows one, which is what keeps the button off thinking blocks, tool-result
-// text and the other surfaces the component serves, and the host is
-// positioned only there, the one place a rail needs an anchor. It is absolute
-// and pointer-events:none, so it neither takes flow space nor shadows anything
-// it covers. Its `left` is negative, reaching back out of the host and into the
+// text and the other surfaces the component serves. It is absolute and
+// pointer-events:none, so it neither takes flow space nor shadows anything it
+// covers. Its `left` is negative, reaching back out of the host and into the
 // turn's padding, where nothing clips it: an assistant message is always a
 // .timelineMessage_ (the class list carrying the testid the gate keys on says
 // so), and the chat scroller's own 20px side padding leaves the 26px square
@@ -7638,16 +7665,6 @@ function rawMdRailLeft(css: string): number {
 // clickable. z-index puts it in the
 // header's own layer, where tree order paints it on top: should an offset ever
 // go stale the button overlaps the header instead of vanishing under it.
-//
-// The button keeps that layer at rest on purpose. Blink's hit test visits
-// every positioned or translucent box in the chat, so a sticky button on each
-// response costs every pointer move in a long conversation something, but
-// dropping the layer at rest and raising it on hover measured slower for drag
-// selection: each row the pointer crosses then creates or destroys a layer,
-// the churn costs more main-thread time than the leaner tree saves, and a
-// color fade in place of opacity repaints the chat every frame where the
-// opacity fade runs on the compositor. The hosts of the other surfaces, which
-// never show a button, carry no layer at all.
 function rawMdCssBuild(css: string): string | undefined {
   const railLeft = rawMdRailLeft(css);
   const rail =
@@ -7666,7 +7683,8 @@ function rawMdCssBuild(css: string): string | undefined {
   const on = `color:var(--app-primary-foreground);border-color:var(--app-secondary-foreground)`;
   const dim = `opacity:${RAWMD_DIM}`;
   return (
-    `${RAWMD_CSS_MARKER}${RAWMD_ROW_SEL}>.${RAWMD_HOST_CLASS}{position:relative;align-self:stretch}` +
+    `${RAWMD_CSS_MARKER}.${RAWMD_HOST_CLASS}{position:relative}` +
+    `${RAWMD_ROW_SEL}>.${RAWMD_HOST_CLASS}{align-self:stretch}` +
     `.${RAWMD_PRE_CLASS}{margin:0;white-space:pre-wrap;overflow-wrap:break-word;tab-size:4}` +
     `.${RAWMD_RAIL_CLASS}{${rail}}` +
     `${RAWMD_ROW_SEL}>.${RAWMD_HOST_CLASS}>.${RAWMD_RAIL_CLASS}{display:block}` +

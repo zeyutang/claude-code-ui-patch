@@ -15,6 +15,10 @@
 //             unfocused (the native find) is re-marked where it lands, focus
 //             coming back restores the active color, and the mark sits on the
 //             selection's subtree, never inside the composer's editable
+//   composer  the input box draws its own text transparent over a mirror, so
+//             the line paints its selected glyphs itself: they stay legible
+//             over the editor color, focused and unfocused alike (natively
+//             the translucent highlight let the mirror show through)
 //   contrast  under the high-contrast body class the selected text takes the
 //             theme's selection foreground
 //   native    the unpatched bundle installs nothing and paints its own color
@@ -257,7 +261,8 @@ var out={};
 for(var k in probes){var p=probes[k];if(!p)continue;
 if(Array.isArray(p)){out[k]=hex(g.getImageData(Math.round(p[0]*S),Math.round(p[1]*S),1,1).data,0)}
 else{var x=Math.floor(p.x*S),y=Math.floor(p.y*S),w=Math.max(1,Math.ceil(p.w*S)),h=Math.max(1,Math.ceil(p.h*S));
-var d=g.getImageData(x,y,w,h).data,n=0;for(var i=0;i<d.length;i+=4)if(hex(d,i)===p.want)n++;out[k]=n}}
+var d=g.getImageData(x,y,w,h).data,n=0,seen={};for(var i=0;i<d.length;i+=4){var c=hex(d,i);if(p.distinct)seen[c]=1;else if(c===p.want)n++}
+out[k]=p.distinct?Object.keys(seen).length:n}}
 return out}`;
 
 const MARK = "[data-ccup-sel-inactive]";
@@ -534,13 +539,36 @@ export async function run(ctx) {
     f2.hasFocus && f2.marks.length === 0 && pf.g1 === DARK.sel,
     `${pf.g1} marks=${f2.marks.join()} focus=${f2.active} kept=${f2.kept}`,
   );
-  // A selection inside the composer: the mark goes on the editable's parent,
-  // never into the editor's own DOM.
+  // A selection inside the composer. Its editable draws its own text
+  // transparent over a mirror sibling, the construction the line's composer
+  // rule is for: the selected glyphs have to stay legible over the editor
+  // color, focused and unfocused alike, and the mark goes on the editable's
+  // parent, never into the editor's own DOM.
+  const COMPOSER_SEL =
+    `var e=editable(),t=e.firstChild,r=d.createRange();r.setStart(t,0);r.setEnd(t,15);` +
+    `var s=w.getSelection();s.removeAllRanges();s.addRange(r);var b=r.getBoundingClientRect();` +
+    `return{rect:{x:b.x,y:b.y,w:b.width,h:b.height},transparent:getComputedStyle(e).color==="rgba(0, 0, 0, 0)",` +
+    `mirror:!!d.querySelector("[class*=mentionMirror_]"),fg:hex(getComputedStyle(d.querySelector("[class*=mentionMirror_]")||e.parentElement).color)}`;
   const ib = await inner(`var e=editable();return e?box(e):null`);
   if (check("the composer's editable is up", !!ib)) {
     await click(ib.x + ib.w / 2, ib.y + ib.h / 2);
-    await ctx.insertText("hello selection");
-    await inner(`w.getSelection().selectAllChildren(editable())`);
+    await ctx.insertText("hello selection colors");
+    const cs = await inner(COMPOSER_SEL);
+    await ctx.sleep(150);
+    check(
+      "composer: the editable draws its text transparent over a mirror",
+      cs.transparent && cs.mirror,
+      `transparent=${cs.transparent} mirror=${cs.mirror}`,
+    );
+    const pc = await sample({
+      fg: { ...cs.rect, want: cs.fg },
+      bg: { ...cs.rect, want: DARK.sel },
+    });
+    check(
+      "composer: selected text stays legible over the editor color",
+      pc.fg > 0 && pc.bg > 0,
+      `${pc.fg} px of ${cs.fg}, ${pc.bg} px of ${DARK.sel}`,
+    );
     await blurFrame();
     await ctx.sleep(150);
     const c = await inner(
@@ -550,6 +578,15 @@ export async function run(ctx) {
       "blur: a selection in the composer marks its wrapper, not the editable",
       c.count === 1 && !c.inside && !c.self && c.onParent,
       `count=${c.count} inside=${c.inside} self=${c.self} onParent=${c.onParent} collapsed=${c.collapsed}`,
+    );
+    const pcb = await sample({
+      fg: { ...cs.rect, want: cs.fg },
+      bg: { ...cs.rect, want: DARK.inactive },
+    });
+    check(
+      "composer: unfocused, the inactive color keeps the text legible",
+      pcb.fg > 0 && pcb.bg > 0,
+      `${pcb.fg} px of ${cs.fg}, ${pcb.bg} px of ${DARK.inactive}`,
     );
   }
 
@@ -567,6 +604,24 @@ export async function run(ctx) {
     hc.hcClass && ph.g1 === HC.sel && ph.fg > 0,
     `${ph.g1} ${ph.fg} px of ${HC.fg}`,
   );
+  // The composer's own rule gives way to the selection foreground here, so
+  // its selected text reads in that color, not in the mirror's input white.
+  const hib = await inner(`var e=editable();return e?box(e):null`);
+  if (hib) {
+    await click(hib.x + hib.w / 2, hib.y + hib.h / 2);
+    await ctx.insertText("hello selection colors");
+    const hcs = await inner(COMPOSER_SEL);
+    await ctx.sleep(150);
+    const hp = await sample({
+      fg: { ...hcs.rect, want: HC.fg },
+      bg: { ...hcs.rect, want: HC.sel },
+    });
+    check(
+      "contrast: the composer's selected text takes the selection foreground",
+      hp.fg > 0 && hp.bg > 0,
+      `${hp.fg} px of ${HC.fg}, ${hp.bg} px of ${HC.sel}`,
+    );
+  }
 
   // --- native, dark theme ---
   await boot("native", "dark");
@@ -584,6 +639,22 @@ export async function run(ctx) {
     nv.flag && pn.g0 !== DARK.sel && nb === 0,
     `${pn.g0} marks=${nb}`,
   );
+  // Natively the composer's highlight is translucent, so the mirror's text
+  // shows through it and the selection is no single flat color: what the
+  // editor's opaque color took away, and the composer rule gives back.
+  const nib = await inner(`var e=editable();return e?box(e):null`);
+  if (nib) {
+    await click(nib.x + nib.w / 2, nib.y + nib.h / 2);
+    await ctx.insertText("hello selection colors");
+    const ncs = await inner(COMPOSER_SEL);
+    await ctx.sleep(150);
+    const np = await sample({ colors: { ...ncs.rect, distinct: true } });
+    check(
+      "native: the composer's translucent highlight lets the mirror through",
+      np.colors > 1,
+      `${np.colors} colors in the selection`,
+    );
+  }
 
   server.close();
   return ok;

@@ -96,7 +96,7 @@ Always applied                         # no setting; installing this patch is th
    ├── hidden cursor                   # macOS: a cursor hidden by typing hovers nothing until moved
    ├── session delete button           # session list rows: move a conversation to the Trash
    ├── untitled session stays          # opening the history keeps you on an Untitled session
-   └── digit-led inline math           # $0$, $1/2$, $0.5$ in responses render as math, not text
+   └── inline math spans               # fix for math rendering
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)

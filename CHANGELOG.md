@@ -3,8 +3,8 @@
 ## Unreleased
 
 - The prompt history's hide button is larger and sits under the message number, where the list's scrollbar no longer covers it.
-- Inline math in agent responses that opens with a digit, such as `$0$`, `$1/2$`, or the `$1$` of `$1$-Lipschitz`, now renders as math on Claude Code 2.1.301 and later instead of keeping its dollar signs.
-  Always applied, no setting; prices such as `$5 and $10` still show as text.
+- More inline math in agent responses renders as math on Claude Code 2.1.301 and later instead of keeping its dollar signs.
+  Always applied, no setting; prices, shell variables, and template placeholders such as `$5 and $10`, `$PATH:$HOME`, and `$END$` still show as text.
 
 ## 1.6.1
 

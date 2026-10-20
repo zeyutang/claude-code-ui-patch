@@ -1,22 +1,24 @@
-// Scenario for scripts/cdp-driver.mjs: the always-on digit-led inline math fix,
-// on the REAL webview bundle booted against a stub host into a transcript of two
-// responses. The first mixes digit-led spans ($0$, $1/2$, $0.5$, $1 - p$, the
-// $1$ of $1$-Lipschitz) with controls that must read the same either way:
-// letter-led and TeX spans that render natively, and currency and shell text
-// that must stay text. The second holds only digit-led spans the native
-// precheck cannot see ($0$, $3.14$), so it renders only with the precheck
+// Scenario for scripts/cdp-driver.mjs: the always-on inline math spans fix, on
+// the REAL webview bundle booted against a stub host into a transcript of two
+// responses. The first mixes a span for each rule the point widens ($0$, $J_O$,
+// "$\prec$", $G$'s, $(d,e)$, $(0, 1]$, $[n]$, $50$/$49$, the $1$ of $0$-$1$,
+// $TC$, $A[r]$, $Q(i,j)$, A$\to$B, H$_2$O, 10$^6$, a formula past 60
+// characters) with controls that must read the same either way: letter-led and
+// TeX spans that render natively, and currency, shell, template and path text
+// that must stay text. The second holds only spans the native precheck cannot
+// see ($0$, $3.14$, $[k]$, $TS$), so it renders only with the precheck
 // fragment in. Each row reads back as its text with every typeset span as
 // [[tex]], and the checks assert:
-//   native   the digit-led spans keep their dollar signs (the bug the point
-//            fixes; once this stops, Claude Code has fixed it itself and the
-//            point can be retired), and the controls read as expected
-//   patched  the digit-led spans typeset, the second response's included,
+//   native   the widened spans keep their dollar signs (the bugs the point
+//            fixes; a row that starts rendering natively means Claude Code has
+//            relaxed that rule itself), and the controls read as expected
+//   patched  every widened span typesets, the second response's included,
 //            and every control reads exactly as it did natively
 //
-//   node scripts/cdp-driver.mjs scripts/repro/math-digits.mjs 760 900
+//   node scripts/cdp-driver.mjs scripts/repro/math-spans.mjs 760 900
 //
 // The patched bundle served is the compiled patcher's own output for the live
-// install (mathDigitsWebview, out/, so compile first), so the scenario runs
+// install (mathSpansWebview, out/, so compile first), so the scenario runs
 // exactly what an apply writes and doubles as the drift canary. The live
 // bundle is found under ~/.vscode/extensions (newest Claude Code install) or
 // via $CCUP_BUNDLE (the webview directory).
@@ -54,12 +56,13 @@ function liveBundleDir() {
 }
 
 const R = "44444444-4444-4444-8444-444444444444";
+// This point's fragments, and the two its 1.6.1 development builds wrote.
 const FRAG_RE =
-  /\/\*ccup:mathDigits:[-\w]+\*\/[\s\S]*?\/\*ccup:mathDigitsEnd\*\//g;
+  /\/\*ccup:math(?:Spans|Digits):[-\w]+\*\/[\s\S]*?\/\*ccup:math(?:Spans|Digits)End\*\//g;
 
 // Each row is one paragraph, with the TeX of the spans it typesets in each
-// mode. A control lists the same spans for both. The first row is the report
-// that started this point, soft line break included.
+// mode. A control lists the same spans for both. The first three rows are the
+// reports that started this point, soft line break included.
 const FIRST = [
   {
     md: "written $\\max X \\cap W_i$, has size $0$ or $1$.\nand both of your candidates are readings of it.",
@@ -67,14 +70,36 @@ const FIRST = [
     patched: ["\\max X \\cap W_i", "0", "1"],
   },
   {
-    md: "with probability $1/2$, so $0.5$ overall, and $1 - p$ otherwise.",
-    native: [],
-    patched: ["1/2", "0.5", "1 - p"],
+    md: "where $J_O$ is what the observer has judged, and $F_O = \\max J_O$.",
+    native: ["F_O = \\max J_O"],
+    patched: ["J_O", "F_O = \\max J_O"],
   },
   {
-    md: "a $1$-Lipschitz map on a $3$-dimensional space.",
+    md: '"an item is a action under $\\prec$" is correct, and so is "$\\mathcal{G}$".',
     native: [],
-    patched: ["1", "3"],
+    patched: ["\\prec", "\\mathcal{G}"],
+  },
+  {
+    md: "$G$'s vertices, the pair $(d,e)$, the interval $(0, 1]$, and the set $[n]$.",
+    native: [],
+    patched: ["G", "(d,e)", "(0, 1]", "[n]"],
+  },
+  {
+    md: "ratios $50$/$49$, the $0$-$1$ loss, names $TC$ and $A[r]$, and $Q(i,j)$.",
+    native: [],
+    patched: ["50", "49", "0", "1", "TC", "A[r]", "Q(i,j)"],
+  },
+  {
+    md: "arrows A$\\to$B, water H$_2$O, and 10$^6$ steps.",
+    native: [],
+    patched: ["\\to", "_2", "^6"],
+  },
+  {
+    md: "where $r_5 = (r_1 \\circ (r_3 \\circ r_4)^* \\circ r_2 \\cup r_3 \\circ r_4)^* \\circ r_6$ holds.",
+    native: [],
+    patched: [
+      "r_5 = (r_1 \\circ (r_3 \\circ r_4)^* \\circ r_2 \\cup r_3 \\circ r_4)^* \\circ r_6",
+    ],
   },
   {
     md: "$n$ and $n-1$ and $2^n$ and $O(n)$ and $1+1=2$.",
@@ -84,13 +109,16 @@ const FIRST = [
     md: "It costs $5 and $10, or $5-$10, or $1.50/$2.00, and US$5.",
     control: [],
   },
-  { md: "Set $PATH:$HOME, then echo $1 $2 and $?.", control: [] },
+  {
+    md: "Set $PATH:$HOME, then echo $1 $2 and $?, the template $END$, and /api/$id$/items.",
+    control: [],
+  },
 ];
 const SECOND = [
   {
-    md: "The empty set has size $0$, and pi is about $3.14$.",
+    md: "The empty set has size $0$, pi is about $3.14$, the set $[k]$, and the name $TS$.",
     native: [],
-    patched: ["0", "3.14"],
+    patched: ["0", "3.14", "[k]", "TS"],
   },
 ];
 const want = (row, mode) => row.control ?? row[mode];
@@ -181,28 +209,32 @@ const TYPES = {
   ".woff2": "font/woff2",
 };
 
-// Every response's paragraphs, each read back as its text with every typeset
-// span replaced by [[<its TeX annotation>]].
+// Every response's paragraphs, each read back as the TeX annotation of every
+// typeset span in order, and as its text with each of those spans shown as
+// [[<tex>]] (for the report only: a body may hold brackets itself).
 const READBACK = `JSON.stringify([...document.querySelectorAll(
   '[data-testid="assistant-message"]')].map((m) => [...m.querySelectorAll("p")].map((p) => {
+  const spans = [];
   const rd = (n) => {
     if (n.nodeType === 3) return n.nodeValue;
     if (n.nodeType !== 1) return "";
-    if (n.classList.contains("katex"))
-      return "[[" + (n.querySelector("annotation")?.textContent ?? "?") + "]]";
+    if (n.classList.contains("katex")) {
+      const tex = n.querySelector("annotation")?.textContent ?? "?";
+      spans.push(tex);
+      return "[[" + tex + "]]";
+    }
     return [...n.childNodes].map(rd).join("");
   };
-  return rd(p);
+  return { text: rd(p), spans };
 })))`;
-const spansOf = (text) =>
-  [...text.matchAll(/\[\[([\s\S]*?)\]\]/g)].map((m) => m[1]);
+const typeset = (row) => (row?.spans.length ?? 0) > 0;
 
 export async function run(ctx) {
   const dir = liveBundleDir();
   const web = readFileSync(join(dir, "index.js"), "utf8");
   const bundles = {
     native: web.replace(FRAG_RE, ""),
-    patched: loadPatcher().mathDigitsWebview(web),
+    patched: loadPatcher().mathSpansWebview(web),
   };
   console.log(`live bundle: ${dir}`);
 
@@ -214,7 +246,7 @@ export async function run(ctx) {
     if (!cond) ok = false;
     return cond;
   };
-  if (!check("the patcher locates both sites", bundles.patched !== null))
+  if (!check("the patcher locates every site", bundles.patched !== null))
     return false;
 
   const server = createServer((req, res) => {
@@ -269,10 +301,7 @@ export async function run(ctx) {
     const seen = {};
     for (const mode of ["native", "patched"]) {
       await ctx.navigate(`${base}?mode=${mode}`);
-      let rows = await until(
-        (r) => r.length === 2 && (r[0][0] ?? "").includes("[["),
-        10000,
-      );
+      let rows = await until((r) => r.length === 2 && typeset(r[0][0]), 10000);
       const err = await ctx.evaluate(
         `document.getElementById("claude-error").textContent`,
       );
@@ -280,7 +309,7 @@ export async function run(ctx) {
         rows.length === 2 &&
         rows[0].length === FIRST.length &&
         rows[1].length === SECOND.length &&
-        rows[0][0].includes("[[");
+        typeset(rows[0][0]);
       if (
         !check(
           `${mode}: both responses rendered, math loaded`,
@@ -290,8 +319,8 @@ export async function run(ctx) {
       )
         return false;
       if (mode === "patched") {
-        rows = await until((r) => (r[1][0] ?? "").includes("[["), 3000);
-        await ctx.shot("math-digits");
+        rows = await until((r) => typeset(r[1][0]), 3000);
+        await ctx.shot("math-spans");
       } else {
         await ctx.sleep(600);
         rows = await read();
@@ -299,8 +328,7 @@ export async function run(ctx) {
       seen[mode] = rows;
       for (const [k, list] of [FIRST, SECOND].entries()) {
         list.forEach((row, i) => {
-          const got = rows[k][i];
-          const spans = spansOf(got);
+          const { text: got, spans } = rows[k][i];
           const label = row.control ? "control" : mode;
           check(
             `${mode} response ${k + 1} row ${i + 1} (${label}): ${JSON.stringify(want(row, mode))}`,
@@ -321,7 +349,7 @@ export async function run(ctx) {
       if (row.control)
         check(
           `control row ${i + 1} reads the same in both modes`,
-          seen.native[0][i] === seen.patched[0][i],
+          seen.native[0][i].text === seen.patched[0][i].text,
         );
     });
   } finally {

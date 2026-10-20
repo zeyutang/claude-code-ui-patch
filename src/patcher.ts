@@ -3403,63 +3403,99 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
 }
 
 // ---------------------------------------------------------------------------
-// Digit-led inline math (always on). Claude Code 2.1.301 picks the $...$ spans
-// of a response it typesets with a guard written against currency and shell
-// text, and the guard's last step drops plain arithmetic that opens with a
-// digit: $0$, $1/2$, $0.5$ and the $1$ of $1$-Lipschitz keep their dollar
-// signs, while $n$, $n-1$ and $-1$ render. A digit-led body first passes a
-// currency check (nothing alphanumeric before the opener, no Latin or Greek
-// letter, digit, `$` or backslash right after the closer, no "5 apples" shape,
-// no trailing operator, and a body its arithmetic grammar reads or one holding
-// TeX syntax), then the TeX test every span takes, which keeps a body holding
-// one of \ ^ { } = < > | ! + or a subscript, or else one its own arithmetic
-// grammar reads, but only when it does not open with a digit. So a digit-led
-// body the currency check reads as arithmetic is dropped anyway, unless it
-// also holds TeX syntax.
+// Inline math spans (always on). Claude Code 2.1.301 picks the $...$ spans of a
+// response it typesets with a guard written against currency, shell and
+// template text, and several of its rules also refuse plain math: $0$ and
+// $1/2$, the uppercase subscript of $J_O$, $(d,e)$ and $(0, 1]$, a span in
+// quotes ("$\prec$", $G$'s) or beside a slash ($50$/$49$), names such as $TC$
+// and $A[r]$, A$\to$B and H$_2$O, and any formula past 60 characters all keep
+// their dollar signs. The span finder rejects a space inside either delimiter
+// and a digit right after the closer, runs a currency check on a digit-led
+// body (nothing alphanumeric before the opener, no Latin or Greek letter,
+// digit, `$` or backslash after the closer, no "5 apples" shape, no trailing
+// operator, and a body its arithmetic grammar reads or one holding TeX
+// syntax), and then the TeX test, which caps the body at 60 characters, wants
+// the opener after a line start, whitespace, `(`, `[` or a non-ASCII
+// character, and the closer before a line end, whitespace, a non-ASCII
+// character, one of `.,;:!?)]*_~|-`, a backtick, `[` or `<`, refuses a
+// `{`-led body, and a `(`-led one unless its arithmetic grammar reads it or it
+// holds a letter command or `^`, and takes only a body that grammar reads
+// (never a digit-led one) or one holding one of \ ^ { } = < > | ! + or a
+// one-letter subscript (an uppercase base taking only a lowercase or digit
+// index), with no word of four letters or more.
 //
-// Two fragments, each /*ccup:mathDigits:<site>*/.../*ccup:mathDigitsEnd*/:
-//   guard  in the TeX test, on the declarator its final `return <q>||...`
-//          opens with (`<q>=<arith>(<body>)`, the arithmetic verdict):
-//          `||/^\d/.test(<body>)&&!/[\\{}^_=<>]/.test(<body>)`. A digit-led
-//          body reaches the test only past the currency check, whose last
-//          step is "its arithmetic grammar reads it, or it holds one of
-//          \ { } ^ _ = < >", so a digit-led body holding none of those is
-//          exactly one that grammar read.
-//   pre    in the precheck that decides whether a message enters the math
-//          pipeline at all (the `{display,inline}` read off its text), at the
-//          end of the `inline` alternatives: a test for a digit-led span,
-//          which the native one (a letter, or two or more characters around
-//          an operator) cannot see in $0$. Without it such a span would render
-//          only beside another formula.
-// Everything else stays native: the delimiter rules (no space inside either
-// delimiter, no digit right after the closer), so "$5 and $10", "$5-$10" and
-// "$1.50/$2.00" stay text, the currency check itself, the neighbors every
-// span needs (a span right after `-`, or right before `'`, stays text whatever
-// its body), and the refusal of bracket-led bodies such as $[0,1]$.
+// Seven fragments, each /*ccup:mathSpans:<site>*/.../*ccup:mathSpansEnd*/,
+// six in the TeX test and one in the precheck, each widening one rule:
+//   long      a body up to 200 characters that holds a command of two or more
+//             letters
+//   before    the opener may follow `"`, `'` or `-`, a `/` unless a `/` also
+//             follows the closer (a path segment), or a letter or digit when
+//             the body holds strong TeX evidence: a command of two or more
+//             letters, or a leading `^` or `_` (A$\to$B, H$_2$O, 10$^6$)
+//   after     the closer may precede `"` or `'`, a `/` unless one also
+//             precedes the opener, or a letter given strong TeX evidence
+//   shape     the arithmetic verdict also takes a digit-led body with none of
+//             \ { } ^ _ = < > (given the currency check it already passed, a
+//             body its arithmetic grammar read), a comma list of groups (an
+//             optional one-letter name, a parenthesized or bracketed list of
+//             numbers and subscripted letters, an optional subscript), an
+//             indexed letter such as A[rr], or a two-letter name
+//   paren     a `(`-led body may also hold an escaped brace, \{ or \}
+//   evidence  an uppercase letter with an uppercase index (J_O), or a body
+//             that is a subscript alone (_2, _{min}), counts as TeX syntax
+//   pre       the precheck that decides whether a message enters the math
+//             pipeline at all (the `{display,inline}` read off its text) also
+//             passes any message holding a span with no space inside either
+//             delimiter, since the native one (a letter, or two or more
+//             characters around an operator) cannot see $0$, $[n]$, $TC$ or
+//             H$_2$O, which would then render only beside another formula
+// Everything else stays native: the delimiter rules, so "$5 and $10",
+// "$5-$10" and "$1.50/$2.00" stay text, the currency check, so US$5 does too,
+// letter runs of four or more (templates such as $END$ have three, kept out by
+// stopping at two), bodies ending in an operator such as $PATH:$, `"` or `@`
+// inside a body, and `{`-led bodies such as ${HOME}.
 //
 // The sites are found by structure (src/derive.ts). The span finder holds the
 // closer search `<s>.indexOf("$",...)` and an `if(...)return null` whose `||`
 // chain runs `<digit>(<first>)&&!<currency>(<s>,<J>,<X>)` ahead of
 // `!<tex>(<s>,<J>,<J>+1,<X>)`, with <first> its `<s>[<J>+1]`, <digit> a "0"
 // to "9" test, and the currency check ending in that grammar-or-syntax `||`.
-// <tex> has no other caller, and the verdict its declarator calls must refuse
-// a digit-led body (`return!/^\d/.test(...)&&...`). The precheck is the
-// function returning `{display,inline}` whose `inline` reads its text's
-// `.includes("\\(")`. A build without native math has no guard to relax, so
-// the point reads inert there.
+// <tex> has no other caller, and its own statements are found by role: the
+// `<X>-<Z>><n>` cap, the before-character declarator `<Y>=<f>(<s>,<J>)` and
+// the rejection opening `<Y>!==void 0&&`, the rejection `!<g>(<s>,<X>+1)`,
+// the body `<Q>=<s>.slice(<Z>,<X>)`, the verdict `<q>=<arith>(<Q>)` its final
+// `return <q>||...` opens with (<arith> must refuse a digit-led body,
+// `return!/^\d/.test(...)&&...`), the rejection `<Q>[0]==="{"||<Q>[0]==="("&&`
+// and the `||` of `.test(<Q>)` calls that return's `&&` chain opens with. The
+// precheck is the function returning `{display,inline}` whose `inline` reads
+// its text's `.includes("\\(")`. A build without native math has no guard to
+// relax, so the point reads inert there. 1.6.1 development builds wrote two of
+// these as /*ccup:mathDigits:<site>*/.../*ccup:mathDigitsEnd*/, which the
+// fragment pattern also matches, so an apply replaces them.
 // ---------------------------------------------------------------------------
-const MDIG_END = "/*ccup:mathDigitsEnd*/";
-const MDIG_GUARD = "/*ccup:mathDigits:guard*/";
-const MDIG_PRE = "/*ccup:mathDigits:pre*/";
-const MDIG_FRAG_RE =
-  /\/\*ccup:mathDigits:[-\w]+\*\/[\s\S]*?\/\*ccup:mathDigitsEnd\*\//g;
-const MDIG_FILE = "webview/index.js";
+const MSPAN_END = "/*ccup:mathSpansEnd*/";
+const MSPAN_LONG = "/*ccup:mathSpans:long*/";
+const MSPAN_BEFORE = "/*ccup:mathSpans:before*/";
+const MSPAN_AFTER = "/*ccup:mathSpans:after*/";
+const MSPAN_SHAPE = "/*ccup:mathSpans:shape*/";
+const MSPAN_PAREN = "/*ccup:mathSpans:paren*/";
+const MSPAN_EVIDENCE = "/*ccup:mathSpans:evidence*/";
+const MSPAN_PRE = "/*ccup:mathSpans:pre*/";
+const MSPAN_FRAG_RE =
+  /\/\*ccup:math(?:Spans|Digits):[-\w]+\*\/[\s\S]*?\/\*ccup:math(?:Spans|Digits)End\*\//g;
+const MSPAN_FILE = "webview/index.js";
 // How far ahead of its token a function may start (the span finder and the
 // precheck each run under 1KB).
-const MDIG_REACH = 4000;
+const MSPAN_REACH = 4000;
+// The shapes the verdict gains: a subscript index, a term (a number, or a
+// letter with an index and primes), a group, and the whole-body alternatives.
+const MSPAN_SUB = String.raw`(?:[A-Za-z0-9]|\{[A-Za-z0-9]{1,4}\})`;
+const MSPAN_TERM = String.raw`-?(?:\d+(?:\.\d+)?|[A-Za-z](?:_${MSPAN_SUB})?'*)`;
+const MSPAN_GROUP = String.raw`(?:[A-Za-z](?:_${MSPAN_SUB})?)?[(\[]${MSPAN_TERM}(?: ?, ?${MSPAN_TERM})*[)\]](?:_${MSPAN_SUB})?`;
+const MSPAN_SHAPES = String.raw`^(?:${MSPAN_GROUP}(?:, ?${MSPAN_GROUP})*|[A-Za-z](?:_[A-Za-z0-9])?\[[A-Za-z0-9]{1,3}\]|[A-Z]{2}|[a-z]{2})$`;
 
 // The function declared as `name`, once in the bundle, or null.
-function mdigDeclared(c: string, name: string): N | null {
+function mspanDeclared(c: string, name: string): N | null {
   const decl = `function ${name}(`;
   const at = c.indexOf(decl);
   if (at < 0 || c.indexOf(decl, at + 1) >= 0) return null;
@@ -3467,7 +3503,7 @@ function mdigDeclared(c: string, name: string): N | null {
 }
 
 // How often `name` occurs in the bundle as a whole identifier.
-function mdigRefs(c: string, name: string): number {
+function mspanRefs(c: string, name: string): number {
   let n = 0;
   for (let i = c.indexOf(name); i >= 0; i = c.indexOf(name, i + 1)) {
     const before = c[i - 1] ?? "";
@@ -3478,7 +3514,7 @@ function mdigRefs(c: string, name: string): number {
 }
 
 // The one declarator of `name` among a function's own statements, or null.
-function mdigDecl(fn: N, name: string): N | null {
+function mspanDecl(fn: N, name: string): N | null {
   const found: N[] = [];
   walkOwn(fn, (n) => {
     if (n.type === "VariableDeclarator" && idName(n.id) === name) found.push(n);
@@ -3487,7 +3523,7 @@ function mdigDecl(fn: N, name: string): N | null {
 }
 
 // `!<f>(...)`: the name called and its arguments, or null.
-function mdigNotCall(n: N): { f: string; args: N[] } | null {
+function mspanNotCall(n: N): { f: string; args: N[] } | null {
   if (n.type !== "UnaryExpression" || n.operator !== "!") return null;
   const call = n.argument;
   const f = call.type === "CallExpression" ? idName(call.callee) : null;
@@ -3495,7 +3531,7 @@ function mdigNotCall(n: N): { f: string; args: N[] } | null {
 }
 
 // `<J>+1`, with J an identifier.
-const mdigPlusOne = (n: N | undefined, j: string): boolean =>
+const mspanPlusOne = (n: N | undefined, j: string): boolean =>
   n?.type === "BinaryExpression" &&
   n.operator === "+" &&
   idName(n.left) === j &&
@@ -3504,7 +3540,7 @@ const mdigPlusOne = (n: N | undefined, j: string): boolean =>
 
 // `<re>.test(<arg>)` with `<re>` a regex literal: its pattern and flags, and
 // the argument's name.
-function mdigRegexTest(
+function mspanRegexTest(
   n: N | undefined,
 ): { pattern: string; flags: string; arg: string | null } | null {
   if (n?.type !== "CallExpression" || n.arguments.length !== 1) return null;
@@ -3514,9 +3550,27 @@ function mdigRegexTest(
   return { ...re.regex, arg: idName(n.arguments[0]) };
 }
 
+// `return false` in either spelling, `return!1` once minified.
+const mspanRejects = (n: N | undefined): boolean =>
+  n?.type === "ReturnStatement" &&
+  ((n.argument?.type === "UnaryExpression" &&
+    n.argument.operator === "!" &&
+    n.argument.argument.value === 1) ||
+    (n.argument?.type === "Literal" && n.argument.value === false));
+
+// `<Q>[0]===<ch>`.
+const mspanFirstIs = (n: N | undefined, q: string, ch: string): boolean =>
+  n?.type === "BinaryExpression" &&
+  n.operator === "===" &&
+  n.left.type === "MemberExpression" &&
+  n.left.computed &&
+  idName(n.left.object) === q &&
+  n.left.property.value === 0 &&
+  isStr(n.right, ch);
+
 // The span finder's reject chain: the TeX test, the currency check and the
 // digit test it calls, or null.
-function mdigFinder(
+function mspanFinder(
   fn: N,
 ): { tex: string; currency: string; digit: string } | null {
   const s = idName(fn.params[0]);
@@ -3532,20 +3586,20 @@ function mdigFinder(
       return;
     const alts = chainOf(n.test, "||");
     for (let t = 0; t < alts.length; t++) {
-      const tex = mdigNotCall(alts[t]);
+      const tex = mspanNotCall(alts[t]);
       if (
         !tex ||
         tex.args.length !== 4 ||
         idName(tex.args[0]) !== s ||
         idName(tex.args[1]) !== j ||
-        !mdigPlusOne(tex.args[2], j)
+        !mspanPlusOne(tex.args[2], j)
       )
         continue;
       const x = idName(tex.args[3]);
       if (!x) continue;
       for (const o of alts.slice(0, t)) {
         if (o.type !== "LogicalExpression" || o.operator !== "&&") continue;
-        const cur = mdigNotCall(o.right);
+        const cur = mspanNotCall(o.right);
         const call = o.left.type === "CallExpression" ? o.left : null;
         const digit = call ? idName(call.callee) : null;
         const arg: N | null =
@@ -3563,7 +3617,7 @@ function mdigFinder(
         )
           continue;
         // The digit test reads the body's first character: `<s>[<J>+1]`.
-        const fd = mdigDecl(fn, first);
+        const fd = mspanDecl(fn, first);
         const at = fd?.init;
         if (
           !fd ||
@@ -3571,7 +3625,7 @@ function mdigFinder(
           at?.type !== "MemberExpression" ||
           !at.computed ||
           idName(at.object) !== s ||
-          !mdigPlusOne(at.property, j)
+          !mspanPlusOne(at.property, j)
         )
           continue;
         hits.push({ tex: tex.f, currency: cur.f, digit });
@@ -3582,7 +3636,7 @@ function mdigFinder(
 }
 
 // Whether the function tests its one argument for "0" through "9".
-function mdigIsDigitTest(fn: N): boolean {
+function mspanIsDigitTest(fn: N): boolean {
   const p = idName(fn.params[0]);
   if (!p || fn.params.length !== 1) return false;
   let lo = false;
@@ -3597,7 +3651,7 @@ function mdigIsDigitTest(fn: N): boolean {
 
 // Whether the currency check ends in `<a>.test(<body>)||<b>.test(<body>)`,
 // its body being its text's `.slice(...)`.
-function mdigIsCurrency(fn: N): boolean {
+function mspanIsCurrency(fn: N): boolean {
   const s = idName(fn.params[0]);
   const last = fn.body.body?.[fn.body.body.length - 1];
   if (!s || last?.type !== "ReturnStatement" || !last.argument) return false;
@@ -3612,7 +3666,7 @@ function mdigIsCurrency(fn: N): boolean {
       : null,
   );
   if (!tested[0] || tested[0] !== tested[1]) return false;
-  const bd = mdigDecl(fn, tested[0]);
+  const bd = mspanDecl(fn, tested[0]);
   return (
     !!bd &&
     bd.init?.type === "CallExpression" &&
@@ -3621,45 +3675,119 @@ function mdigIsCurrency(fn: N): boolean {
   );
 }
 
-// The guard insertion in the TeX test, or null: after the declarator its
-// final `return <q>||...` opens with, `<q>=<arith>(<body>)`.
-function mdigGuard(c: string, tex: N): Edit | null {
-  const s = idName(tex.params[0]);
-  const from = idName(tex.params[2]);
-  const to = idName(tex.params[3]);
-  const last = tex.body.body?.[tex.body.body.length - 1];
-  if (!s || !from || !to || last?.type !== "ReturnStatement" || !last.argument)
-    return null;
-  const q = idName(chainOf(last.argument, "||")[0]);
-  const qd = q ? mdigDecl(tex, q) : null;
-  const call = qd?.init;
+// The six insertions in the TeX test, or null when any statement is missing
+// or found more than once.
+function mspanTex(c: string, tex: N): Edit[] | null {
+  if (tex.params.length !== 4) return null;
+  const [s, j, z, x] = tex.params.map(idName);
+  const body: N[] = tex.body.body ?? [];
+  if (!s || !j || !z || !x || !body.length) return null;
+  const one = (pred: (st: N) => boolean): N | null => {
+    const found = body.filter(pred);
+    return found.length === 1 ? found[0] : null;
+  };
+  const rejects = (st: N) =>
+    st.type === "IfStatement" && !st.alternate && mspanRejects(st.consequent);
+  // A top-level declaration's one declarator, by its init.
+  const declOf = (pred: (init: N) => boolean): N | null => {
+    const st = one(
+      (st) =>
+        st.type === "VariableDeclaration" &&
+        st.declarations.length === 1 &&
+        !!st.declarations[0].init &&
+        pred(st.declarations[0].init),
+    );
+    return st ? st.declarations[0] : null;
+  };
+
+  // The body cap: `<X>-<Z>><n>`.
+  const cap = one(
+    (st) =>
+      rejects(st) &&
+      st.test.type === "BinaryExpression" &&
+      st.test.operator === ">" &&
+      st.test.left.type === "BinaryExpression" &&
+      st.test.left.operator === "-" &&
+      idName(st.test.left.left) === x &&
+      idName(st.test.left.right) === z &&
+      typeof st.test.right.value === "number",
+  );
+  // The character before the opener: `<Y>=<f>(<s>,<J>)`, then the rejection
+  // opening `<Y>!==void 0&&`.
+  const yd = declOf(
+    (init) =>
+      init.type === "CallExpression" &&
+      init.arguments.length === 2 &&
+      idName(init.arguments[0]) === s &&
+      idName(init.arguments[1]) === j,
+  );
+  const y = yd ? idName(yd.id) : null;
+  const before = one((st) => {
+    if (!rejects(st) || !y) return false;
+    const ands = chainOf(st.test, "&&");
+    const head = ands[0];
+    return (
+      ands.length > 1 &&
+      head.type === "BinaryExpression" &&
+      head.operator === "!==" &&
+      idName(head.left) === y &&
+      head.right.type === "UnaryExpression" &&
+      head.right.operator === "void"
+    );
+  });
+  // The character after the closer: the rejection `!<g>(<s>,<X>+1)`.
+  const after = one((st) => {
+    if (!rejects(st)) return false;
+    const call = mspanNotCall(st.test);
+    return (
+      !!call &&
+      call.args.length === 2 &&
+      idName(call.args[0]) === s &&
+      mspanPlusOne(call.args[1], x)
+    );
+  });
+  // The body: `<Q>=<s>.slice(<Z>,<X>)`.
+  const qd = declOf(
+    (init) =>
+      init.type === "CallExpression" &&
+      memberProp(init.callee) === "slice" &&
+      idName(init.callee.object) === s &&
+      init.arguments.length === 2 &&
+      idName(init.arguments[0]) === z &&
+      idName(init.arguments[1]) === x,
+  );
+  const q = qd ? idName(qd.id) : null;
+  if (!cap || !yd || !y || !before || !after || !qd || !q) return null;
+  // The insertions read <Y> after its declarator and <Q> after its own.
+  if (!(yd.start < before.start && yd.start < after.start)) return null;
+
+  // The verdict its final `return <v>||...` opens with: `<v>=<arith>(<Q>)`.
+  const last = body[body.length - 1];
+  if (last?.type !== "ReturnStatement" || !last.argument) return null;
+  const alts = chainOf(last.argument, "||");
+  const v = idName(alts[0]);
+  const vd = v ? mspanDecl(tex, v) : null;
+  const call = vd?.init;
   const arith = call?.type === "CallExpression" ? idName(call.callee) : null;
-  const body = call?.arguments.length === 1 ? idName(call.arguments[0]) : null;
-  if (!arith || !body) return null;
-  // The body is the span between the delimiters: `<s>.slice(<from>,<to>)`.
-  const bd = mdigDecl(tex, body);
-  const slice = bd?.init;
   if (
-    !bd ||
-    bindingSite(call.arguments[0], body, tex) !== bindingSite(bd, body, tex) ||
-    slice?.type !== "CallExpression" ||
-    memberProp(slice.callee) !== "slice" ||
-    idName(slice.callee.object) !== s ||
-    slice.arguments.length !== 2 ||
-    idName(slice.arguments[0]) !== from ||
-    idName(slice.arguments[1]) !== to
+    !vd ||
+    !arith ||
+    call.arguments.length !== 1 ||
+    idName(call.arguments[0]) !== q ||
+    bindingSite(call.arguments[0], q, tex) !== bindingSite(qd, q, tex) ||
+    !(qd.start < vd.start)
   )
     return null;
   // The verdict refuses a digit-led body: `return!/^\d/.test(<p>)&&...`.
-  const v = mdigDeclared(c, arith);
-  const p = v ? idName(v.params[0]) : null;
-  const ret = v?.body.body?.[0];
+  const vf = mspanDeclared(c, arith);
+  const p = vf ? idName(vf.params[0]) : null;
+  const ret = vf?.body.body?.[0];
   if (!p || ret?.type !== "ReturnStatement" || !ret.argument) return null;
   const head = chainOf(ret.argument, "&&");
   const not = head.length > 1 ? head[0] : null;
   const digitLed =
     not?.type === "UnaryExpression" && not.operator === "!"
-      ? mdigRegexTest(not.argument)
+      ? mspanRegexTest(not.argument)
       : null;
   if (
     digitLed?.pattern !== "^\\d" ||
@@ -3667,25 +3795,95 @@ function mdigGuard(c: string, tex: N): Edit | null {
     digitLed.arg !== p
   )
     return null;
-  return {
-    pos: call.end,
-    text:
-      MDIG_GUARD +
-      String.raw`||/^\d/.test(${body})&&!/[\\{}^_=<>]/.test(${body})` +
-      MDIG_END,
-  };
+  // The `(`-led rejection: `<Q>[0]==="{"||<Q>[0]==="("&&...!<v>...`.
+  const paren = one((st) => {
+    if (
+      !rejects(st) ||
+      st.test.type !== "LogicalExpression" ||
+      st.test.operator !== "||" ||
+      !mspanFirstIs(st.test.left, q, "{")
+    )
+      return false;
+    const ands = chainOf(st.test.right, "&&");
+    return (
+      mspanFirstIs(ands[0], q, "(") &&
+      ands.some(
+        (o) =>
+          o.type === "UnaryExpression" &&
+          o.operator === "!" &&
+          idName(o.argument) === v,
+      )
+    );
+  });
+  // The evidence `||` the return's `&&` chain opens with, every operand a
+  // `.test(<Q>)` call.
+  const ands = alts.length === 2 ? chainOf(alts[1], "&&") : [];
+  const evidence = ands.length > 1 ? ands[0] : null;
+  const tests =
+    evidence?.type === "LogicalExpression" && evidence.operator === "||"
+      ? chainOf(evidence, "||")
+      : [];
+  if (
+    !paren ||
+    !evidence ||
+    !tests.length ||
+    !tests.every(
+      (o) =>
+        o.type === "CallExpression" &&
+        memberProp(o.callee) === "test" &&
+        o.arguments.length === 1 &&
+        idName(o.arguments[0]) === q,
+    )
+  )
+    return null;
+
+  const span = `${s}.slice(${z},${x})`;
+  const next = `${s}[${x}+1]`;
+  const strong = String.raw`(/\\[A-Za-z]{2}/.test(${span})||/^[_^]/.test(${span}))`;
+  const at = (pos: number, marker: string, text: string): Edit => ({
+    pos,
+    text: marker + text + MSPAN_END,
+  });
+  return [
+    at(
+      cap.test.end,
+      MSPAN_LONG,
+      String.raw`&&!(${x}-${z}<=200&&/\\[A-Za-z]{2}/.test(${span}))`,
+    ),
+    at(
+      before.test.end,
+      MSPAN_BEFORE,
+      String.raw`&&!(/["'-]/.test(${y})||${y}==="/"&&${next}!=="/"||/[A-Za-z0-9]/.test(${y})&&${strong})`,
+    ),
+    at(
+      after.test.end,
+      MSPAN_AFTER,
+      String.raw`&&!(/["']/.test(${next}??"")||${next}==="/"&&${y}!=="/"||/[A-Za-z]/.test(${next}??"")&&${strong})`,
+    ),
+    at(
+      call.end,
+      MSPAN_SHAPE,
+      String.raw`||/^\d/.test(${q})&&!/[\\{}^_=<>]/.test(${q})||/${MSPAN_SHAPES}/.test(${q})`,
+    ),
+    at(paren.test.end, MSPAN_PAREN, String.raw`&&!/\\[{}]/.test(${q})`),
+    at(
+      evidence.end,
+      MSPAN_EVIDENCE,
+      String.raw`||/(?<![A-Za-z0-9_])[A-Z]_[A-Z](?![A-Za-z0-9_])|^_(?:[A-Za-z0-9]|\{[^{}]{1,8}\})$/.test(${q})`,
+    ),
+  ];
 }
 
 // The precheck and its insertion, or null: the function returning
 // `{display,inline}` whose `inline` reads `<text>.includes("\\(")`.
-function mdigPre(c: string): { unit: N; edit: Edit } | null {
+function mspanPre(c: string): { unit: N; edit: Edit } | null {
   const hits: { unit: N; edit: Edit }[] = [];
   for (const fn of unitsWith(
     c,
     '.includes("\\\\(")',
     "function",
     isFn,
-    MDIG_REACH,
+    MSPAN_REACH,
   )) {
     const p = idName(fn.params[0]);
     const ret: N | undefined = fn.body.body?.find(
@@ -3713,44 +3911,44 @@ function mdigPre(c: string): { unit: N; edit: Edit } | null {
       edit: {
         pos: inline.end,
         text:
-          MDIG_PRE +
-          String.raw`||/\$\d(?:[^$\r\n]{0,58}[^\s$])?\$(?!\d)/.test(${p})` +
-          MDIG_END,
+          MSPAN_PRE +
+          String.raw`||/\$[^\s$](?:[^$\r\n]{0,198}[^\s$])?\$/.test(${p})` +
+          MSPAN_END,
       },
     });
   }
   return hits.length === 1 ? hits[0] : null;
 }
 
-// Both sites, or null when either is missing or ambiguous.
-function mathDigitsFind(c: string): { units: N[]; edits: Edit[] } | null {
-  const finders = unitsWith(c, '.indexOf("$",', "function", isFn, MDIG_REACH)
-    .map((fn) => ({ fn, chain: mdigFinder(fn) }))
+// Every site, or null when any is missing or ambiguous.
+function mathSpansFind(c: string): { units: N[]; edits: Edit[] } | null {
+  const finders = unitsWith(c, '.indexOf("$",', "function", isFn, MSPAN_REACH)
+    .map((fn) => ({ fn, chain: mspanFinder(fn) }))
     .filter((f) => f.chain);
   if (finders.length !== 1) return null;
   const { tex, currency, digit } = finders[0].chain!;
-  const texFn = mdigDeclared(c, tex);
-  const curFn = mdigDeclared(c, currency);
-  const digitFn = mdigDeclared(c, digit);
+  const texFn = mspanDeclared(c, tex);
+  const curFn = mspanDeclared(c, currency);
+  const digitFn = mspanDeclared(c, digit);
   if (
     !texFn ||
     !curFn ||
     !digitFn ||
-    mdigRefs(c, tex) !== 2 ||
-    !mdigIsCurrency(curFn) ||
-    !mdigIsDigitTest(digitFn)
+    mspanRefs(c, tex) !== 2 ||
+    !mspanIsCurrency(curFn) ||
+    !mspanIsDigitTest(digitFn)
   )
     return null;
-  const guard = mdigGuard(c, texFn);
-  const pre = mdigPre(c);
-  if (!guard || !pre) return null;
-  return { units: [texFn, pre.unit], edits: [guard, pre.edit] };
+  const texEdits = mspanTex(c, texFn);
+  const pre = mspanPre(c);
+  if (!texEdits || !pre) return null;
+  return { units: [texFn, pre.unit], edits: [...texEdits, pre.edit] };
 }
 
-// The native webview bundle with both fragments in, or null when a site is
+// The native webview bundle with every fragment in, or null when a site is
 // missing or an edit would not parse.
-const mathDigitsBuild = sdelMemo((native) => {
-  const sites = mathDigitsFind(native);
+const mathSpansBuild = sdelMemo((native) => {
+  const sites = mathSpansFind(native);
   if (!sites) return null;
   const out = applyEdits(native, sites.edits);
   return unitsReparse(
@@ -3761,16 +3959,16 @@ const mathDigitsBuild = sdelMemo((native) => {
     ? out
     : null;
 });
-function mathDigitsPatch(native: string): string | null {
-  return mathDigitsBuild(native);
+function mathSpansPatch(native: string): string | null {
+  return mathSpansBuild(native);
 }
 
 // The webview bundle, patched or not, as an apply writes this point into it,
-// or null when its sites are gone. scripts/repro's math-digits.mjs serves
+// or null when its sites are gone. scripts/repro's math-spans.mjs serves
 // this, so it runs exactly what the patcher writes and doubles as the drift
 // canary.
-export function mathDigitsWebview(web: string): string | null {
-  return mathDigitsBuild(web.replace(MDIG_FRAG_RE, ""));
+export function mathSpansWebview(web: string): string | null {
+  return mathSpansBuild(web.replace(MSPAN_FRAG_RE, ""));
 }
 
 // Scroll-to-bottom button (ON): the chat auto-sticks to the newest message only
@@ -7727,11 +7925,11 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
   },
   {
     kind: "inline",
-    id: "mathDigits",
-    label: "digit-led inline math",
-    file: MDIG_FILE,
-    frags: MDIG_FRAG_RE,
-    patch: mathDigitsPatch,
+    id: "mathSpans",
+    label: "inline math spans",
+    file: MSPAN_FILE,
+    frags: MSPAN_FRAG_RE,
+    patch: mathSpansPatch,
     inert: (native) => !mathNative(native),
   },
 ];

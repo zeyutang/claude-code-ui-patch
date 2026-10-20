@@ -1363,6 +1363,95 @@ function permNoWrapSet(c: string, on: boolean): string {
   );
 }
 
+// Editor selection colors (always on, two halves): the chat sets no ::selection
+// rule, so selected text paints in Chromium's own highlight (the macOS accent,
+// lightened), which leaves the chat's text in lower contrast than the editor's
+// selection leaves the editor's, and follows no theme. The CSS half
+// (selectionColorsCss) is an appended stylesheet line that paints every
+// selection in the editor's theme colors, the variables VS Code hands every
+// webview and updates live on a theme switch:
+//   editor.selectionBackground          while the chat has focus
+//   editor.inactiveSelectionBackground  once focus leaves it, the switch the
+//                                       editor makes (natively an unfocused
+//                                       frame paints its selection gray)
+//   editor.selectionForeground          high-contrast themes only, the one
+//                                       place Monaco applies it (HC Black
+//                                       selects in white); elsewhere each run
+//                                       keeps its own color
+// Verified on Chromium 150: an author ::selection paints its background behind
+// text exactly as given, and one that sets only the background keeps every
+// run's own color (links, inline code). Over a selected <img> Chromium still
+// blends an opaque author color toward white, which for a dark theme's color
+// leaves an 80% veil, so images take the color at half strength (an inline
+// <svg> takes no tint either way). A missing variable falls back to the system
+// Highlight rather than to an invisible selection.
+//
+// The focus switch is the JS half (selectionColors), since no selector
+// follows frame focus (:window-inactive tracks the OS window, so it stays
+// active while the editor has focus). On window blur it marks the selection's
+// common ancestor with data-ccup-sel-inactive, which swaps --ccup-selection
+// to the inactive color for that subtree, marks again when the selection
+// moves while unfocused (the native find steps through matches with
+// window.find), and unmarks on focus. A selection inside a contenteditable
+// is marked on the editable's parent, so the editor never meets a foreign
+// attribute in its own DOM, and no observer in the bundle watches the
+// attribute (they filter on class and style). The mark goes on that subtree
+// rather than on <html> because a ::selection rule reaching every element
+// makes Blink compute a highlight style for each: a full recalc costs about
+// twice as much (12ms to 23ms on a 34k-element page), which an <html>
+// attribute would pay on every focus change.
+// An always-on fix rather than a knob: the native highlight is the browser's,
+// tied to no theme, so there is no native behavior worth keeping as an option.
+// No anchor: both halves read only what VS Code provides, so every build takes
+// them, each as one marked line (see ALWAYS_POINTS).
+const SELECTION_MARKER = "/*ccup:selectionColors*/";
+const SELECTION_CSS_MARKER = "/*ccup:selectionColorsCss*/";
+// Set on the selection's subtree while the chat is unfocused.
+const SELECTION_INACTIVE_ATTR = "data-ccup-sel-inactive";
+// The JS half's once-only guard on window.
+const SELECTION_FLAG = "__ccupSelectionColors";
+
+function selectionCssBuild(): string {
+  const v = "--ccup-selection";
+  return (
+    SELECTION_CSS_MARKER +
+    `:root{${v}:var(--vscode-editor-selectionBackground,Highlight)}` +
+    `[${SELECTION_INACTIVE_ATTR}]{${v}:var(--vscode-editor-inactiveSelectionBackground,Highlight)}` +
+    `::selection{background-color:var(${v})}` +
+    `img::selection{background-color:color-mix(in srgb,var(${v}) 50%,transparent)}` +
+    `.vscode-high-contrast ::selection{color:var(--vscode-editor-selectionForeground,currentcolor)}`
+  );
+}
+
+function selectionWatchBuild(): string {
+  const js =
+    `(function(){try{` +
+    `if(window.${SELECTION_FLAG})return;window.${SELECTION_FLAG}=1;` +
+    `var A="${SELECTION_INACTIVE_ATTR}",m=null;` +
+    `function off(){if(m){m.removeAttribute(A);m=null}}` +
+    // The selection's common ancestor, lifted out of an editable.
+    `function mark(){off();var s=getSelection();if(!s||!s.rangeCount||s.isCollapsed)return;` +
+    `var n=s.getRangeAt(0).commonAncestorContainer,e=n.nodeType===1?n:n.parentElement,ed=e&&e.closest("[contenteditable]");` +
+    `if(ed)e=ed.parentElement;if(e){e.setAttribute(A,"");m=e}}` +
+    `addEventListener("blur",mark);addEventListener("focus",off);` +
+    `document.addEventListener("selectionchange",function(){if(!document.hasFocus())mark()})` +
+    `}catch(e){}})();`;
+  return `${SELECTION_MARKER}${js}`;
+}
+
+// The webview bundle and stylesheet as an apply writes them, both halves in.
+// scripts/repro's selection-colors.mjs serves this, so it runs exactly what
+// the patcher writes.
+export function selectionColorsWebview(
+  js: string,
+  css: string,
+): { js: string; css: string } {
+  return {
+    js: cssApplyLine(js, SELECTION_MARKER, selectionWatchBuild()),
+    css: cssApplyLine(css, SELECTION_CSS_MARKER, selectionCssBuild()),
+  };
+}
+
 // Permission focus ring (always on): the composer answers focus with a border
 // color change AND a soft halo (.inputContainer_<hash>:focus-within{...
 // box-shadow:0 0 0 3px color-mix(in srgb,var(--focus-ring-color)12%,transparent),
@@ -7898,6 +7987,22 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: "webview/index.js",
     marker: HIDDEN_CURSOR_MARKER,
     build: hiddenCursorWatchBuild,
+  },
+  {
+    kind: "line",
+    id: "selectionColorsCss",
+    label: "editor selection colors",
+    file: "webview/index.css",
+    marker: SELECTION_CSS_MARKER,
+    build: selectionCssBuild,
+  },
+  {
+    kind: "line",
+    id: "selectionColors",
+    label: "editor selection focus watch",
+    file: "webview/index.js",
+    marker: SELECTION_MARKER,
+    build: selectionWatchBuild,
   },
   {
     kind: "inline",

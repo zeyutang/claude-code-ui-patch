@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Text you select in the chat shows in the editor's selection color, following your theme, and in its inactive selection color once the chat loses focus.
+  Always applied, no setting.
 - The prompt history's hide button is larger and sits under the message number, where the list's scrollbar no longer covers it.
 - More inline math in agent responses renders as math on Claude Code 2.1.301 and later instead of keeping its dollar signs.
   Always applied, no setting; prices, shell variables, and template placeholders such as `$5 and $10`, `$PATH:$HOME`, and `$END$` still show as text.

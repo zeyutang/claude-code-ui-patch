@@ -3402,6 +3402,377 @@ function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
   if (removed) changed.push("math fonts removed");
 }
 
+// ---------------------------------------------------------------------------
+// Digit-led inline math (always on). Claude Code 2.1.301 picks the $...$ spans
+// of a response it typesets with a guard written against currency and shell
+// text, and the guard's last step drops plain arithmetic that opens with a
+// digit: $0$, $1/2$, $0.5$ and the $1$ of $1$-Lipschitz keep their dollar
+// signs, while $n$, $n-1$ and $-1$ render. A digit-led body first passes a
+// currency check (nothing alphanumeric before the opener, no Latin or Greek
+// letter, digit, `$` or backslash right after the closer, no "5 apples" shape,
+// no trailing operator, and a body its arithmetic grammar reads or one holding
+// TeX syntax), then the TeX test every span takes, which keeps a body holding
+// one of \ ^ { } = < > | ! + or a subscript, or else one its own arithmetic
+// grammar reads, but only when it does not open with a digit. So a digit-led
+// body the currency check reads as arithmetic is dropped anyway, unless it
+// also holds TeX syntax.
+//
+// Two fragments, each /*ccup:mathDigits:<site>*/.../*ccup:mathDigitsEnd*/:
+//   guard  in the TeX test, on the declarator its final `return <q>||...`
+//          opens with (`<q>=<arith>(<body>)`, the arithmetic verdict):
+//          `||/^\d/.test(<body>)&&!/[\\{}^_=<>]/.test(<body>)`. A digit-led
+//          body reaches the test only past the currency check, whose last
+//          step is "its arithmetic grammar reads it, or it holds one of
+//          \ { } ^ _ = < >", so a digit-led body holding none of those is
+//          exactly one that grammar read.
+//   pre    in the precheck that decides whether a message enters the math
+//          pipeline at all (the `{display,inline}` read off its text), at the
+//          end of the `inline` alternatives: a test for a digit-led span,
+//          which the native one (a letter, or two or more characters around
+//          an operator) cannot see in $0$. Without it such a span would render
+//          only beside another formula.
+// Everything else stays native: the delimiter rules (no space inside either
+// delimiter, no digit right after the closer), so "$5 and $10", "$5-$10" and
+// "$1.50/$2.00" stay text, the currency check itself, the neighbors every
+// span needs (a span right after `-`, or right before `'`, stays text whatever
+// its body), and the refusal of bracket-led bodies such as $[0,1]$.
+//
+// The sites are found by structure (src/derive.ts). The span finder holds the
+// closer search `<s>.indexOf("$",...)` and an `if(...)return null` whose `||`
+// chain runs `<digit>(<first>)&&!<currency>(<s>,<J>,<X>)` ahead of
+// `!<tex>(<s>,<J>,<J>+1,<X>)`, with <first> its `<s>[<J>+1]`, <digit> a "0"
+// to "9" test, and the currency check ending in that grammar-or-syntax `||`.
+// <tex> has no other caller, and the verdict its declarator calls must refuse
+// a digit-led body (`return!/^\d/.test(...)&&...`). The precheck is the
+// function returning `{display,inline}` whose `inline` reads its text's
+// `.includes("\\(")`. A build without native math has no guard to relax, so
+// the point reads inert there.
+// ---------------------------------------------------------------------------
+const MDIG_END = "/*ccup:mathDigitsEnd*/";
+const MDIG_GUARD = "/*ccup:mathDigits:guard*/";
+const MDIG_PRE = "/*ccup:mathDigits:pre*/";
+const MDIG_FRAG_RE =
+  /\/\*ccup:mathDigits:[-\w]+\*\/[\s\S]*?\/\*ccup:mathDigitsEnd\*\//g;
+const MDIG_FILE = "webview/index.js";
+// How far ahead of its token a function may start (the span finder and the
+// precheck each run under 1KB).
+const MDIG_REACH = 4000;
+
+// The function declared as `name`, once in the bundle, or null.
+function mdigDeclared(c: string, name: string): N | null {
+  const decl = `function ${name}(`;
+  const at = c.indexOf(decl);
+  if (at < 0 || c.indexOf(decl, at + 1) >= 0) return null;
+  return parseUnitAt(c, at, isFn);
+}
+
+// How often `name` occurs in the bundle as a whole identifier.
+function mdigRefs(c: string, name: string): number {
+  let n = 0;
+  for (let i = c.indexOf(name); i >= 0; i = c.indexOf(name, i + 1)) {
+    const before = c[i - 1] ?? "";
+    const after = c[i + name.length] ?? "";
+    if (!/[\w$]/.test(before) && !/[\w$]/.test(after)) n++;
+  }
+  return n;
+}
+
+// The one declarator of `name` among a function's own statements, or null.
+function mdigDecl(fn: N, name: string): N | null {
+  const found: N[] = [];
+  walkOwn(fn, (n) => {
+    if (n.type === "VariableDeclarator" && idName(n.id) === name) found.push(n);
+  });
+  return found.length === 1 ? found[0] : null;
+}
+
+// `!<f>(...)`: the name called and its arguments, or null.
+function mdigNotCall(n: N): { f: string; args: N[] } | null {
+  if (n.type !== "UnaryExpression" || n.operator !== "!") return null;
+  const call = n.argument;
+  const f = call.type === "CallExpression" ? idName(call.callee) : null;
+  return f ? { f, args: call.arguments } : null;
+}
+
+// `<J>+1`, with J an identifier.
+const mdigPlusOne = (n: N | undefined, j: string): boolean =>
+  n?.type === "BinaryExpression" &&
+  n.operator === "+" &&
+  idName(n.left) === j &&
+  n.right.type === "Literal" &&
+  n.right.value === 1;
+
+// `<re>.test(<arg>)` with `<re>` a regex literal: its pattern and flags, and
+// the argument's name.
+function mdigRegexTest(
+  n: N | undefined,
+): { pattern: string; flags: string; arg: string | null } | null {
+  if (n?.type !== "CallExpression" || n.arguments.length !== 1) return null;
+  if (memberProp(n.callee) !== "test") return null;
+  const re = n.callee.object;
+  if (re.type !== "Literal" || !re.regex) return null;
+  return { ...re.regex, arg: idName(n.arguments[0]) };
+}
+
+// The span finder's reject chain: the TeX test, the currency check and the
+// digit test it calls, or null.
+function mdigFinder(
+  fn: N,
+): { tex: string; currency: string; digit: string } | null {
+  const s = idName(fn.params[0]);
+  const j = idName(fn.params[1]);
+  if (!s || !j) return null;
+  const hits: { tex: string; currency: string; digit: string }[] = [];
+  walkOwn(fn, (n) => {
+    if (
+      n.type !== "IfStatement" ||
+      n.consequent.type !== "ReturnStatement" ||
+      n.consequent.argument?.raw !== "null"
+    )
+      return;
+    const alts = chainOf(n.test, "||");
+    for (let t = 0; t < alts.length; t++) {
+      const tex = mdigNotCall(alts[t]);
+      if (
+        !tex ||
+        tex.args.length !== 4 ||
+        idName(tex.args[0]) !== s ||
+        idName(tex.args[1]) !== j ||
+        !mdigPlusOne(tex.args[2], j)
+      )
+        continue;
+      const x = idName(tex.args[3]);
+      if (!x) continue;
+      for (const o of alts.slice(0, t)) {
+        if (o.type !== "LogicalExpression" || o.operator !== "&&") continue;
+        const cur = mdigNotCall(o.right);
+        const call = o.left.type === "CallExpression" ? o.left : null;
+        const digit = call ? idName(call.callee) : null;
+        const arg: N | null =
+          call?.arguments.length === 1 ? call.arguments[0] : null;
+        const first = idName(arg);
+        if (
+          !cur ||
+          !digit ||
+          !arg ||
+          !first ||
+          cur.args.length !== 3 ||
+          idName(cur.args[0]) !== s ||
+          idName(cur.args[1]) !== j ||
+          idName(cur.args[2]) !== x
+        )
+          continue;
+        // The digit test reads the body's first character: `<s>[<J>+1]`.
+        const fd = mdigDecl(fn, first);
+        const at = fd?.init;
+        if (
+          !fd ||
+          bindingSite(arg, first, fn) !== bindingSite(fd, first, fn) ||
+          at?.type !== "MemberExpression" ||
+          !at.computed ||
+          idName(at.object) !== s ||
+          !mdigPlusOne(at.property, j)
+        )
+          continue;
+        hits.push({ tex: tex.f, currency: cur.f, digit });
+      }
+    }
+  });
+  return hits.length === 1 ? hits[0] : null;
+}
+
+// Whether the function tests its one argument for "0" through "9".
+function mdigIsDigitTest(fn: N): boolean {
+  const p = idName(fn.params[0]);
+  if (!p || fn.params.length !== 1) return false;
+  let lo = false;
+  let hi = false;
+  walkOwn(fn, (n) => {
+    if (n.type !== "BinaryExpression" || idName(n.left) !== p) return;
+    if (n.operator === ">=" && n.right.value === "0") lo = true;
+    if (n.operator === "<=" && n.right.value === "9") hi = true;
+  });
+  return lo && hi;
+}
+
+// Whether the currency check ends in `<a>.test(<body>)||<b>.test(<body>)`,
+// its body being its text's `.slice(...)`.
+function mdigIsCurrency(fn: N): boolean {
+  const s = idName(fn.params[0]);
+  const last = fn.body.body?.[fn.body.body.length - 1];
+  if (!s || last?.type !== "ReturnStatement" || !last.argument) return false;
+  const ands = chainOf(last.argument, "&&");
+  const ors = chainOf(ands[ands.length - 1], "||");
+  if (ands.length < 2 || ors.length !== 2) return false;
+  const tested = ors.map((o) =>
+    o.type === "CallExpression" &&
+    memberProp(o.callee) === "test" &&
+    o.arguments.length === 1
+      ? idName(o.arguments[0])
+      : null,
+  );
+  if (!tested[0] || tested[0] !== tested[1]) return false;
+  const bd = mdigDecl(fn, tested[0]);
+  return (
+    !!bd &&
+    bd.init?.type === "CallExpression" &&
+    memberProp(bd.init.callee) === "slice" &&
+    idName(bd.init.callee.object) === s
+  );
+}
+
+// The guard insertion in the TeX test, or null: after the declarator its
+// final `return <q>||...` opens with, `<q>=<arith>(<body>)`.
+function mdigGuard(c: string, tex: N): Edit | null {
+  const s = idName(tex.params[0]);
+  const from = idName(tex.params[2]);
+  const to = idName(tex.params[3]);
+  const last = tex.body.body?.[tex.body.body.length - 1];
+  if (!s || !from || !to || last?.type !== "ReturnStatement" || !last.argument)
+    return null;
+  const q = idName(chainOf(last.argument, "||")[0]);
+  const qd = q ? mdigDecl(tex, q) : null;
+  const call = qd?.init;
+  const arith = call?.type === "CallExpression" ? idName(call.callee) : null;
+  const body = call?.arguments.length === 1 ? idName(call.arguments[0]) : null;
+  if (!arith || !body) return null;
+  // The body is the span between the delimiters: `<s>.slice(<from>,<to>)`.
+  const bd = mdigDecl(tex, body);
+  const slice = bd?.init;
+  if (
+    !bd ||
+    bindingSite(call.arguments[0], body, tex) !== bindingSite(bd, body, tex) ||
+    slice?.type !== "CallExpression" ||
+    memberProp(slice.callee) !== "slice" ||
+    idName(slice.callee.object) !== s ||
+    slice.arguments.length !== 2 ||
+    idName(slice.arguments[0]) !== from ||
+    idName(slice.arguments[1]) !== to
+  )
+    return null;
+  // The verdict refuses a digit-led body: `return!/^\d/.test(<p>)&&...`.
+  const v = mdigDeclared(c, arith);
+  const p = v ? idName(v.params[0]) : null;
+  const ret = v?.body.body?.[0];
+  if (!p || ret?.type !== "ReturnStatement" || !ret.argument) return null;
+  const head = chainOf(ret.argument, "&&");
+  const not = head.length > 1 ? head[0] : null;
+  const digitLed =
+    not?.type === "UnaryExpression" && not.operator === "!"
+      ? mdigRegexTest(not.argument)
+      : null;
+  if (
+    digitLed?.pattern !== "^\\d" ||
+    digitLed.flags !== "" ||
+    digitLed.arg !== p
+  )
+    return null;
+  return {
+    pos: call.end,
+    text:
+      MDIG_GUARD +
+      String.raw`||/^\d/.test(${body})&&!/[\\{}^_=<>]/.test(${body})` +
+      MDIG_END,
+  };
+}
+
+// The precheck and its insertion, or null: the function returning
+// `{display,inline}` whose `inline` reads `<text>.includes("\\(")`.
+function mdigPre(c: string): { unit: N; edit: Edit } | null {
+  const hits: { unit: N; edit: Edit }[] = [];
+  for (const fn of unitsWith(
+    c,
+    '.includes("\\\\(")',
+    "function",
+    isFn,
+    MDIG_REACH,
+  )) {
+    const p = idName(fn.params[0]);
+    const ret: N | undefined = fn.body.body?.find(
+      (st: N) => st.type === "ReturnStatement",
+    );
+    const obj = ret?.argument;
+    if (!p || fn.params.length !== 1 || !hasKeys(obj, ["display", "inline"]))
+      continue;
+    const inline = propOf(obj, "inline")!.value;
+    if (inline.type !== "LogicalExpression" || inline.operator !== "||")
+      continue;
+    const reads: N[] = [];
+    walk(inline, (n) => {
+      if (
+        n.type === "CallExpression" &&
+        memberProp(n.callee) === "includes" &&
+        idName(n.callee.object) === p &&
+        isStr(n.arguments[0], "\\(")
+      )
+        reads.push(n.callee.object);
+    });
+    if (!reads.some((r) => bindingSite(r, p, fn) === fn)) continue;
+    hits.push({
+      unit: fn,
+      edit: {
+        pos: inline.end,
+        text:
+          MDIG_PRE +
+          String.raw`||/\$\d(?:[^$\r\n]{0,58}[^\s$])?\$(?!\d)/.test(${p})` +
+          MDIG_END,
+      },
+    });
+  }
+  return hits.length === 1 ? hits[0] : null;
+}
+
+// Both sites, or null when either is missing or ambiguous.
+function mathDigitsFind(c: string): { units: N[]; edits: Edit[] } | null {
+  const finders = unitsWith(c, '.indexOf("$",', "function", isFn, MDIG_REACH)
+    .map((fn) => ({ fn, chain: mdigFinder(fn) }))
+    .filter((f) => f.chain);
+  if (finders.length !== 1) return null;
+  const { tex, currency, digit } = finders[0].chain!;
+  const texFn = mdigDeclared(c, tex);
+  const curFn = mdigDeclared(c, currency);
+  const digitFn = mdigDeclared(c, digit);
+  if (
+    !texFn ||
+    !curFn ||
+    !digitFn ||
+    mdigRefs(c, tex) !== 2 ||
+    !mdigIsCurrency(curFn) ||
+    !mdigIsDigitTest(digitFn)
+  )
+    return null;
+  const guard = mdigGuard(c, texFn);
+  const pre = mdigPre(c);
+  if (!guard || !pre) return null;
+  return { units: [texFn, pre.unit], edits: [guard, pre.edit] };
+}
+
+// The native webview bundle with both fragments in, or null when a site is
+// missing or an edit would not parse.
+const mathDigitsBuild = sdelMemo((native) => {
+  const sites = mathDigitsFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(
+    out,
+    sites.edits,
+    sites.units.map((u): [N, (n: N) => boolean] => [u, isFn]),
+  )
+    ? out
+    : null;
+});
+function mathDigitsPatch(native: string): string | null {
+  return mathDigitsBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its sites are gone. scripts/repro's math-digits.mjs serves
+// this, so it runs exactly what the patcher writes and doubles as the drift
+// canary.
+export function mathDigitsWebview(web: string): string | null {
+  return mathDigitsBuild(web.replace(MDIG_FRAG_RE, ""));
+}
+
 // Scroll-to-bottom button (ON): the chat auto-sticks to the newest message only
 // while the view is within 50px of the bottom; once the user scrolls up to read,
 // nothing signals that the conversation has run ahead, and the only way back is
@@ -7275,6 +7646,9 @@ interface AlwaysInline extends AlwaysBase {
   // the staleness check. `read` reaches the install's other files, for a
   // feature whose halves have to land together.
   patch: (native: string, read: BundleReader) => string | null;
+  // Whether this build gives the fix nothing to change (the native code it
+  // amends is absent altogether), so a null patch reads inert, not missing.
+  inert?: (native: string) => boolean;
 }
 type AlwaysPoint = AlwaysLine | AlwaysInline;
 
@@ -7350,6 +7724,15 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: STAY_FILE,
     frags: STAY_FRAG_RE,
     patch: untitledStaysPatch,
+  },
+  {
+    kind: "inline",
+    id: "mathDigits",
+    label: "digit-led inline math",
+    file: MDIG_FILE,
+    frags: MDIG_FRAG_RE,
+    patch: mathDigitsPatch,
+    inert: (native) => !mathNative(native),
   },
 ];
 
@@ -8873,8 +9256,9 @@ export function analyzeToggles(
 // Always-on fixes have no setting to disagree with, so there is no "custom":
 // "current" = this bundle's line is in place, "stock" = it is absent or stale
 // (including a leftover line whose anchor is now gone, which apply strips),
-// "missing" = the file is unreadable.
-export type AlwaysStatus = "current" | "stock" | "missing";
+// "missing" = the file is unreadable, "inert" = this build gives the fix
+// nothing to change (see AlwaysInline.inert).
+export type AlwaysStatus = "current" | "stock" | "missing" | "inert";
 export interface AlwaysState {
   id: string;
   label: string;
@@ -8899,8 +9283,10 @@ export function analyzeAlways(
     }
     const native = c.replace(a.frags, "");
     const want = a.patch(native, read);
-    if (want === null)
-      return { ...base, status: c === native ? "missing" : "stock" };
+    if (want === null) {
+      if (c !== native) return { ...base, status: "stock" };
+      return { ...base, status: a.inert?.(native) ? "inert" : "missing" };
+    }
     return { ...base, status: c === want ? "current" : "stock" };
   });
 }
@@ -9646,9 +10032,13 @@ export class Patcher {
       ) &&
       presentInjects.every((s) => s.status === "current") &&
       // No row of their own, but a missing always-on fix still leaves the
-      // bundle out of sync, so the panel should offer to apply.
+      // bundle out of sync, so the panel should offer to apply. An inert one
+      // has nothing to apply on this build.
       this.alwaysStates.every(
-        (s) => s.status === "current" || s.status === "missing",
+        (s) =>
+          s.status === "current" ||
+          s.status === "missing" ||
+          s.status === "inert",
       );
     return {
       available: true,

@@ -220,10 +220,16 @@ const NATIVE_MARKERS = {
 
 // Markers a point emits only on a build that gives it something to write. An
 // "inert" point owes none there: the math size on a build without native math,
-// where the math css line carries the size for the bundled renderer instead.
+// where the math css line carries the size for the bundled renderer instead,
+// and the digit-led math fix, which amends the native math guard.
 // Keyed by point id; add an entry whenever a point gains an inert hook.
 const INERT_MARKERS = {
   chatMathSize: ["/*ccup:mathSize*/"],
+  mathDigits: [
+    "/*ccup:mathDigits:guard*/",
+    "/*ccup:mathDigits:pre*/",
+    "/*ccup:mathDigitsEnd*/",
+  ],
 };
 
 // Markers a size point emits only through its alternate form (see AltForm in

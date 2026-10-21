@@ -73,9 +73,7 @@ export const WEIGHT_STEP = 100;
 export const NATIVE_BOLD_WEIGHT = 700;
 
 export type Section =
-  | "Chat Panel or Tab"
-  | "Plan Mode Markdown Preview"
-  | "Behavior";
+  "Chat Panel or Tab" | "Plan Mode Markdown Preview" | "Behavior";
 export const SECTION_ORDER: Section[] = [
   "Chat Panel or Tab",
   "Plan Mode Markdown Preview",
@@ -572,6 +570,19 @@ const themeSyncNative = (c: string): boolean =>
 // line number to the normal color. Scoped to every diff container found in the
 // stylesheet (the inline card and the expand modal use different CSS-module
 // hashes, e.g. _s6OFow and _oXZawA), so both render the signs.
+//
+// The same line insets each diff editor from its container's left edge. The
+// leftmost number column is exactly as wide as its digits (minChars sized to
+// fit, and no glyph margin to its left: off natively in the inline view,
+// reclaimed by the gm fragment below in side-by-side), so the digits sat flush
+// against the card while the line height leaves them room above and below. A
+// 4px left border on the editor root gives that room back (ink to edge at the
+// default 13px: 4px above the first row, 4.5px left of the digits). It is a
+// border rather than padding because Monaco places both editors absolutely
+// from the root's padding box and sizes them from its content box, so the
+// border shifts and narrows the whole layout in step, in either view. Its
+// color is Monaco's own gutter variable, which Monaco's theme rule defines on
+// that root, so the strip matches the number column in every theme.
 const DIFF_LINES_CSS_MARKER = "/*ccup:diffLines*/";
 const DIFF_CONTAINER_HASH_RE = /\.diffEditorContainer_([-\w]+)\{/g;
 
@@ -1746,7 +1757,7 @@ function gateHovers(css: string): { out: string; count: number } {
   // Index just past the "}" that closes the block opened at j.
   const blockEnd = (j: number): number => {
     let depth = 0;
-    for (let k = j; k < n; ) {
+    for (let k = j; k < n;) {
       const a = atomEnd(k);
       if (a !== k) {
         k = a;
@@ -1761,7 +1772,7 @@ function gateHovers(css: string): { out: string; count: number } {
   // The selector text from s to e with the gate after each :hover.
   const gate = (s: number, e: number): string => {
     let r = "";
-    for (let k = s; k < e; ) {
+    for (let k = s; k < e;) {
       const a = atomEnd(k);
       if (a !== k) {
         r += css.slice(k, a);
@@ -5531,11 +5542,20 @@ export function promptHistWebview(
 //           (bold/code/links), while block boundaries insert "\n", which a
 //           single-line query can never match across; hidden text is skipped
 //           via checkVisibility (collapsed "Show more" content stays
-//           unsearchable, matching native find's visible-only semantics)
+//           unsearchable, matching native find's visible-only semantics).
+//           Rendered math reads as its TeX, the way the raw markdown does:
+//           each formula is one unit, fenced by "\n" so no match crosses its
+//           edge, holding its TeX body in either native render state (KaTeX
+//           keeps it only in a hidden annotation, and a response far from
+//           view shows the raw source instead), so the match count does not
+//           change as responses typeset and revert while scrolling
 //   paint   matches become Ranges under two CSS Custom Highlights (all
 //           matches + the active one, the active at higher priority), colored
 //           by the editor findMatch theme tokens in the appended CSS line; no
-//           DOM mutation, so React re-renders never fight the highlights
+//           DOM mutation, so React re-renders never fight the highlights. A
+//           match in a formula selects the whole formula element, whose
+//           boundary points sit in its parent and so outlive the renderer
+//           swapping raw source for KaTeX inside it
 //   nav     next/previous wrap around, move the active highlight, and scroll
 //           the active match into the band between the pinned sticky header
 //           (whose height varies with the pinned message) and the composer
@@ -5601,6 +5621,9 @@ const FINDBAR_CSS_MARKER = "/*ccup:findBarCss*/";
 const FINDBAR_CHAT_HASH_RE = /messagesContainer:"messagesContainer_([-\w]+)"/;
 const FINDBAR_INPUT_HASH_RE = /messageInput:"messageInput_([-\w]+)"/;
 const FINDBAR_CSS_ANCHOR_RE = /\.messagesContainer_[-\w]+/;
+// Set by native math's formula component alone (its scroll helpers only read
+// it), on a span it keeps while swapping raw source and KaTeX inside.
+const FINDBAR_MATH_ATTR = "data-redrawn";
 
 interface FindChord {
   k: string; // KeyboardEvent.key, lowercased
@@ -5936,8 +5959,37 @@ function ccupFindBarWebview(): void {
       return b;
     };
 
+    // Math units: native math (2.1.301+) renders each formula in a wrapper
+    // span carrying the baked attribute and keeps that element while it
+    // swaps the contents between raw source (a response more than a
+    // scroller height from view) and KaTeX; the patch's own chatMath wraps
+    // in span.ccup-math, and a bare .katex is the fallback. The rendered
+    // glyphs are never searched: they read in layout order (a fraction
+    // denominator-first), and KaTeX's clipped MathML copy would match too.
+    const MATH = cfg.math || "";
+    const MATH_SEL = (MATH ? "[" + MATH + "]," : "") + ".ccup-math,.katex";
+    const isMath = (el: any): boolean =>
+      (!!MATH && el.hasAttribute(MATH)) ||
+      el.classList.contains("ccup-math") ||
+      el.classList.contains("katex");
+    const DELIM =
+      /^(?:\$\$([\s\S]*)\$\$|\$([\s\S]*)\$|\\\(([\s\S]*)\\\)|\\\[([\s\S]*)\\\])$/;
+    // A unit's TeX body: KaTeX's annotation once typeset, else the raw
+    // source the wrapper shows, minus its delimiters (the two agree).
+    const texOf = (el: any): string => {
+      const an = el.querySelector('annotation[encoding="application/x-tex"]');
+      if (an) return String(an.textContent || "").trim();
+      if (el.classList.contains("katex") || el.querySelector(".katex"))
+        return ""; // typeset with no annotation: no source to search
+      const raw = String(el.textContent || "").trim();
+      const m = DELIM.exec(raw);
+      return m ? (m[1] || m[2] || m[3] || m[4] || "").trim() : raw;
+    };
+
     // Visible text nodes of the transcript, concatenated with per-node
     // offsets; "\n" separates blocks (a single-line query can't cross it).
+    // A formula enters as its unit element and TeX, fenced by "\n" on both
+    // sides, and the walk skips what renders inside it.
     const collect = (): any => {
       const nodes: any[] = [];
       const offs: number[] = [];
@@ -5961,19 +6013,50 @@ function ccupFindBarWebview(): void {
         }
         return v;
       };
-      const walker = doc.createTreeWalker(root, 4); // SHOW_TEXT
+      // Elements are walked only when the transcript holds math, so a
+      // math-free scan stays a text-only walk.
+      const math = !!root.querySelector(MATH_SEL);
+      const walker = doc.createTreeWalker(root, math ? 5 : 4); // ELEMENT|TEXT, TEXT
+      // The node after the current one's subtree, moving the walker there.
+      const past = (): any => {
+        let n = walker.currentNode;
+        while (n && n !== root) {
+          const s = walker.nextSibling();
+          if (s) return s;
+          n = walker.parentNode();
+        }
+        return null;
+      };
       let prevBlock: any = null;
-      for (let nd = walker.nextNode(); nd; nd = walker.nextNode()) {
+      let nd = walker.nextNode();
+      while (nd) {
+        if (nd.nodeType === 1) {
+          if (!isMath(nd)) {
+            nd = walker.nextNode();
+            continue;
+          }
+          const tex = visible(nd) ? texOf(nd) : "";
+          if (tex) {
+            if (nodes.length) hay += "\n";
+            prevBlock = nd; // no text node's block, so "\n" follows it too
+            offs.push(hay.length);
+            nodes.push(nd);
+            hay += tex;
+          }
+          nd = past();
+          continue;
+        }
         const p = nd.parentElement;
-        if (!p || !visible(p)) continue;
         const t = nd.nodeValue;
-        if (!t) continue;
-        const b = blockOf(p);
-        if (nodes.length && b !== prevBlock) hay += "\n";
-        prevBlock = b;
-        offs.push(hay.length);
-        nodes.push(nd);
-        hay += t;
+        if (p && t && visible(p)) {
+          const b = blockOf(p);
+          if (nodes.length && b !== prevBlock) hay += "\n";
+          prevBlock = b;
+          offs.push(hay.length);
+          nodes.push(nd);
+          hay += t;
+        }
+        nd = walker.nextNode();
       }
       return { nodes, offs, hay };
     };
@@ -6007,8 +6090,11 @@ function ccupFindBarWebview(): void {
         const b = nodeAt(i + L - 1);
         try {
           const r = doc.createRange();
-          r.setStart(nodes[a], i - offs[a]);
-          r.setEnd(nodes[b], i + L - offs[b]);
+          // A unit element is selected whole (its fence keeps a === b).
+          if (nodes[a].nodeType === 1) r.setStartBefore(nodes[a]);
+          else r.setStart(nodes[a], i - offs[a]);
+          if (nodes[b].nodeType === 1) r.setEndAfter(nodes[b]);
+          else r.setEnd(nodes[b], i + L - offs[b]);
           ranges.push(r);
           starts.push(i);
         } catch {
@@ -6186,7 +6272,10 @@ function ccupFindBarWebview(): void {
       el = null;
       try {
         const root = container();
-        let e = ranges[k].startContainer.parentElement;
+        // A formula match starts in its unit's parent, which for a display
+        // formula is the response's own markdown root: a block itself.
+        const sc = ranges[k].startContainer;
+        let e = sc.nodeType === 1 ? sc : sc.parentElement;
         let row = null;
         while (e && e !== root) {
           if (e.classList) {
@@ -6705,6 +6794,9 @@ function findBarCfgBuild(c: string): string | undefined {
   if (md) push(`root_${md}`);
   push(c.match(/userMessage:"(userMessage_[-\w]+)"/)?.[1]);
   push(c.match(/stickyHeader:"(stickyHeader_[-\w]+)"/)?.[1]);
+  // Native math's formula wrapper attribute (2.1.301+), the engine's math
+  // unit; "" on a build without it leaves .ccup-math and .katex.
+  const math = c.includes(`"${FINDBAR_MATH_ATTR}"`) ? FINDBAR_MATH_ATTR : "";
   const k = readFindKeys();
   mergeChords(k.next, readFindChordSetting("chatFindBarNextMatchKeys"));
   mergeChords(k.prev, readFindChordSetting("chatFindBarPreviousMatchKeys"));
@@ -6712,6 +6804,7 @@ function findBarCfgBuild(c: string): string | undefined {
     chat,
     input,
     blocks,
+    math,
     open: k.open,
     next: k.next,
     prev: k.prev,
@@ -6790,6 +6883,20 @@ function findBarCssBuild(css: string): string | undefined {
     ".ccup-find-bar .ccup-find-sep{margin-left:4px}" +
     ".ccup-find-ruler{position:fixed;display:none;width:5px;border-radius:5px;background:var(--vscode-editor-findMatchBackground,var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.8)));z-index:1199;pointer-events:none}"
   );
+}
+
+// The webview bundle and stylesheet with the find bar in, as an apply writes
+// them (any find bar already there replaced), or null when its anchor is gone.
+// scripts/repro's find-math.mjs serves this, so it runs exactly what the
+// patcher writes.
+export function findBarWebview(
+  js: string,
+  css: string,
+): { js: string; css: string } | null {
+  const bar = findBarCssBuild(css);
+  const out = findBarSet(js, true);
+  if (!bar || findBarCurrentOn(out) !== true) return null;
+  return { js: out, css: cssApplyLine(css, FINDBAR_CSS_MARKER, bar) };
 }
 
 // The chat message "Show more" (.expandButton_<hash>) and "Show less"
@@ -8330,7 +8437,9 @@ function diffLinesCssBuild(css: string): string | undefined {
       `${ins},${rem}{${asText};transform:none !important;font-size:12px !important;line-height:1 !important}` +
       `${ins}::before{content:"+" !important;${asText}}` +
       `${rem}::before{content:"-" !important;${asText}}` +
-      `${c} .line-numbers.active-line-number{color:var(--vscode-editorLineNumber-foreground) !important}`
+      `${c} .line-numbers.active-line-number{color:var(--vscode-editorLineNumber-foreground) !important}` +
+      // inset the editor from the card's left edge (see the marker's comment).
+      `${c}>.monaco-diff-editor{border-left:4px solid var(--vscode-editorGutter-background)}`
     );
   };
   return DIFF_LINES_CSS_MARKER + hashes.map(perContainer).join("");
@@ -9749,11 +9858,7 @@ export function analyze(
 // "missing": a missing anchor means a wanted customization silently can't apply
 // and the panel should say so, whereas here the user gets the behavior anyway.
 export type ToggleStatus =
-  | "current"
-  | "stock"
-  | "custom"
-  | "missing"
-  | "native";
+  "current" | "stock" | "custom" | "missing" | "native";
 export interface ToggleState {
   id: string;
   label: string;

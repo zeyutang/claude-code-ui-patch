@@ -147,3 +147,4 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   A response reading as source keeps its button in place, faded until you hover it.
   Each response switches on its own, and all of them are back to rendered after a webview reload.
 - **`chatFindBar` replaces native `Cmd`/`Ctrl`+`F` widget inside the chat webview** (tab and sidebar alike).
+  Math in agent responses matches by its TeX source, as its raw markdown reads, so `\frac{a}{b}` finds that fraction while the symbols it renders do not match.

@@ -5548,11 +5548,18 @@ export function promptHistWebview(
 //           edge, holding its TeX body in either native render state (KaTeX
 //           keeps it only in a hidden annotation, and a response far from
 //           view shows the raw source instead), so the match count does not
-//           change as responses typeset and revert while scrolling
-//   paint   matches become Ranges under two CSS Custom Highlights (all
-//           matches + the active one, the active at higher priority), colored
-//           by the editor findMatch theme tokens in the appended CSS line; no
-//           DOM mutation, so React re-renders never fight the highlights. A
+//           change as responses typeset and revert while scrolling. The
+//           haystack is cached until the transcript changes, so typing a
+//           query costs one indexOf pass per keystroke, and a match is kept
+//           as haystack positions rather than a live Range
+//   paint   two CSS Custom Highlights (the matches near the view, and the
+//           active one at higher priority), colored by the editor findMatch
+//           theme tokens in the appended CSS line; no DOM mutation, so React
+//           re-renders never fight the highlights. Only the matches within a
+//           margin of the view are registered, re-measured as the view
+//           scrolls: Blink rebuilds every highlight marker on each frame
+//           with a DOM or style change, so registering all of a frequent
+//           word's matches slowed every frame while the bar was open. A
 //           match in a formula selects the whole formula element, whose
 //           boundary points sit in its parent and so outlive the renderer
 //           swapping raw source for KaTeX inside it
@@ -5578,15 +5585,16 @@ export function promptHistWebview(
 //           place; it spans only the block's visible slice of the scrollport,
 //           clamped under the pinned sticky header rather than painting over
 //           it while the block scrolls beneath
-//   rescan  a body MutationObserver (debounced, active only while the bar is
-//           open) recomputes matches when the chat re-renders or streams,
-//           without scrolling. Batches produced entirely by the bar/ruler are
-//           dropped (the counter's textContent writes would otherwise
-//           re-trigger it), and the active match re-anchors via its LIVE
-//           Range, whose boundaries track surrounding mutations, so content
-//           mounting above (sticky pinning, Monaco's virtualized diff lines
-//           during scroll) cannot walk the active match forward; the haystack
-//           offset is only the fallback for a re-rendered active node
+//   rescan  a body MutationObserver (debounced, observing only while the bar
+//           is open) recomputes matches when the chat re-renders or streams,
+//           without scrolling. Records outside the transcript are dropped
+//           (the bar's own counter writes, the composer), attribute changes
+//           inside it only mark the cached haystack stale, and the active
+//           match re-anchors via its LIVE Range, whose boundaries track
+//           surrounding mutations, so content mounting above (sticky pinning,
+//           Monaco's virtualized diff lines during scroll) cannot walk the
+//           active match forward; the haystack offset is only the fallback
+//           for a re-rendered active node
 //
 // Keys are resolved on the HOST at patch time and baked into a small cfg line
 // (window.__ccupFindCfg) separate from the engine block, so a keybinding edit
@@ -5872,13 +5880,16 @@ function ccupFindBarWebview(): void {
     }
     g.__ccupFindBar = 1;
 
-    // Match cap: bounds Range building, highlight registration, and the
-    // per-scan rect walks, so a degenerate query (one letter over a huge
-    // transcript) cannot freeze the webview. Real word searches stay far
-    // below it; beyond it the counter reads "20000+" and navigation wraps
-    // within the built matches.
+    // Match cap: bounds the match list and block skipping, so a degenerate
+    // query (one letter over a huge transcript) cannot freeze the webview.
+    // Real word searches stay far below it; beyond it the counter reads
+    // "20000+" and navigation wraps within the found matches.
     const MAXM = 20000;
     const TOP = 48; // px kept clear under the fixed bar when revealing
+    // Painted matches: those within WINM viewport heights of the view, at
+    // most WINMAX of them (see hlSync).
+    const WINM = 1.5;
+    const WINMAX = 1000;
     const INLINE: Record<string, number> = {
       A: 1,
       ABBR: 1,
@@ -5923,10 +5934,29 @@ function ccupFindBarWebview(): void {
     let blockPrevB: any = null;
     let blockNextB: any = null;
     let ruler: any = null;
-    let ranges: any[] = [];
+    // A match is four numbers in mm (start node index into snap.nodes,
+    // start offset, end node index, end offset), never a live Range apiece:
+    // every DOM mutation updates each live Range until it is collected, and
+    // building thousands per keystroke weighed on the scan. Ranges exist
+    // only for the active match, the painted window, and rect reads.
+    let snap: any = null; // cached haystack: nodes, offsets, lowercased text
+    let dirty = true; // the transcript changed since snap was collected
+    let mm: number[] = [];
+    let nm = 0; // match count
     let starts: number[] = []; // haystack offset per match, for rescan continuity
     let blkMemo = new Map(); // match index -> block element, reset per scan
     let active = -1;
+    let activeR: any = null; // live Range of the active match
+    let probe: any = null; // one reusable Range for rect reads
+    let gen = 0; // scan count, so the painted window knows a rescan replaced it
+    let hlDirty = false;
+    let winKey = ""; // what the registered window holds
+    let winAct: any = null;
+    let winSc: any = null;
+    let winPos = 0; // scroll position the window was measured at
+    let winVh = 0;
+    let winM = 0;
+    let obs: any = null;
     let lastFocus: any = null;
     let scanT: any = 0;
     let mutT: any = 0;
@@ -6061,76 +6091,237 @@ function ccupFindBarWebview(): void {
       return { nodes, offs, hay };
     };
 
-    // Case-insensitive, non-overlapping substring matches -> Ranges.
+    // Case-insensitive, non-overlapping substring matches over the cached
+    // haystack, collected again only once the body observer has marked the
+    // transcript changed, so a keystroke costs an indexOf pass rather than
+    // a walk of the whole transcript.
     const search = (q: string): void => {
-      ranges = [];
+      mm = [];
+      nm = 0;
       starts = [];
       blkMemo = new Map();
+      activeR = null;
+      gen++;
       if (!q) return;
-      const col = collect();
-      const nodes = col.nodes;
-      const offs = col.offs;
-      if (!nodes.length) return;
-      const H = col.hay.toLowerCase();
+      if (dirty || !snap || !obs) {
+        const col = collect();
+        snap = { nodes: col.nodes, offs: col.offs, H: col.hay.toLowerCase() };
+        dirty = false;
+      }
+      const offs = snap.offs;
+      const H = snap.H;
+      const last = snap.nodes.length - 1;
+      if (last < 0) return;
       const Q = q.toLowerCase();
       const L = Q.length;
-      const nodeAt = (pos: number): number => {
-        let lo = 0;
-        let hi = nodes.length - 1;
-        while (lo < hi) {
-          const mid = (lo + hi + 1) >> 1;
-          if (offs[mid] <= pos) lo = mid;
-          else hi = mid - 1;
-        }
-        return lo;
-      };
+      // Matches arrive in haystack order, so the node cursor only advances.
+      let a = 0;
       let i = H.indexOf(Q);
-      while (i >= 0 && ranges.length < MAXM) {
-        const a = nodeAt(i);
-        const b = nodeAt(i + L - 1);
-        try {
-          const r = doc.createRange();
-          // A unit element is selected whole (its fence keeps a === b).
-          if (nodes[a].nodeType === 1) r.setStartBefore(nodes[a]);
-          else r.setStart(nodes[a], i - offs[a]);
-          if (nodes[b].nodeType === 1) r.setEndAfter(nodes[b]);
-          else r.setEnd(nodes[b], i + L - offs[b]);
-          ranges.push(r);
-          starts.push(i);
-        } catch {
-          // a node changed under us mid-scan: skip this match
-        }
+      while (i >= 0 && nm < MAXM) {
+        while (a < last && offs[a + 1] <= i) a++;
+        let b = a;
+        while (b < last && offs[b + 1] <= i + L - 1) b++;
+        mm.push(a, i - offs[a], b, i + L - offs[b]);
+        starts.push(i);
+        nm++;
         i = H.indexOf(Q, i + L);
       }
     };
 
-    const paint = (): void => {
+    // A unit element's index among its parent's children, the offset its
+    // whole-unit boundary points (setStartBefore/setEndAfter) carry.
+    const idxOf = (el: any): number =>
+      Array.prototype.indexOf.call(el.parentNode.childNodes, el);
+    // Point the live Range r at match k; throws once a node has gone stale,
+    // which the pending rescan rebuilds. A unit element is selected whole
+    // (its fence keeps the start and end node the same).
+    const setR = (r: any, k: number): any => {
+      const a = snap.nodes[mm[4 * k]];
+      const b = snap.nodes[mm[4 * k + 2]];
+      if (a.nodeType === 1) r.setStartBefore(a);
+      else r.setStart(a, mm[4 * k + 1]);
+      if (b.nodeType === 1) r.setEndAfter(b);
+      else r.setEnd(b, mm[4 * k + 3]);
+      return r;
+    };
+    const liveAt = (k: number): any => {
       try {
-        const all = new g.Highlight();
-        all.priority = 1;
-        for (let k = 0; k < ranges.length; k++) all.add(ranges[k]);
-        g.CSS.highlights.set("ccup-find", all);
-        const act = new g.Highlight();
-        act.priority = 2;
-        if (active >= 0 && ranges[active]) act.add(ranges[active]);
-        g.CSS.highlights.set("ccup-find-active", act);
+        return setR(doc.createRange(), k);
+      } catch {
+        return null;
+      }
+    };
+    // The painted window is static: a StaticRange costs nothing per DOM
+    // mutation, and the rescan a mutation schedules replaces it anyway.
+    const staticAt = (k: number): any => {
+      try {
+        const a = snap.nodes[mm[4 * k]];
+        const b = snap.nodes[mm[4 * k + 2]];
+        const ua = a.nodeType === 1;
+        const ub = b.nodeType === 1;
+        return new g.StaticRange({
+          startContainer: ua ? a.parentNode : a,
+          startOffset: ua ? idxOf(a) : mm[4 * k + 1],
+          endContainer: ub ? b.parentNode : b,
+          endOffset: ub ? idxOf(b) + 1 : mm[4 * k + 3],
+        });
+      } catch {
+        return null;
+      }
+    };
+    // Match k's viewport rect, read through the shared probe, or null.
+    const rectOf = (k: number): any => {
+      try {
+        if (!probe) probe = doc.createRange();
+        return setR(probe, k).getBoundingClientRect();
+      } catch {
+        return null;
+      }
+    };
+    // The first k in [lo, nm) where ok holds, else nm. A binary search:
+    // matches run in document order, and so top to bottom, give or take a
+    // pinned sticky header (either side of one is a visible match).
+    const firstWhere = (ok: (k: number) => boolean, lo?: number): number => {
+      let l = lo || 0;
+      let h = nm;
+      while (l < h) {
+        const mid = (l + h) >> 1;
+        if (ok(mid)) h = mid;
+        else l = mid + 1;
+      }
+      return l;
+    };
+    const bottomAt =
+      (y: number) =>
+      (k: number): boolean => {
+        const r = rectOf(k);
+        return !!r && r.bottom >= y;
+      };
+    // The matches in the header pinned at the top of scroller sc, as an
+    // index range [lo, hi] (empty when none): they show at the top while
+    // their document position lies above the view. The pinned one is the
+    // last header at or above the scroller top (headers run in document
+    // order) that still shows there.
+    const pinnedMatches = (sc: any): number[] => {
+      if (!sc || !shClass || !nm) return [0, -1];
+      const rt = sc.getBoundingClientRect().top;
+      const hs = sc.getElementsByClassName(shClass);
+      let l = 0;
+      let h = hs.length;
+      while (l < h) {
+        const mid = (l + h) >> 1;
+        if (hs[mid].getBoundingClientRect().top <= rt + 4) l = mid + 1;
+        else h = mid;
+      }
+      const ph = l > 0 ? hs[l - 1] : null;
+      if (!ph || ph.getBoundingClientRect().bottom <= rt + 4) return [0, -1];
+      // By document position: before the header (-1), in it (0), after.
+      const where = (k: number): number => {
+        const n = snap.nodes[mm[4 * k]];
+        if (n === ph) return 0;
+        const c = ph.compareDocumentPosition(n);
+        return c & 16 ? 0 : c & 4 ? 1 : -1;
+      };
+      const lo = firstWhere((k) => where(k) >= 0);
+      let hi = lo - 1;
+      while (hi + 1 < nm && hi - lo < 200 && where(hi + 1) === 0) hi++;
+      return [lo, hi];
+    };
+
+    // Marks the highlights for the next frame, where hlSync paints the
+    // matches around the view; the active match gets its live Range now,
+    // since reveal measures it right away.
+    const paint = (): void => {
+      activeR = active >= 0 && active < nm ? liveAt(active) : null;
+      hlDirty = true;
+      frameQ();
+    };
+
+    // The highlight registry holds only the matches near the view. Blink
+    // rebuilds every custom highlight marker on any frame with a DOM or
+    // style change (the find input's own keystrokes included), so
+    // registering all of a frequent word's matches taxed every frame while
+    // the bar was open. Registered: the matches within WINM viewport
+    // heights of the view (at most WINMAX, kept centered on it), plus those
+    // in the header pinned at the top, which sit far above in document
+    // order while they show. Rebuilt after a scan or a navigation, and on a
+    // resize or a scroll of half the margin.
+    const hlSync = (): void => {
+      if (!isOpen()) return;
+      const sc = container();
+      const vh = g.window.innerHeight || 0;
+      const pos = sc ? sc.scrollTop - sc.getBoundingClientRect().top : 0;
+      if (
+        !hlDirty &&
+        sc === winSc &&
+        vh === winVh &&
+        Math.abs(pos - winPos) <= winM / 2
+      ) {
+        return;
+      }
+      hlDirty = false;
+      winSc = sc;
+      winVh = vh;
+      winPos = pos;
+      winM = Math.max(300, vh * WINM);
+      let lo = 0;
+      let hi = -1;
+      const p = pinnedMatches(sc);
+      const plo = p[0];
+      const phi = p[1];
+      if (nm) {
+        // The pinned header's matches are set aside here as in update, and
+        // added on their own below.
+        const near = bottomAt(-winM);
+        lo = firstWhere((k) => (k < plo || k > phi) && near(k));
+        hi =
+          firstWhere((k) => {
+            const r = rectOf(k);
+            return !!r && r.top > vh + winM;
+          }, lo) - 1;
+        if (hi - lo + 1 > WINMAX) {
+          const vis = bottomAt(0);
+          const mid = firstWhere((k) => (k < plo || k > phi) && vis(k), lo);
+          lo = Math.max(lo, Math.min(mid - (WINMAX >> 1), hi - WINMAX + 1));
+          hi = lo + WINMAX - 1;
+        }
+      }
+      try {
+        const key = gen + ":" + lo + ":" + hi + ":" + plo + ":" + phi;
+        if (key !== winKey) {
+          winKey = key;
+          const all = new g.Highlight();
+          all.priority = 1;
+          for (let k = plo; k <= phi; k++) {
+            if (k >= lo && k <= hi) continue;
+            const r = staticAt(k);
+            if (r) all.add(r);
+          }
+          for (let k = lo; k <= hi; k++) {
+            const r = staticAt(k);
+            if (r) all.add(r);
+          }
+          g.CSS.highlights.set("ccup-find", all);
+        }
+        if (activeR !== winAct) {
+          winAct = activeR;
+          const act = new g.Highlight();
+          act.priority = 2;
+          if (activeR) act.add(activeR);
+          g.CSS.highlights.set("ccup-find-active", act);
+        }
       } catch {
         // Highlight registry unavailable: matches still navigate by scroll
       }
-      rulerQ();
     };
 
     const status = (): void => {
       if (!count) return;
       const q = input ? input.value : "";
-      const total = ranges.length >= MAXM ? MAXM + "+" : String(ranges.length);
-      const txt = !q
-        ? ""
-        : ranges.length
-          ? active + 1 + " of " + total
-          : "No results";
+      const total = nm >= MAXM ? MAXM + "+" : String(nm);
+      const txt = !q ? "" : nm ? active + 1 + " of " + total : "No results";
       // Write only on change: textContent assignment always emits a mutation,
-      // which the body observer must never see as chat activity. The hidden
+      // and every body observer (the other toggles' too) wakes for one. The hidden
       // sizer twin holds a fixed "9999 of 9999" (or the real worst case once
       // the total runs wider), so the bar keeps one width across queries and
       // navigation alike.
@@ -6139,12 +6330,12 @@ function ccupFindBarWebview(): void {
       const sz = total.length > 4 ? total + " of " + total : "9999 of 9999";
       if (countSize && countSize.textContent !== sz) countSize.textContent = sz;
       if (bar) {
-        if (q && !ranges.length) bar.setAttribute("data-none", "");
+        if (q && !nm) bar.setAttribute("data-none", "");
         else bar.removeAttribute("data-none");
       }
       // data-off instead of the disabled attribute: a disabled button gets no
       // mouse events, which would keep the hover tip from ever showing.
-      const dis = !ranges.length;
+      const dis = !nm;
       const off = (b: any): void => {
         if (!b) return;
         const has = b.hasAttribute("data-off");
@@ -6209,9 +6400,9 @@ function ccupFindBarWebview(): void {
     // DURING the scroll (a different header pins, lines mount), so a bounded
     // correction pass re-measures on the next frames until the target settles.
     const reveal = (tries?: number): void => {
-      if (active < 0 || !ranges[active]) return;
+      if (active < 0 || !activeR) return;
       try {
-        let tr = ranges[active].getBoundingClientRect();
+        let tr = activeR.getBoundingClientRect();
         try {
           const bl = blockAt(active);
           if (bl && bl.isConnected) {
@@ -6231,7 +6422,7 @@ function ccupFindBarWebview(): void {
         }
         let sc = container();
         if (!sc || sc.scrollHeight <= sc.clientHeight + 1) {
-          let e = ranges[active].startContainer.parentElement;
+          let e = activeR.startContainer.parentElement;
           while (e && e.scrollHeight <= e.clientHeight + 1) e = e.parentElement;
           sc = e;
         }
@@ -6256,9 +6447,9 @@ function ccupFindBarWebview(): void {
     };
 
     const nav = (dir: number): void => {
-      if (!ranges.length) return;
+      if (!nm) return;
       const base = active < 0 ? (dir > 0 ? -1 : 0) : active;
-      active = (base + dir + ranges.length) % ranges.length;
+      active = (base + dir + nm) % nm;
       paint();
       status();
       reveal();
@@ -6272,10 +6463,10 @@ function ccupFindBarWebview(): void {
       el = null;
       try {
         const root = container();
-        // A formula match starts in its unit's parent, which for a display
-        // formula is the response's own markdown root: a block itself.
-        const sc = ranges[k].startContainer;
-        let e = sc.nodeType === 1 ? sc : sc.parentElement;
+        // Either kind of match starts in its node's parent: a text node's
+        // element, or a formula unit's, which for a display formula is the
+        // response's own markdown root, a block itself.
+        let e = snap.nodes[mm[4 * k]].parentElement;
         let row = null;
         while (e && e !== root) {
           if (e.classList) {
@@ -6301,7 +6492,7 @@ function ccupFindBarWebview(): void {
     // lands on that block's first match, so both directions enter a block at
     // its top. A single block with matches leaves nothing to skip to.
     const navBlock = (dir: number): void => {
-      const n = ranges.length;
+      const n = nm;
       if (!n) return;
       const cur = active < 0 ? 0 : active;
       const b = blockAt(cur);
@@ -6333,20 +6524,16 @@ function ccupFindBarWebview(): void {
     const update = (): void => {
       search(input ? input.value : "");
       active = -1;
-      if (ranges.length) {
-        active = 0;
-        for (let k = 0; k < ranges.length; k++) {
-          let r;
-          try {
-            r = ranges[k].getBoundingClientRect();
-          } catch {
-            continue;
-          }
-          if (r.bottom >= TOP) {
-            active = k;
-            break;
-          }
-        }
+      if (nm) {
+        // The first match in document order whose bottom clears the bar,
+        // found by binary search with the pinned header's matches set
+        // aside, since they break the top-to-bottom order; when they come
+        // first, they are the answer, as they show at the top.
+        const p = pinnedMatches(container());
+        const vis = bottomAt(TOP);
+        const k = firstWhere((j) => (j < p[0] || j > p[1]) && vis(j));
+        if (p[0] <= p[1] && p[0] < k && vis(p[0])) active = p[0];
+        else active = k < nm ? k : 0;
       }
       paint();
       status();
@@ -6362,12 +6549,12 @@ function ccupFindBarWebview(): void {
     // for a re-rendered (disconnected) active node.
     const rescan = (): void => {
       if (!isOpen() || !input || !input.value) return;
-      const prevRange = active >= 0 ? ranges[active] : null;
+      const prevRange = activeR;
       const prevStart =
         active >= 0 && starts[active] !== undefined ? starts[active] : -1;
       search(input.value);
       active = -1;
-      if (ranges.length) {
+      if (nm) {
         let found = -1;
         if (prevRange) {
           try {
@@ -6375,27 +6562,25 @@ function ccupFindBarWebview(): void {
               prevRange.startContainer &&
               prevRange.startContainer.isConnected
             ) {
-              for (let k = 0; k < ranges.length; k++) {
-                // 0 = START_TO_START: first new match at or after the old one
-                if (ranges[k].compareBoundaryPoints(0, prevRange) >= 0) {
-                  found = k;
-                  break;
-                }
-              }
+              // The first new match starting at or after the old one:
+              // comparePoint reads -1 only for a point before its start.
+              found = firstWhere((k) => {
+                const n = snap.nodes[mm[4 * k]];
+                return n.nodeType === 1
+                  ? prevRange.comparePoint(n.parentNode, idxOf(n)) >= 0
+                  : prevRange.comparePoint(n, mm[4 * k + 1]) >= 0;
+              });
+              if (found >= nm) found = -1;
             }
           } catch {
             found = -1;
           }
         }
         if (found < 0) {
-          for (let k = 0; k < starts.length; k++) {
-            if (starts[k] >= prevStart) {
-              found = k;
-              break;
-            }
-          }
+          found = firstWhere((k) => starts[k] >= prevStart);
+          if (found >= nm) found = -1;
         }
-        active = found >= 0 ? found : ranges.length - 1;
+        active = found >= 0 ? found : nm - 1;
       }
       paint();
       status();
@@ -6525,10 +6710,9 @@ function ccupFindBarWebview(): void {
     // match highlight itself is clipped (a folded IN/OUT row) or tiny (an
     // unexpanded diff card).
     const rulerUpd = (): void => {
-      rraf = 0;
       if (!ruler) return;
       let el = null;
-      if (isOpen() && active >= 0 && ranges[active]) el = blockAt(active);
+      if (isOpen() && active >= 0 && active < nm) el = blockAt(active);
       if (!el || !el.isConnected) {
         ruler.style.display = "none";
         return;
@@ -6595,8 +6779,75 @@ function ccupFindBarWebview(): void {
       ruler.style.top = top + "px";
       ruler.style.height = bot - top + "px";
     };
-    const rulerQ = (): void => {
-      if (!rraf) rraf = g.requestAnimationFrame(rulerUpd);
+    // One frame callback for the painted window and the ruler, queued by
+    // scans, navigation, scroll, resize, and transcript mutations.
+    const frame = (): void => {
+      rraf = 0;
+      try {
+        hlSync();
+      } catch {
+        // a node gone stale mid-read: the pending rescan repaints
+      }
+      rulerUpd();
+    };
+    const frameQ = (): void => {
+      if (!rraf) rraf = g.requestAnimationFrame(frame);
+    };
+
+    // Transcript changes while open: a record counts when it lands inside
+    // the transcript or mounts a new one. The bar, the ruler and the tip sit
+    // outside it, so the counter's own writes never retrigger a rescan, and
+    // neither does typing in the composer. Text and tree changes rescan; an
+    // attribute change (a class or style that may hide or show text) only
+    // marks the haystack stale for the next keystroke, since Monaco restyles
+    // its lines on every scroll frame and a rescan per frame would cost more
+    // than the cache saves.
+    const onMut = (rs: any): void => {
+      if (!isOpen()) return;
+      const root = container();
+      if (!root) return;
+      let hit = false;
+      let text = false;
+      for (let i = 0; i < rs.length && !text; i++) {
+        const r = rs[i];
+        const t = r.target;
+        if (t === root || root.contains(t)) {
+          hit = true;
+          if (r.type !== "attributes") text = true;
+        } else if (r.type === "childList" && t.contains(root)) {
+          const ad = r.addedNodes;
+          for (let j = 0; j < ad.length; j++) {
+            if (ad[j] === root || ad[j].contains(root)) {
+              hit = text = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!hit) return;
+      dirty = true;
+      frameQ();
+      if (!text || mutT) return;
+      mutT = g.setTimeout(() => {
+        mutT = 0;
+        rescan();
+      }, 180);
+    };
+    // Observed only while open, so a closed bar costs no mutation records.
+    const watch = (): void => {
+      try {
+        if (!obs) obs = new g.MutationObserver(onMut);
+        obs.observe(doc.body, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: ["class", "style", "hidden", "open"],
+        });
+      } catch {
+        // no observer: matches go stale, and each keystroke collects afresh
+        obs = null;
+      }
     };
 
     const openBar = (): void => {
@@ -6608,6 +6859,8 @@ function ccupFindBarWebview(): void {
         // "is the bar open" test that costs nothing between transitions (see
         // dimCss). Harmless when those toggles are off: nothing reads the class.
         doc.body.classList.add("ccup-find-open");
+        dirty = true; // nothing watched the transcript while closed
+        watch();
       }
       let sel = "";
       try {
@@ -6632,10 +6885,27 @@ function ccupFindBarWebview(): void {
       } catch {
         // registry gone: nothing to clear
       }
-      ranges = [];
+      try {
+        if (obs) obs.disconnect();
+      } catch {
+        // already gone
+      }
+      // A scan still pending would paint highlights with the bar closed.
+      if (scanT) g.clearTimeout(scanT);
+      if (mutT) g.clearTimeout(mutT);
+      scanT = 0;
+      mutT = 0;
+      mm = [];
+      nm = 0;
       starts = [];
       blkMemo = new Map();
       active = -1;
+      activeR = null;
+      snap = null;
+      hlDirty = false;
+      winKey = "";
+      winAct = null;
+      winSc = null;
       if (ruler) ruler.style.display = "none";
       const lf = lastFocus;
       lastFocus = null;
@@ -6722,37 +6992,11 @@ function ccupFindBarWebview(): void {
       true,
     );
 
-    doc.addEventListener("scroll", rulerQ, true);
-    g.window.addEventListener("resize", rulerQ);
-
-    try {
-      new g.MutationObserver((rs: any) => {
-        if (!isOpen()) return;
-        // Drop batches produced entirely by our own bar/ruler (the counter's
-        // textContent writes), or the rescan would re-trigger itself.
-        let ours = true;
-        for (let i = 0; i < rs.length; i++) {
-          const t = rs[i].target;
-          if (t !== ruler && !(bar && bar.contains(t))) {
-            ours = false;
-            break;
-          }
-        }
-        if (ours) return;
-        rulerQ();
-        if (mutT) return;
-        mutT = g.setTimeout(() => {
-          mutT = 0;
-          rescan();
-        }, 180);
-      }).observe(doc.body, {
-        childList: true,
-        subtree: true,
-        characterData: true,
-      });
-    } catch {
-      // without the observer the bar still works; matches just go stale
-    }
+    doc.addEventListener("scroll", frameQ, true);
+    g.window.addEventListener("resize", () => {
+      dirty = true; // a narrow panel hides tool bodies
+      frameQ();
+    });
   } catch {
     // never break the webview
   }
@@ -7450,7 +7694,7 @@ const RAWMD_HOST_CLASS = "ccup-rawmd-host";
 const RAWMD_RAIL_CLASS = "ccup-rawmd-rail";
 const RAWMD_BTN_CLASS = "ccup-rawmd-btn";
 const RAWMD_PRE_CLASS = "ccup-rawmd";
-// The stuck header's height, written on the chat scroller by the pin line.
+// The stuck header's height, set on the buttons by the pin line's rule.
 const RAWMD_TOP_VAR = "--ccup-rawmd-top";
 // Gap between that header's bottom edge and the pinned button.
 const RAWMD_GAP = 6;
@@ -7468,10 +7712,10 @@ const RAWMD_DIM = 0.4;
 const RAWMD_TL_RE = /\.timelineMessage_([-\w]+)\{([^}]*)\}/;
 const RAWMD_TL_AFTER_RE = (h: string): RegExp =>
   new RegExp(`\\.timelineMessage_${h}:after\\{([^}]*)\\}`);
-// The pin line's once-only guard on window, and its last-written value on each
-// scroller (an expando, so a no-change frame costs no style write).
+// The pin line's once-only guard on window, and the attribute numbering each
+// chat scroller for its rule.
 const RAWMD_PIN_FLAG = "__ccupRawMdPin";
-const RAWMD_TOP_PROP = "__ccupRawMdTop";
+const RAWMD_PIN_ATTR = "data-ccup-pin";
 // Injected locals. The bundle is minified to short identifiers and vendors
 // nothing prefixed "ccup", so these cannot shadow anything.
 const RAWMD_ON = "ccupRawOn";
@@ -7524,25 +7768,34 @@ function rawMdPinBuild(c: string): string | undefined {
   const js =
     `(function(){try{` +
     `if(window.${RAWMD_PIN_FLAG})return;window.${RAWMD_PIN_FLAG}=1;` +
-    `var raf=0;` +
+    `var raf=0,st=null,txt="";` +
     // Per chat scroller: the headers at or above the top are a document-order
     // prefix, so a binary search on rect.top (1px of tolerance for sub-pixel
     // drift) finds the last of them, the one painted on top of the pile. It
     // still has to sit AT the top: one scrolled clean past (an expanded header,
     // which the expandedHeader fix unsticks, or a turn's end with nothing
     // pinned after it) means nothing is stuck, and that reads 0.
-    `function upd(){raf=0;var cs=document.querySelectorAll(".messagesContainer_${chat}");` +
+    `function upd(){raf=0;var cs=document.querySelectorAll(".messagesContainer_${chat}"),css="";` +
     `for(var k=0;k<cs.length;k++){var t=cs[k],hs=t.querySelectorAll(".stickyHeader_${sticky}"),` +
     `top=t.getBoundingClientRect().top+1,lo=0,hi=hs.length-1,i=-1,v=0;` +
     `while(lo<=hi){var m=(lo+hi)>>1;if(hs[m].getBoundingClientRect().top<=top){i=m;lo=m+1}else hi=m-1}` +
     `if(i>=0){var r=hs[i].getBoundingClientRect();if(r.top>=top-3)v=r.height}` +
-    `if(t.${RAWMD_TOP_PROP}!==v){t.${RAWMD_TOP_PROP}=v;t.style.setProperty("${RAWMD_TOP_VAR}",v+"px")}}}` +
+    // The height reaches the buttons through one rule per scroller in a
+    // <style> of our own, never as an inline variable on the scroller: a
+    // custom property inherits, so setting one there restyled every element
+    // in the transcript at each turn crossing (~21k elements, 40-55ms in a
+    // long session), where a changed rule restyles only the buttons it
+    // matches. The style element sits in <head>, out of every body observer.
+    `if(t.getAttribute("${RAWMD_PIN_ATTR}")!==""+k)t.setAttribute("${RAWMD_PIN_ATTR}",k);` +
+    `css+='[${RAWMD_PIN_ATTR}="'+k+'"] .${RAWMD_BTN_CLASS}{${RAWMD_TOP_VAR}:'+v+'px}'}` +
+    `if(!st||!st.isConnected){st=document.createElement("style");` +
+    `(document.head||document.documentElement).appendChild(st);txt=""}` +
+    `if(css!==txt){txt=css;st.textContent=css}}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
     `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
-    // Drop the record our own write on a scroller produces; anything else (a
-    // turn arriving, a header growing, another toggle's style probes) refreshes.
-    `new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var r=rs[i],tg=r.target;` +
-    `if(r.type!=="attributes"||r.attributeName!=="style"||!tg.classList||!tg.classList.contains("messagesContainer_${chat}")){que();return}}})` +
+    // Anything in the chat (a turn arriving, a header growing, another
+    // toggle's style probes) refreshes; our own writes land outside it.
+    `new MutationObserver(que)` +
     `.observe(document.body,{childList:!0,subtree:!0,attributes:!0,attributeFilter:["class","style"]});` +
     `que()` +
     `}catch(e){}})();`;

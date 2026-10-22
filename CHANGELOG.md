@@ -8,6 +8,9 @@
   Always applied, no setting.
 - `chatFindBar` finds math in agent responses by its TeX source, so a query such as `\pi` or `\frac{a}{b}` highlights each formula that contains it.
   The match and its block ruler no longer vanish a moment after the bar scrolls to a formula, and the symbols a formula renders, such as `π`, no longer match.
+- `chatFindBar` keeps up with your typing in a long conversation, and a query with many matches no longer slows the chat down while the bar is open.
+  Closing the bar right after typing no longer leaves its matches highlighted.
+- With `chatRawMarkdownButton` on, scrolling a long conversation no longer stalls each time a different message pins to the top.
 - The prompt history's hide button is larger and sits under the message number, where the list's scrollbar no longer covers it.
 - More inline math in agent responses renders as math on Claude Code 2.1.301 and later instead of keeping its dollar signs.
   Always applied, no setting; prices, shell variables, and template placeholders such as `$5 and $10`, `$PATH:$HOME`, and `$END$` still show as text.

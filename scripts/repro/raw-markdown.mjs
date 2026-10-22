@@ -141,17 +141,20 @@ function pinJs(chat, sticky) {
   return (
     "(function(){try{" +
     "if(window.__ccupRawMdPin)return;window.__ccupRawMdPin=1;" +
-    "var raf=0;" +
-    `function upd(){raf=0;var cs=document.querySelectorAll(".messagesContainer_${chat}");` +
+    'var raf=0,st=null,txt="";' +
+    `function upd(){raf=0;var cs=document.querySelectorAll(".messagesContainer_${chat}"),css="";` +
     `for(var k=0;k<cs.length;k++){var t=cs[k],hs=t.querySelectorAll(".stickyHeader_${sticky}"),` +
     "top=t.getBoundingClientRect().top+1,lo=0,hi=hs.length-1,i=-1,v=0;" +
     "while(lo<=hi){var m=(lo+hi)>>1;if(hs[m].getBoundingClientRect().top<=top){i=m;lo=m+1}else hi=m-1}" +
     "if(i>=0){var r=hs[i].getBoundingClientRect();if(r.top>=top-3)v=r.height}" +
-    'if(t.__ccupRawMdTop!==v){t.__ccupRawMdTop=v;t.style.setProperty("--ccup-rawmd-top",v+"px")}}}' +
+    'if(t.getAttribute("data-ccup-pin")!==""+k)t.setAttribute("data-ccup-pin",k);' +
+    `css+='[data-ccup-pin="'+k+'"] .ccup-rawmd-btn{--ccup-rawmd-top:'+v+'px}'}` +
+    'if(!st||!st.isConnected){st=document.createElement("style");' +
+    '(document.head||document.documentElement).appendChild(st);txt=""}' +
+    "if(css!==txt){txt=css;st.textContent=css}}" +
     "function que(){if(!raf)raf=requestAnimationFrame(upd)}" +
     'document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);' +
-    "new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var r=rs[i],tg=r.target;" +
-    `if(r.type!=="attributes"||r.attributeName!=="style"||!tg.classList||!tg.classList.contains("messagesContainer_${chat}")){que();return}}})` +
+    "new MutationObserver(que)" +
     '.observe(document.body,{childList:!0,subtree:!0,attributes:!0,attributeFilter:["class","style"]});' +
     "que()" +
     "}catch(e){}})();"
@@ -450,7 +453,8 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     })()`);
 
     // The point's own pin line, run for real: it publishes the stuck header's
-    // height on the scroller as --ccup-rawmd-top from here on.
+    // height as --ccup-rawmd-top on the scroller's buttons from here on,
+    // through a rule in a style element of its own.
     await ctx.evaluate(pinJs(cont, sticky));
     await ctx.sleep(80);
     const heads = await ctx.evaluate(`(() => {
@@ -533,7 +537,10 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
         out.headFold1 = box(document.getElementById('head-fold1'));
         out.headFold2 = box(document.getElementById('head-fold2'));
         out.headOpen = box(document.getElementById('head-open'));
-        out.pinned = parseFloat(getComputedStyle(sc).getPropertyValue('--ccup-rawmd-top')) || 0;
+        const pb = sc.querySelector('.ccup-rawmd-btn');
+        out.pinned = pb ? parseFloat(getComputedStyle(pb).getPropertyValue('--ccup-rawmd-top')) || 0 : -1;
+        out.pinSheets = [...document.querySelectorAll('style')].filter((x) => x.textContent.includes('--ccup-rawmd-top:')).length;
+        out.scrollerVar = getComputedStyle(sc).getPropertyValue('--ccup-rawmd-top');
         return out;
       })()`);
 
@@ -566,6 +573,11 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     };
 
     let r = await probe();
+    check(
+      "the pin line writes one rule, never a variable on the scroller",
+      r.pinSheets === 1 && r.scrollerVar === "",
+      `rules=${r.pinSheets} scroller var="${r.scrollerVar}"`,
+    );
     check(
       "nothing stuck at the very start reads 0",
       r.pinned === 0 && r.scroller.scrollTop === 0,

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.2
 
 - Text you select in the chat shows in the editor's selection color, following your theme, and in its inactive selection color once the chat loses focus.
   Always applied, no setting.

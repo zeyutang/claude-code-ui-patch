@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- On Claude Code 2.1.307 and later, a long message of yours opened with "Show more" shows its last lines and its "Show less" button again, which had been cut off below the message's edge.
+  "Show less" now stays at the bottom of the open message while you scroll through it, and at the end it sits below the last line instead of covering it.
+
 ## 1.6.2
 
 - Text you select in the chat shows in the editor's selection color, following your theme, and in its inactive selection color once the chat loses focus.

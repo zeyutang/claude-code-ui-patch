@@ -2,8 +2,11 @@
 .kilo/**
 src/**
 scripts/**
+# vsce points the README's images at GitHub, so the VSIX needs no copies
+assets/img/**
 node_modules/**
 **/*.map
 **/tsconfig.json
 .gitignore
+.markdownlint.jsonc
 .DS_Store

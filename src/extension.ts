@@ -78,7 +78,7 @@ export async function activate(
     ...patcher.register(),
     watchKeybindings(kbPath, patcher),
     vscode.commands.registerCommand("claudeCodeUiPatch.panel", () =>
-      PatchPanel.show(patcher),
+      PatchPanel.show(patcher, context.extensionUri),
     ),
     // The apply control behind the panel banner, the status-bar tooltip link,
     // and the activation toast. It lives here rather than on the Patcher

@@ -25,7 +25,10 @@ export class PatchPanel {
   private readonly sub: vscode.Disposable;
   private shape = ""; // signature of the last full render's structure
 
-  private constructor(private readonly patcher: Patcher) {
+  private constructor(
+    private readonly patcher: Patcher,
+    extensionUri: vscode.Uri,
+  ) {
     this.panel = vscode.window.createWebviewPanel(
       "claudeCodeUiPatch.panel",
       "Claude Code UI Patch",
@@ -36,6 +39,8 @@ export class PatchPanel {
         retainContextWhenHidden: true,
       },
     );
+    // The workbench draws the tab icon, so localResourceRoots does not gate it.
+    this.panel.iconPath = vscode.Uri.joinPath(extensionUri, "tab-icon.png");
     this.sub = vscode.Disposable.from(
       patcher.onDidChange(() => this.update()),
       this.panel.onDidDispose(() => {
@@ -47,12 +52,12 @@ export class PatchPanel {
     this.update();
   }
 
-  static show(patcher: Patcher): void {
+  static show(patcher: Patcher, extensionUri: vscode.Uri): void {
     if (PatchPanel.current) {
       PatchPanel.current.panel.reveal();
       return;
     }
-    PatchPanel.current = new PatchPanel(patcher);
+    PatchPanel.current = new PatchPanel(patcher, extensionUri);
   }
 
   // Full re-render on a structural change; otherwise patch the DOM in place.

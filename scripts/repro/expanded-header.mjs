@@ -9,17 +9,19 @@
 // into the transcript. The fix keeps the header pinned in both states and
 // gives an open prompt a ceiling with its own scroller: the content capped at
 // half the chat with "Show less" below it, or, where the build caps the bubble,
-// the bubble with "Show less" stuck to its bottom edge. While it overflows, a
-// wheel over the prompt reads the prompt and never spills into the transcript;
-// the response is scrolled by pointing at the response.
+// the bubble with "Show less" stuck to its bottom edge. A wheel over an open
+// prompt reads the prompt and never reaches the transcript, whether or not the
+// prompt has anything to scroll; the response is scrolled by pointing at the
+// response.
 // This first reproduces the native behavior of the stylesheet served, then
 // installs both halves and checks, with real clicks and wheels: the stuck case
 // (the transcript freezes on screen under the growing header, Chromium's
 // scroll anchoring), the wheel layering, "Show less" in view at every step of
 // the read and clear of the prompt's last line at its end, "Show less" (view
 // back, preview at the prompt's start), that the open prompt keeps pinning,
-// the in-place case for a prompt further down, and that a short open prompt is
-// no dead zone.
+// the in-place case for a prompt further down, and that a short open prompt,
+// with nothing to scroll, keeps the wheel all the same, over its text, its
+// chip row and its button row, stuck or in place, until "Show less".
 //
 //   node scripts/cdp-driver.mjs scripts/repro/expanded-header.mjs 900 700
 //
@@ -193,7 +195,7 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     // Three turns, every header the expandable in its COLLAPSED state (the
     // clamp, "Show more") over a long response: a long prompt carrying an
     // attachment chip, as an editor selection does, a long one, and a short
-    // one. A bubble-phase click handler toggles a header the way the
+    // one with a chip. A bubble-phase click handler toggles a header the way the
     // expandable's React state does, synchronously and after the fix's
     // capture-phase listener, so the order matches React; the content element
     // persists across the toggle as it does under React.
@@ -218,7 +220,7 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       const header = (id) =>
         '<div class="message_' + msg + ' ' + uCont + ' stickyHeader_' + sticky + '" id="head-' + id + '">' +
         '<div class="' + uCont + '"><div class="userMessage_' + uMsg + '">' +
-        (id === 'a' ? chips : '') + expandable(prompts[id]) + '</div></div></div>';
+        (id !== 'b' ? chips : '') + expandable(prompts[id]) + '</div></div></div>';
       const resp = (id) =>
         '<div class="message_' + msg + ' timelineMessage_' + msg +
         '" data-testid="assistant-message" id="resp-' + id + '">' + responses[id] + '</div>';
@@ -252,8 +254,8 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     check("replica built", replica === true);
 
     // Both possible scrollers of a header (its content box and its bubble),
-    // "Show less", and the prompt's last glyph, judged against every clip
-    // between it and the header.
+    // "Show less", the prompt's last glyph, judged against every clip between
+    // it and the header, and points to wheel at over the bubble's parts.
     const probe = async () =>
       ctx.evaluate(`(() => {
         const num = (v) => +parseFloat(v).toFixed(2);
@@ -270,7 +272,12 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
           const r = el.getBoundingClientRect();
           return { h: num(r.height), cap: num(cap(cs)), scrollTop: num(el.scrollTop),
                    max: el.scrollHeight - el.clientHeight, maxH: cs.maxHeight,
-                   own: el.hasAttribute('data-ccup-own'), overscroll: cs.overscrollBehaviorY }; };
+                   overscroll: cs.overscrollBehaviorY }; };
+        // A point to wheel at, and what it lands on: inside the bubble, never
+        // on "Show less" itself.
+        const at = (x, y, u, less) => { const el = document.elementFromPoint(x, y);
+          return { x: num(x), y: num(y), on: el ? el.className || el.tagName : null,
+                   inBubble: !!el && u.contains(el) && !(less && less.contains(el)) }; };
         const head = (id) => { const h = document.getElementById(id);
           const c = h.querySelector('.content_${exp}'), u = h.querySelector('.userMessage_${uMsg}');
           const less = h.querySelector('.collapseButton_${exp}');
@@ -282,16 +289,25 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
           const t = c.querySelector('span').firstChild, end = t.data.length;
           const rg = document.createRange(); rg.setStart(t, end - 1); rg.setEnd(t, end);
           const g = rg.getBoundingClientRect();
-          let lessBox = null, lessHit = false;
+          let lessBox = null, lessHit = false, row = null;
           if (less) { const l = less.getBoundingClientRect(); lessBox = { y: num(l.top), bottom: num(l.bottom) };
             const e = document.elementFromPoint(l.left + l.width / 2, l.top + l.height / 2);
-            lessHit = !!e && (e === less || less.contains(e)); }
+            lessHit = !!e && (e === less || less.contains(e));
+            // Beside the button, on the wider side of its row.
+            const rr = less.parentElement.getBoundingClientRect();
+            const left = l.left - rr.left, right = rr.right - l.right;
+            row = at(left > right ? rr.left + left / 2 : l.right + right / 2, l.top + l.height / 2, u, less); }
+          const chipRow = ${attach ? `h.querySelector('.userMessageAttachments_${attach}')` : "null"};
+          const ch = chipRow && chipRow.getBoundingClientRect();
           return { ...box(h), position: getComputedStyle(h).position, open: Boolean(less),
                    content: metrics(c, (cs) => cs.maxHeight === 'none' ? NaN : parseFloat(cs.maxHeight)),
                    bubble: metrics(u, (cs) => cs.maxHeight === 'none' ? NaN : parseFloat(cs.maxHeight) +
                      parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) +
                      parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)),
                    less: lessBox, lessHit,
+                   pts: { text: at(cr.left + cr.width / 2, (top + bot) / 2, u, less),
+                          'chip row': ch ? at(ch.left + Math.min(ch.width / 2, 40), ch.top + ch.height / 2, u, less) : null,
+                          'button row': row },
                    lastVisible: g.top >= top - 0.5 && g.bottom <= bot + 0.5,
                    lastClearsLess: lessBox ? g.bottom <= lessBox.y + 0.5 : null }; };
         const p = (id) => box(document.getElementById(id));
@@ -471,9 +487,9 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
       `scrollTop ${before.scroller.scrollTop} -> ${r.scroller.scrollTop}, grew ${r.a.h - before.a.h}`,
     );
     check(
-      "stuck: an overflowing open prompt is its own layer",
-      S(r.a).own && S(r.a).overscroll === "contain",
-      `own=${S(r.a).own} overscroll=${S(r.a).overscroll}`,
+      "stuck: the open prompt is its own layer",
+      r.a.bubble.overscroll === "contain",
+      `bubble overscroll=${r.a.bubble.overscroll}`,
     );
     check(
       "stuck: the open prompt starts at its beginning",
@@ -551,11 +567,8 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     );
     check(
       "less: no contain lingers on the collapsed prompt",
-      !r.a.content.own &&
-        !r.a.bubble.own &&
-        r.a.content.overscroll === "auto" &&
-        r.a.bubble.overscroll === "auto",
-      `own=${r.a.content.own}/${r.a.bubble.own} overscroll=${r.a.content.overscroll}/${r.a.bubble.overscroll}`,
+      r.a.content.overscroll === "auto" && r.a.bubble.overscroll === "auto",
+      `overscroll=${r.a.content.overscroll}/${r.a.bubble.overscroll}`,
     );
     // still pinned at the end of its turn, pushed up only when the turn ends
     r = await scrollTo(natB - 60);
@@ -604,28 +617,64 @@ color:var(--vscode-foreground);font-family:var(--vscode-font-family);font-size:1
     );
     await ctx.shot("in-place");
 
-    // --- a short open prompt is no dead zone --------------------------------
+    // --- a short open prompt keeps the wheel all the same ---------------------
     r = await scrollTo(natC + 600);
     r = await click("head-c", "more");
     check(
-      "short: opens pinned, under the cap, with no contain",
+      "short: opens pinned and under the cap, with nothing to scroll",
       r.c.open &&
         Math.abs(r.c.y - r.scroller.y) < 1 &&
         r.c.content.max <= 1 &&
-        r.c.bubble.max <= 1 &&
-        !r.c.content.own &&
-        !r.c.bubble.own &&
-        S(r.c).overscroll === "auto",
-      `max scroll ${r.c.content.max}/${r.c.bubble.max} own=${r.c.content.own}/${r.c.bubble.own}`,
+        r.c.bubble.max <= 1,
+      `max scroll ${r.c.content.max}/${r.c.bubble.max}`,
+    );
+    check(
+      "short: and is its own layer all the same",
+      r.c.bubble.overscroll === "contain",
+      `bubble overscroll=${r.c.bubble.overscroll}`,
     );
     t0 = r.scroller.scrollTop;
-    r = await wheel(r.scroller.y + 200, r.scroller.y + 100, 3);
+    for (const [part, pt] of Object.entries(r.c.pts)) {
+      if (!check(`short: the prompt has a ${part} to wheel over`, Boolean(pt)))
+        continue;
+      const w = await wheel(pt.x, pt.y, 3);
+      check(
+        `short: a wheel over its ${part} leaves the transcript where it was`,
+        pt.inBubble && w.scroller.scrollTop === t0,
+        `at ${pt.x},${pt.y} on ${pt.on}: scrollTop ${t0} -> ${w.scroller.scrollTop}`,
+      );
+    }
+    r = await wheel(r.scroller.y + 200, r.c.bottom + 40, 3);
     check(
-      "short: a wheel over it scrolls the transcript",
+      "short: a wheel over the response still scrolls the transcript",
+      r.scroller.scrollTop > t0 && Math.abs(r.c.y - r.scroller.y) < 1,
+      `scrollTop ${t0} -> ${r.scroller.scrollTop}, head y=${r.c.y}`,
+    );
+    await ctx.shot("short-open");
+    // Wherever it sits: an open prompt at its natural position keeps it too.
+    r = await scrollTo(natC - 60);
+    t0 = r.scroller.scrollTop;
+    r = await wheel(r.c.pts.text.x, r.c.pts.text.y, 3);
+    check(
+      "short, in place: a wheel over the open prompt leaves the transcript",
+      r.c.open &&
+        Math.abs(r.c.y - r.scroller.y - 60) < 1 &&
+        r.scroller.scrollTop === t0,
+      `y=${r.c.y} scrollTop ${t0} -> ${r.scroller.scrollTop}`,
+    );
+    r = await click("head-c", "less");
+    check(
+      "short, less: collapsed, the bubble lets the wheel through again",
+      !r.c.open && r.c.bubble.overscroll === "auto",
+      `open=${r.c.open} overscroll=${r.c.bubble.overscroll}`,
+    );
+    t0 = r.scroller.scrollTop;
+    r = await wheel(r.c.pts.text.x, r.c.pts.text.y, 3);
+    check(
+      "short, less: a wheel over the collapsed prompt scrolls the transcript",
       r.scroller.scrollTop > t0,
       `scrollTop ${t0} -> ${r.scroller.scrollTop}`,
     );
-    await ctx.shot("short-open");
 
     console.log(ok ? "\nall green" : "\nFAILURES above");
     return ok;

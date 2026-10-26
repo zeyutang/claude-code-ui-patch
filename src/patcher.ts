@@ -1616,18 +1616,23 @@ function questionRevealBuild(c: string): string | undefined {
 //
 // The header keeps pinning in both states (it is the turn's label for as long
 // as any of the turn's response is in view); what changes is that an open
-// prompt gets a ceiling and its own scroller. The CSS half (expandedHeader)
-// caps the open content at max(250px, 50vh) with overflow-y:auto, so an open
-// prompt takes at most half the chat and a wheel over it reads the prompt, and
-// puts overscroll-behavior:contain on it while it overflows, so reaching the
-// prompt's end never spills into the transcript: the prompt is its own layer,
-// and the response is scrolled by pointing at the response. The contain rule is
-// keyed to a data-ccup-own attribute rather than unconditional because a scroll
-// container with nothing to scroll and contain set swallows the wheel entirely,
-// which would make a short open prompt a dead zone. The content's native
-// max-height transition never ran (250px to none is not interpolable) but
-// would between the clamp and the cap, in both directions; transition:none on
-// the content keeps open and close instant, as they were.
+// prompt gets a ceiling and its own scroller, and keeps the wheel. The CSS half
+// (expandedHeader) caps the open content at max(250px, 50vh) with
+// overflow-y:auto, so an open prompt takes at most half the chat and a wheel
+// over it reads the prompt, and puts overscroll-behavior:contain on the bubble
+// (the header's .userMessage_ block) while it holds a "Show less", which the
+// expandable renders only while open, one expandable to a bubble. A wheel over
+// an open prompt then never reaches the transcript, at the prompt's end or
+// with nothing to scroll at all: Chromium stops the wheel at a scroll
+// container with contain whether or not it overflows, and the bubble is one
+// (natively overflow:hidden, a scroll container no wheel scrolls), so its chip
+// row and button row hold the wheel as its text does. The prompt is its own
+// layer, and the response is scrolled by pointing at the response. Keyed to the
+// button rather than to a click, the rule follows the open state however it
+// was entered (older builds open a prompt on a click anywhere in it). The
+// content's native max-height transition never ran (250px to none is not
+// interpolable) but would between the clamp and the cap, in both directions;
+// transition:none on the content keeps open and close instant, as they were.
 //
 // From 2.1.307 on the build caps the bubble itself (the header's .userMessage_
 // block, overflow-y:auto under max-height:40vh), so an open prompt already has
@@ -1637,25 +1642,19 @@ function questionRevealBuild(c: string): string | undefined {
 // button sat below the bubble's clip, and contain kept the wheel from ever
 // scrolling the bubble to them. Where the stylesheet's bubble rule carries that
 // cap, the CSS half writes a second form instead: no content cap, the "Show
-// less" row sticky at the bubble's bottom edge, and contain keyed to the
-// bubble. Stuck, the row floats over the text and stays in reach however far
-// the prompt is scrolled; at the end it rests in its own slot below the last
-// line, so it never hides the end of the text. Chromium measures bottom:0
+// less" row sticky at the bubble's bottom edge, and the same contain on the
+// open bubble. Stuck, the row floats over the text and stays in reach however
+// far the prompt is scrolled; at the end it rests in its own slot below the
+// last line, so it never hides the end of the text. Chromium measures bottom:0
 // inside the bubble's padding, so the stuck row and the resting one sit on the
 // same line and nothing jumps as the end arrives. The row is as wide as the
 // prompt, so it passes the pointer through to the text beside its button.
 //
-// The JS half (expandedView) is a capture-phase click listener on the document:
-//   Show more: parks one ResizeObserver on the clicked expandable's content
-//     and its bubble that sets or clears data-ccup-own on each by whether it
-//     overflows its box, now and on any later resize; the observer is parked
-//     on the content it watches, so they fall out of reach together. Each
-//     form keys contain to its own scroller, and the other box, uncapped,
-//     never overflows (the bubble before 2.1.307, the content after), so one
-//     script serves both.
-//   Show less: resets both scrollTops to 0 (the offset survives the collapse,
-//     and the preview would show the prompt's end) and drops the observer and
-//     the attributes, so a collapsed prompt never carries contain.
+// The JS half (expandedView) is a capture-phase click listener on the document
+// that, on "Show less", resets the clicked expandable's content and its bubble
+// to scrollTop 0: the offset survives the collapse, and the preview would show
+// the prompt's end. The content scrolls in the first form and the bubble in the
+// second, so one script serves both.
 //
 // What the transcript does when a stuck prompt grows is Chromium's own scroll
 // anchoring, verified in the repro rather than scripted: the anchor is a
@@ -1669,8 +1668,9 @@ function questionRevealBuild(c: string): string | undefined {
 //
 // An always-on fix rather than a knob: a header covering the chat is never the
 // wanted behavior, and a collapsed header behaves exactly as before. Anchors:
-// the stylesheet's sticky rule and its content/collapsed rule for the CSS half
-// (plus, in the second form, the expandable's container and button-row rules),
+// the stylesheet's sticky rule, the bubble's rule under it, and the
+// expandable's content/collapsed and "Show less" rules for the CSS half (plus,
+// in the second form, the expandable's container and button-row rules),
 // and for the JS half the expandable's whole class map (one hash from
 // expandableContainer through collapseButton, since another module also names
 // an expandButton) plus the stickyHeader and userMessage keys of the header's
@@ -1693,34 +1693,34 @@ const STICKY_BUBBLE_RULE_RE = (msg: string, sticky: string): RegExp =>
 // chat, so the response under a stuck prompt always keeps a hoverable share.
 const EXPANDED_FLOOR = 250;
 const EXPANDED_CAP = "50vh";
-// Set on an open content box while it overflows: the hook for contain.
-const EXPANDED_OWN_ATTR = "data-ccup-own";
-// The JS half's once-only guard on window, and its observer expando.
+// The JS half's once-only guard on window.
 const EXPANDED_VIEW_FLAG = "__ccupExpandedView";
-const EXPANDED_RO_PROP = "__ccupExpandedRo";
 
-// The bubble's hash where the build caps the bubble itself (overflow-y:auto or
-// scroll under a max-height, 2.1.307 on), else undefined.
-function stickyBubbleCap(
+// The bubble's hash, and whether the build caps the bubble itself
+// (overflow-y:auto or scroll under a max-height, 2.1.307 on).
+function stickyBubble(
   c: string,
   msg: string,
   sticky: string,
-): string | undefined {
+): { hash: string; capped: boolean } | undefined {
   const rule = c.match(STICKY_BUBBLE_RULE_RE(msg, sticky));
   if (!rule) return undefined;
   const capped =
     /(?:^|;)max-height:/.test(rule[2]) &&
     /(?:^|;)overflow-y:(?:auto|scroll)(?:;|$)/.test(rule[2]);
-  return capped ? rule[1] : undefined;
+  return { hash: rule[1], capped };
 }
 
 function expandedHeaderBuild(c: string): string | undefined {
   const sticky = c.match(STICKY_HEADER_RULE_RE);
   const box = c.match(EXPANDABLE_CONTENT_RULE_RE)?.[1];
-  if (!sticky || !box) return undefined; // anchor gone: leave native
+  const bubble = sticky && stickyBubble(c, sticky[1], sticky[2]);
+  if (!sticky || !box || !bubble) return undefined; // anchor gone: leave native
+  if (!c.includes(`.collapseButton_${box}{`)) return undefined;
   const head = `.message_${sticky[1]}.stickyHeader_${sticky[2]}`;
-  const bubble = stickyBubbleCap(c, sticky[1], sticky[2]);
-  if (bubble !== undefined) {
+  // An open prompt keeps the wheel, with or without anything to scroll.
+  const hold = `${head} .userMessage_${bubble.hash}:has(.collapseButton_${box}){overscroll-behavior:contain}`;
+  if (bubble.capped) {
     // The build's bubble is the scroller: pin the "Show less" row to it.
     const row = `.buttonContainer_${box}`;
     const exp = `.expandableContainer_${box}`;
@@ -1728,7 +1728,7 @@ function expandedHeaderBuild(c: string): string | undefined {
     return (
       `${EXPANDED_HEADER_MARKER}${head} ${exp}>${row}{position:sticky;bottom:0;pointer-events:none}` +
       `${head} ${exp}>${row}>*{pointer-events:auto}` +
-      `${head} .userMessage_${bubble}[${EXPANDED_OWN_ATTR}]{overscroll-behavior:contain}`
+      hold
     );
   }
   const content = `${head} .content_${box}`;
@@ -1736,7 +1736,7 @@ function expandedHeaderBuild(c: string): string | undefined {
   return (
     `${EXPANDED_HEADER_MARKER}${content}{transition:none}` +
     `${open}{max-height:max(${EXPANDED_FLOOR}px,${EXPANDED_CAP});overflow-y:auto}` +
-    `${open}[${EXPANDED_OWN_ATTR}]{overscroll-behavior:contain}`
+    hold
   );
 }
 
@@ -1748,17 +1748,13 @@ function expandedViewBuild(c: string): string | undefined {
   const js =
     `(function(){try{` +
     `if(window.${EXPANDED_VIEW_FLAG})return;window.${EXPANDED_VIEW_FLAG}=1;` +
-    `var RO="${EXPANDED_RO_PROP}";` +
-    `function own(c){if(c.scrollHeight>c.clientHeight+1)c.setAttribute("${EXPANDED_OWN_ATTR}","");else c.removeAttribute("${EXPANDED_OWN_ATTR}")}` +
     `document.addEventListener("click",function(e){` +
-    `var el=e.target,b=el&&el.closest?el.closest(".expandButton_${box},.collapseButton_${box}"):null;if(!b)return;` +
+    `var el=e.target,b=el&&el.closest?el.closest(".collapseButton_${box}"):null;if(!b)return;` +
     // The clicked expandable's own content, and the bubble holding it.
     `var h=b.closest(".stickyHeader_${sticky}"),x=h&&b.closest(".expandableContainer_${box}"),c=x&&x.querySelector(".content_${box}");if(!c)return;` +
-    `var u=c.closest(".userMessage_${sticky}"),s=u&&h.contains(u)?[c,u]:[c];` +
-    // Show more: follow both boxes as the prompt opens, and mark each while it overflows.
-    `if(b.classList.contains("expandButton_${box}")){if(!c[RO]&&window.ResizeObserver){var o=c[RO]=new ResizeObserver(function(){s.forEach(own)});s.forEach(function(t){o.observe(t)})}}` +
-    // Show less: the preview shows the start again, and carries no contain.
-    `else{s.forEach(function(t){t.scrollTop=0;t.removeAttribute("${EXPANDED_OWN_ATTR}")});if(c[RO]){c[RO].disconnect();delete c[RO]}}` +
+    `var u=c.closest(".userMessage_${sticky}");` +
+    // The preview shows the start again.
+    `c.scrollTop=0;if(u&&h.contains(u))u.scrollTop=0` +
     `},!0)` +
     `}catch(e){}})();`;
   return `${EXPANDED_VIEW_MARKER}${js}`;

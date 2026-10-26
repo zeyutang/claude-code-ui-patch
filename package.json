@@ -189,7 +189,7 @@
         "claudeCodeUiPatch.chatFindBar": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Replace `Cmd`/`Ctrl`+`F` in Claude Code interface with a find bar. Matches show in the editor's find colors with a counter, and `Escape` closes. Block-skip buttons jump between the blocks that hold matches, and a side ruler marks the active match's block (nothing auto-expands). Off = native."
+          "markdownDescription": "Replace `Cmd`/`Ctrl`+`F` in Claude Code interface with a find bar. Matches show in the editor's find colors with a counter, and `Escape` closes. Match Case, Match Whole Word, and Use Regular Expression toggles sit in its input, as in the editor's find widget. Block-skip buttons jump between the blocks that hold matches, and a side ruler marks the active match's block (nothing auto-expands). Off = native."
         },
         "claudeCodeUiPatch.chatFindBarNextMatchKeys": {
           "type": "string",

@@ -6528,9 +6528,28 @@ export function promptHistWebview(
 // bundle.
 //
 // The engine (ccupFindBarWebview, injected via toString like the math helper):
-//   bar     a fixed top-right widget (input, "k of n" counter, prev/next/close
-//           buttons) styled from the editorWidget/input theme variables, so it
-//           reads native in either theme; created lazily on first open
+//   bar     a fixed widget (the input with the search options inside it, a
+//           "k of n" counter, prev/next/close buttons) styled from the
+//           editorWidget/input theme variables, so it reads native in either
+//           theme, and created lazily on first open. It sits over the right
+//           end of the chat header, centered on the header's button row and
+//           overhanging the row's end by as much as above and below, so the
+//           New session button there stays wholly behind it. Where no header
+//           shows (the editor tab hides it), it keeps the top-right corner
+//   options Match Case, Match Whole Word, and Use Regular Expression, toggles
+//           inside the input as in the editor's find widget: its codicon
+//           glyphs (the bundle ships the font), a hover tip each, and no
+//           chords. A flip searches again from the active match, and the
+//           state persists in the webview's localStorage, as the editor keeps
+//           its own per workspace. Whole word is the editor's rule: each end
+//           of a match meets the haystack's edge, a non-word neighbor, or a
+//           non-word character of the match itself, word characters being
+//           Unicode letters, marks, digits, and connector punctuation. A
+//           regular expression runs with the u flag, one haystack line at a
+//           time unless the pattern names a line break itself (\n, \r, or
+//           \W, the editor's test), and skips empty matches, which paint
+//           nothing. An invalid one finds nothing and shows its error under
+//           the input
 //   scan    a TreeWalker over the transcript container (.messagesContainer_
 //           <hash>, baked at patch time like the scroll-dot button) collects
 //           visible text nodes into one haystack with per-node offsets;
@@ -6547,8 +6566,8 @@ export function promptHistWebview(
 //           view shows the raw source instead), so the match count does not
 //           change as responses typeset and revert while scrolling. The
 //           haystack is cached until the transcript changes, so typing a
-//           query costs one indexOf pass per keystroke, and a match is kept
-//           as haystack positions rather than a live Range
+//           query costs one pass over a string per keystroke, and a match is
+//           kept as haystack positions rather than a live Range
 //   paint   two CSS Custom Highlights (the matches near the view, and the
 //           active one at higher priority), colored by the editor findMatch
 //           theme tokens in the appended CSS line; no DOM mutation, so React
@@ -6629,6 +6648,10 @@ const FINDBAR_CSS_ANCHOR_RE = /\.messagesContainer_[-\w]+/;
 // Set by native math's formula component alone (its scroll helpers only read
 // it), on a span it keeps while swapping raw source and KaTeX inside.
 const FINDBAR_MATH_ATTR = "data-redrawn";
+// Monaco's codicon font face, which the bundle's stylesheet declares (as a
+// data URI), and the option toggles draw their glyphs from.
+const FINDBAR_CODICON_RE =
+  /@font-face\{[^}]*font-family:\s*["']?codicon["']?\s*[;}]/;
 
 interface FindChord {
   k: string; // KeyboardEvent.key, lowercased
@@ -6920,7 +6943,10 @@ function ccupFindBarWebview(): void {
     };
 
     let bar: any = null;
+    let field: any = null; // the input box, the input and the option toggles
     let input: any = null;
+    let optBs: any[] = [];
+    let msg: any = null; // an invalid expression's error, under the input
     let count: any = null;
     let countText: any = null;
     let countSize: any = null;
@@ -6936,8 +6962,9 @@ function ccupFindBarWebview(): void {
     // every DOM mutation updates each live Range until it is collected, and
     // building thousands per keystroke weighed on the scan. Ranges exist
     // only for the active match, the painted window, and rect reads.
-    let snap: any = null; // cached haystack: nodes, offsets, lowercased text
+    let snap: any = null; // cached haystack: nodes, offsets, text, folded text
     let dirty = true; // the transcript changed since snap was collected
+    let err = ""; // the query's error as a regular expression, if invalid
     let mm: number[] = [];
     let nm = 0; // match count
     let starts: number[] = []; // haystack offset per match, for rescan continuity
@@ -6958,6 +6985,16 @@ function ccupFindBarWebview(): void {
     let scanT: any = 0;
     let mutT: any = 0;
     let rraf: any = 0;
+    // The search options, match case (c), whole word (w) and regular
+    // expression (r), kept in the webview's localStorage across reloads.
+    const OPT_KEY = "ccup-find-options";
+    const opts: Record<string, number> = { c: 0, w: 0, r: 0 };
+    try {
+      const o = JSON.parse(g.localStorage.getItem(OPT_KEY) || "{}");
+      for (const k in opts) if (o && o[k]) opts[k] = 1;
+    } catch {
+      // no storage: every option starts off
+    }
     const BLOCKS: string[] = cfg.blocks || [];
     // Ruler column reference: the user-message (or turn-header) left edge.
     let refEl: any = null;
@@ -7088,10 +7125,43 @@ function ccupFindBarWebview(): void {
       return { nodes, offs, hay };
     };
 
-    // Case-insensitive, non-overlapping substring matches over the cached
-    // haystack, collected again only once the body observer has marked the
-    // transcript changed, so a keystroke costs an indexOf pass rather than
-    // a walk of the whole transcript.
+    // Lowercased without a change in length, which the node offsets rely
+    // on: U+0130 alone lowercases to two code units, so it folds to i first.
+    const DOTTED_I = String.fromCharCode(0x130);
+    const fold = (s: string): string =>
+      (s.indexOf(DOTTED_I) < 0 ? s : s.split(DOTTED_I).join("i")).toLowerCase();
+    // Whole word, the editor's rule: each end of a match meets the
+    // haystack's edge, a non-word neighbor, or a non-word character of the
+    // match itself. The sticky lookarounds read the character ending or
+    // starting at an index, surrogate pairs included.
+    const WEND = /(?<=[\p{L}\p{M}\p{N}\p{Pc}])/uy;
+    const WSTART = /(?=[\p{L}\p{M}\p{N}\p{Pc}])/uy;
+    const wAt = (re: RegExp, s: string, i: number): boolean => {
+      re.lastIndex = i;
+      return re.test(s);
+    };
+    const whole = (s: string, i: number, e: number): boolean =>
+      (!wAt(WEND, s, i) || !wAt(WSTART, s, i)) &&
+      (!wAt(WSTART, s, e) || !wAt(WEND, s, e));
+    // The editor's test for a pattern that may span lines: an \n, \r, or \W
+    // escape in it.
+    const spans = (q: string): boolean => {
+      for (let i = 0; i < q.length; i++) {
+        if (q[i] !== "\\") continue;
+        i++;
+        if (q[i] === "n" || q[i] === "r" || q[i] === "W") return true;
+      }
+      return false;
+    };
+
+    // Non-overlapping matches over the cached haystack, in document order,
+    // collected again only once the body observer has marked the
+    // transcript changed, so a keystroke costs one pass over a string
+    // rather than a walk of the whole transcript. Plain text runs indexOf,
+    // on the folded copy unless case matters. A regular expression runs one
+    // haystack line at a time, unless the pattern spans lines, and skips
+    // empty matches. Whole word drops the matches it rejects, and an invalid
+    // expression finds nothing and keeps its error for the bar.
     const search = (q: string): void => {
       mm = [];
       nm = 0;
@@ -7099,29 +7169,74 @@ function ccupFindBarWebview(): void {
       blkMemo = new Map();
       activeR = null;
       gen++;
+      err = "";
       if (!q) return;
+      let re: any = null;
+      if (opts.r) {
+        try {
+          re = new RegExp(
+            q,
+            "gu" + (opts.c ? "" : "i") + (spans(q) ? "m" : ""),
+          );
+        } catch (e: any) {
+          err = String((e && e.message) || e);
+          return;
+        }
+      }
       if (dirty || !snap || !obs) {
         const col = collect();
-        snap = { nodes: col.nodes, offs: col.offs, H: col.hay.toLowerCase() };
+        snap = { nodes: col.nodes, offs: col.offs, hay: col.hay, low: null };
         dirty = false;
       }
       const offs = snap.offs;
-      const H = snap.H;
+      const hay = snap.hay;
       const last = snap.nodes.length - 1;
       if (last < 0) return;
-      const Q = q.toLowerCase();
-      const L = Q.length;
       // Matches arrive in haystack order, so the node cursor only advances.
       let a = 0;
-      let i = H.indexOf(Q);
-      while (i >= 0 && nm < MAXM) {
+      const add = (i: number, e: number): void => {
+        if (opts.w && !whole(hay, i, e)) return;
         while (a < last && offs[a + 1] <= i) a++;
         let b = a;
-        while (b < last && offs[b + 1] <= i + L - 1) b++;
-        mm.push(a, i - offs[a], b, i + L - offs[b]);
+        while (b < last && offs[b + 1] <= e - 1) b++;
+        mm.push(a, i - offs[a], b, e - offs[b]);
         starts.push(i);
         nm++;
-        i = H.indexOf(Q, i + L);
+      };
+      if (!re) {
+        if (!opts.c && snap.low === null) snap.low = fold(hay);
+        const H = opts.c ? hay : snap.low;
+        const Q = opts.c ? q : fold(q);
+        const L = Q.length;
+        let i = H.indexOf(Q);
+        while (i >= 0 && nm < MAXM) {
+          add(i, i + L);
+          i = H.indexOf(Q, i + L);
+        }
+        return;
+      }
+      // A pattern that spans lines (the m flag) runs over the whole
+      // haystack once, ^ and $ meeting each line's ends.
+      const all = re.multiline;
+      let ls = 0;
+      while (ls <= hay.length && nm < MAXM) {
+        let le = all ? hay.length : hay.indexOf("\n", ls);
+        if (le < 0) le = hay.length;
+        const line = all ? hay : hay.slice(ls, le);
+        const base = all ? 0 : ls;
+        re.lastIndex = 0;
+        let m = re.exec(line);
+        while (m && nm < MAXM) {
+          const i = m.index;
+          const e = i + m[0].length;
+          if (e > i) add(base + i, base + e);
+          else {
+            const cp = line.codePointAt(i);
+            re.lastIndex = i + (cp !== undefined && cp > 0xffff ? 2 : 1);
+          }
+          m = re.exec(line);
+        }
+        ls = le + 1;
       }
     };
 
@@ -7329,6 +7444,22 @@ function ccupFindBarWebview(): void {
       if (bar) {
         if (q && !nm) bar.setAttribute("data-none", "");
         else bar.removeAttribute("data-none");
+        // An invalid expression: the input box's error border, and the
+        // message under it, as wide as the box, as the editor shows one.
+        if (err && q) {
+          if (msg.textContent !== err) msg.textContent = err;
+          const l = field.offsetLeft + "px";
+          const w = field.offsetWidth + "px";
+          if (msg.style.left !== l) msg.style.left = l;
+          if (msg.style.width !== w) msg.style.width = w;
+          if (!bar.hasAttribute("data-err")) {
+            bar.setAttribute("data-err", "");
+            input.setAttribute("aria-invalid", "true");
+          }
+        } else if (bar.hasAttribute("data-err")) {
+          bar.removeAttribute("data-err");
+          input.removeAttribute("aria-invalid");
+        }
       }
       // data-off instead of the disabled attribute: a disabled button gets no
       // mouse events, which would keep the hover tip from ever showing.
@@ -7583,6 +7714,19 @@ function ccupFindBarWebview(): void {
       status();
     };
 
+    // An option flipped: search again and keep the place, as the editor's
+    // widget does. The first match from the active one on becomes active
+    // (re-anchored as a rescan does) and is revealed, or, with no active
+    // match, the landing is a new query's.
+    const research = (): void => {
+      if (active < 0) {
+        update();
+        return;
+      }
+      rescan();
+      if (active >= 0) reveal();
+    };
+
     const CHEV_UP =
       "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M18 15l-6-6-6 6'/></svg>";
     const CHEV_DN =
@@ -7648,6 +7792,66 @@ function ccupFindBarWebview(): void {
       return b;
     };
 
+    // The toggles' checked state, written only on change.
+    const optSync = (): void => {
+      for (let i = 0; i < optBs.length; i++) {
+        const b = optBs[i];
+        const on = opts[b.getAttribute("data-opt")] ? "true" : "false";
+        if (b.getAttribute("aria-checked") !== on) {
+          b.setAttribute("aria-checked", on);
+        }
+      }
+    };
+    // A search option's toggle, its glyph drawn by the stylesheet. A flip
+    // persists and searches again from the active match.
+    const mkOpt = (k: string, label: string): any => {
+      const b = mkBtn("", label, () => {
+        opts[k] = opts[k] ? 0 : 1;
+        optSync();
+        try {
+          g.localStorage.setItem(OPT_KEY, JSON.stringify(opts));
+        } catch {
+          // no storage: the flip lasts as long as the webview
+        }
+        research();
+      });
+      b.className = "ccup-find-opt";
+      b.setAttribute("role", "checkbox");
+      b.setAttribute("data-opt", k);
+      optBs.push(b);
+      return b;
+    };
+
+    // Over the chat header when one shows: centered on its button row (the
+    // header's content box) and overhanging the row's right end by as much
+    // as above and below, so the New session button there sits wholly
+    // behind the bar. With no header (the editor tab hides it), the
+    // stylesheet's top-right corner holds.
+    const place = (): void => {
+      let top = "";
+      let right = "";
+      try {
+        const hd = cfg.head ? doc.querySelector("." + cfg.head) : null;
+        const r = hd ? hd.getBoundingClientRect() : null;
+        if (r && r.width > 0 && r.height > 0) {
+          const cs = g.getComputedStyle(hd);
+          const px = (v: string): number => parseFloat(v) || 0;
+          const t = r.top + px(cs.borderTopWidth) + px(cs.paddingTop);
+          const b = r.bottom - px(cs.borderBottomWidth) - px(cs.paddingBottom);
+          const end = r.right - px(cs.borderRightWidth) - px(cs.paddingRight);
+          const h = bar.offsetHeight;
+          const over = Math.max(0, (h - (b - t)) / 2);
+          const vw = doc.documentElement.clientWidth || 0;
+          top = Math.max(0, (t + b - h) / 2) + "px";
+          right = Math.max(0, vw - end - over) + "px";
+        }
+      } catch {
+        // no header geometry: the stylesheet's corner
+      }
+      if (bar.style.top !== top) bar.style.top = top;
+      if (bar.style.right !== right) bar.style.right = right;
+    };
+
     const build = (): void => {
       if (bar) return;
       bar = doc.createElement("div");
@@ -7667,6 +7871,18 @@ function ccupFindBarWebview(): void {
           update();
         }, 90);
       });
+      // The input box, holding the input and the option toggles, as the
+      // editor's find widget does.
+      field = doc.createElement("div");
+      field.className = "ccup-find-field";
+      field.appendChild(input);
+      field.appendChild(mkOpt("c", "Match Case"));
+      field.appendChild(mkOpt("w", "Match Whole Word"));
+      field.appendChild(mkOpt("r", "Use Regular Expression"));
+      optSync();
+      msg = doc.createElement("div");
+      msg.className = "ccup-find-msg";
+      msg.setAttribute("aria-live", "polite");
       count = doc.createElement("span");
       count.className = "ccup-find-count";
       count.setAttribute("aria-live", "polite");
@@ -7686,13 +7902,14 @@ function ccupFindBarWebview(): void {
       blockNextB = mkBtn(CHEVS_DN, "Next Match Block", () => navBlock(1));
       const closeB = mkBtn(CROSS, "Close", () => closeBar());
       closeB.classList.add("ccup-find-sep");
-      bar.appendChild(input);
+      bar.appendChild(field);
       bar.appendChild(count);
       bar.appendChild(prevB);
       bar.appendChild(nextB);
       bar.appendChild(blockPrevB);
       bar.appendChild(blockNextB);
       bar.appendChild(closeB);
+      bar.appendChild(msg);
       doc.body.appendChild(bar);
       ruler = doc.createElement("div");
       ruler.className = "ccup-find-ruler";
@@ -7859,13 +8076,17 @@ function ccupFindBarWebview(): void {
         dirty = true; // nothing watched the transcript while closed
         watch();
       }
+      place();
       let sel = "";
       try {
         sel = String(g.window.getSelection() || "");
       } catch {
         sel = "";
       }
-      if (sel && sel.indexOf("\n") < 0 && sel.length <= 200) input.value = sel;
+      // Escaped for a regular expression, as the editor seeds its own.
+      if (sel && sel.indexOf("\n") < 0 && sel.length <= 200) {
+        input.value = opts.r ? sel.replace(/[\\{}*+?|^$.[\]()]/g, "\\$&") : sel;
+      }
       input.focus();
       input.select();
       update();
@@ -7993,6 +8214,7 @@ function ccupFindBarWebview(): void {
     g.window.addEventListener("resize", () => {
       dirty = true; // a narrow panel hides tool bodies
       frameQ();
+      if (isOpen()) place();
     });
   } catch {
     // never break the webview
@@ -8038,12 +8260,17 @@ function findBarCfgBuild(c: string): string | undefined {
   // Native math's formula wrapper attribute (2.1.301+), the engine's math
   // unit; "" on a build without it leaves .ccup-math and .katex.
   const math = c.includes(`"${FINDBAR_MATH_ATTR}"`) ? FINDBAR_MATH_ATTR : "";
+  // The chat header, whose right end the bar covers, named by the hash its
+  // module's headerSpacer key carries; "" keeps the bar in its corner.
+  const hs = c.match(/headerSpacer:"headerSpacer_([-\w]+)"/)?.[1];
+  const head = hs && c.includes(`header:"header_${hs}"`) ? `header_${hs}` : "";
   const k = readFindKeys();
   mergeChords(k.next, readFindChordSetting("chatFindBarNextMatchKeys"));
   mergeChords(k.prev, readFindChordSetting("chatFindBarPreviousMatchKeys"));
   const cfg = {
     chat,
     input,
+    head,
     blocks,
     math,
     open: k.open,
@@ -8101,17 +8328,31 @@ function findBarSet(c: string, on: boolean): string {
 // findMatch theme tokens (the same yellow/orange the native find paints), and
 // the bar itself on the editorWidget/input tokens with the chat's own --app-*
 // variables as first choice, so it reads native in either surface and theme.
+// The option toggles take the inputOption tokens and the editor's codicon
+// glyphs from the font face the stylesheet declares (Monaco's), or their text
+// look-alikes on a stylesheet without one.
 function findBarCssBuild(css: string): string | undefined {
   if (!FINDBAR_CSS_ANCHOR_RE.test(css)) return undefined;
   const ghost = "var(--app-ghost-button-hover-background,rgba(128,128,128,.2))";
+  const glyphs = FINDBAR_CODICON_RE.test(css)
+    ? ".ccup-find-opt::before{font:16px/1 codicon}" +
+      '.ccup-find-opt[data-opt=c]::before{content:"\\eab1"}' +
+      '.ccup-find-opt[data-opt=w]::before{content:"\\eb7e"}' +
+      '.ccup-find-opt[data-opt=r]::before{content:"\\eb38"}'
+    : ".ccup-find-opt::before{font:600 11px/1 var(--vscode-font-family,system-ui)}" +
+      '.ccup-find-opt[data-opt=c]::before{content:"Aa"}' +
+      '.ccup-find-opt[data-opt=w]::before{content:"ab";text-decoration:underline}' +
+      '.ccup-find-opt[data-opt=r]::before{content:".*"}';
   return (
     FINDBAR_CSS_MARKER +
     "::highlight(ccup-find){background-color:var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.33))}" +
     "::highlight(ccup-find-active){background-color:var(--vscode-editor-findMatchBackground,rgba(237,148,30,.8));color:var(--vscode-editor-foreground,inherit)}" +
     ".ccup-find-bar{position:fixed;top:8px;right:16px;z-index:1200;display:none;align-items:center;gap:4px;max-width:calc(100vw - 20px);padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--app-input-border,#454545));border-radius:6px;background:var(--vscode-editorWidget-background,var(--app-input-background,#252526));color:var(--vscode-editorWidget-foreground,var(--app-primary-foreground,#cccccc));box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36));font-size:12px}" +
     ".ccup-find-bar[data-open]{display:flex}" +
-    ".ccup-find-bar input{flex:1 1 auto;width:200px;min-width:60px;box-sizing:border-box;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));background:var(--app-input-background,var(--vscode-input-background,#3c3c3c));color:var(--app-input-foreground,var(--vscode-input-foreground,#cccccc));border-radius:4px;padding:3px 6px;font-size:calc(var(--vscode-chat-font-size,13px)*.9);font-family:inherit;outline:none}" +
-    ".ccup-find-bar input:focus{border-color:var(--app-input-active-border,var(--vscode-focusBorder,#007fd4))}" +
+    ".ccup-find-bar .ccup-find-field{flex:1 1 auto;display:flex;align-items:center;min-width:120px;min-height:24px;box-sizing:border-box;padding-right:2px;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));border-radius:4px;background:var(--app-input-background,var(--vscode-input-background,#3c3c3c))}" +
+    ".ccup-find-bar .ccup-find-field:focus-within{border-color:var(--app-input-active-border,var(--vscode-focusBorder,#007fd4))}" +
+    ".ccup-find-bar[data-err] .ccup-find-field{border-color:var(--vscode-inputValidation-errorBorder,#be1100)}" +
+    ".ccup-find-bar input{flex:1 1 auto;width:200px;min-width:0;box-sizing:border-box;margin:0;border:none;background:transparent;color:var(--app-input-foreground,var(--vscode-input-foreground,#cccccc));padding:2px 6px;font-size:calc(var(--vscode-chat-font-size,13px)*.9);font-family:inherit;outline:none}" +
     ".ccup-find-bar .ccup-find-count{display:inline-flex;flex-direction:column;align-items:center;text-align:center;opacity:.85;white-space:nowrap;font-variant-numeric:tabular-nums}" +
     ".ccup-find-bar .ccup-find-count-size{visibility:hidden;height:0;overflow:hidden}" +
     ".ccup-find-tip{position:fixed;display:none;padding:2px 8px;border:1px solid var(--vscode-editorHoverWidget-border,var(--vscode-widget-border,#454545));border-radius:4px;background:var(--vscode-editorHoverWidget-background,var(--vscode-editorWidget-background,#252526));color:var(--vscode-editorHoverWidget-foreground,var(--vscode-editorWidget-foreground,#cccccc));font-size:11px;white-space:nowrap;z-index:1300;pointer-events:none;box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36))}" +
@@ -8122,6 +8363,12 @@ function findBarCssBuild(css: string): string | undefined {
     `.ccup-find-bar button[data-off]${HOVER}{background:transparent}` +
     ".ccup-find-bar svg{display:block;width:16px;height:16px}" +
     ".ccup-find-bar .ccup-find-sep{margin-left:4px}" +
+    ".ccup-find-bar .ccup-find-opt{flex:none;width:20px;height:20px;margin-left:2px;box-sizing:border-box;border:1px solid transparent;border-radius:3px}" +
+    `.ccup-find-bar .ccup-find-opt${HOVER}{background:var(--vscode-inputOption-hoverBackground,${ghost})}` +
+    ".ccup-find-bar .ccup-find-opt[aria-checked=true]{border-color:var(--vscode-inputOption-activeBorder,#007acc);background:var(--vscode-inputOption-activeBackground,rgba(0,122,204,.4));color:var(--vscode-inputOption-activeForeground,#ffffff)}" +
+    glyphs +
+    ".ccup-find-msg{display:none;position:absolute;top:calc(100% + 2px);box-sizing:border-box;padding:4px 6px;border:1px solid var(--vscode-inputValidation-errorBorder,#be1100);background:var(--vscode-inputValidation-errorBackground,#5a1d1d);color:var(--vscode-inputValidation-errorForeground,inherit);line-height:1.4;white-space:normal;overflow-wrap:anywhere;pointer-events:none}" +
+    ".ccup-find-bar[data-err] .ccup-find-msg{display:block}" +
     ".ccup-find-ruler{position:fixed;display:none;width:5px;border-radius:5px;background:var(--vscode-editor-findMatchBackground,var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.8)));z-index:1199;pointer-events:none}"
   );
 }

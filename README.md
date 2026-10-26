@@ -148,6 +148,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   A response reading as source keeps its button in place, faded until you hover it.
   Each response switches on its own, and all of them are back to rendered after a webview reload.
 - **`chatFindBar` replaces native `Cmd`/`Ctrl`+`F` widget inside the chat webview** (tab and sidebar alike).
+  The Match Case, Match Whole Word, and Use Regular Expression toggles in its input work as in the editor's find widget, with JavaScript regular expression syntax.
   Math in agent responses matches by its TeX source, as its raw markdown reads, so `\frac{a}{b}` finds that fraction while the symbols it renders do not match.
 - **Last turn delete reaches the last turn only.**
   With `chatPromptHistoryButton` on, the last entry in the prompt history has a delete button: a first click turns it into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.

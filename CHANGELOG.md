@@ -10,6 +10,9 @@
   Always applied, no setting of its own.
 - Deleting a conversation from the session list no longer opens a dialog: click its delete button, then the "sure?" that takes the place of the row's buttons, and the conversation moves to the Trash.
 - The session list's buttons sit further in from the right edge, where the list's scrollbar no longer covers them.
+- `chatFindBar` has Match Case, Match Whole Word, and Use Regular Expression toggles in its input, as the editor's find widget does, each with a hover tip, and they stay as you left them after a reload.
+  An invalid regular expression shows its error under the input.
+- `chatFindBar` opens on the chat header and covers its New session button, which used to show past the bar's right edge.
 - The prompt history's hide button is one line tall, like the delete button on the last entry.
 
 ## 1.6.2

@@ -179,7 +179,7 @@
         "claudeCodeUiPatch.chatInputCtrlUpDownToHistory": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Recall previous/next sent messages with `Cmd`/`Ctrl`+`Up`/`Down` from anywhere in the chat input, and keep plain `Up`/`Down` moving the caret only. Off = native (plain `Up`/`Down` at the input's very start/end recalls)."
+          "markdownDescription": "Recall previous/next sent messages with `Cmd`/`Ctrl`+`Up`/`Down` from anywhere in the chat input, and keep plain `Up`/`Down` moving the caret only. On macOS, `Cmd`+`Ctrl`+`A`/`E` take over moving the caret to the input's very start/end. Off = native (plain `Up`/`Down` at the input's very start/end recalls)."
         },
         "claudeCodeUiPatch.useCtrlEnterToSendEverywhere": {
           "type": "boolean",

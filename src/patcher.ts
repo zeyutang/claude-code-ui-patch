@@ -1216,21 +1216,41 @@ function effortSyncSet(c: string, on: boolean): string {
 // When cycling has nowhere to go (no history, oldest reached, or not in
 // history for Down) cycleMessage returns false, no preventDefault fires, and
 // the chord falls through to the browser default (caret to start/end).
+// On macOS the recall pair takes Cmd+Up/Down, the platform's keys for moving
+// the caret to the draft's very start/end, so the macOS ON form adds
+// Cmd+Ctrl+A/E for those two moves (Ctrl+A/E move to the paragraph's
+// start/end, and the Cmd widens that to the whole draft). They are one
+// marker-delimited branch after the ArrowDown one,
+// /*ccup:histKeysCaret*/.../*ccup:histKeysCaretEnd*/, behind the same popup
+// gates. It collapses the selection onto the editable (the handler's own
+// currentTarget) at its first or last child boundary, as the native focus
+// handler does for the end, then scrolls the editable to its top or bottom,
+// since a script-set selection never reveals itself (the mirror follows
+// through its scroll listener). Elsewhere Ctrl+Home/End keep both moves, so
+// the branch is not baked. An ON form without the branch this platform bakes,
+// as 1.6.2 and earlier wrote it, reads as off, and the next apply rebuilds it.
 // All variable names are captured and rebuilt via backreferences, so the
 // anchors survive re-minification renames across Claude Code versions; the ON
 // anchor accepts either modifier property, so on/off detection does not
 // depend on the platform that baked it.
 const HIST_KEYS_MARKER = "/*ccup-histKeys*/";
 const HIST_KEYS_MOD = process.platform === "darwin" ? "metaKey" : "ctrlKey";
+const HIST_KEYS_CARET = process.platform === "darwin";
+const HIST_KEYS_CARET_MARKER = "/*ccup:histKeysCaret*/";
+const HIST_KEYS_CARET_END = "/*ccup:histKeysCaretEnd*/";
+const HIST_KEYS_CARET_RE =
+  /\/\*ccup:histKeysCaret\*\/[\s\S]*?\/\*ccup:histKeysCaretEnd\*\//g;
 const HK_ID = "[a-zA-Z_$][\\w$]*";
-// Composer keydown pair; captures (1)=event, (2)=popup gates, (3)=hook handle.
+// Composer keydown pair; captures (1)=event, (2)=popup gates, (3)=hook handle,
+// and on the ON form (4)=the caret branch after it, empty when absent.
 const HIST_KEYS_KEY_OFF_RE = new RegExp(
   `if\\((${HK_ID})\\.key==="ArrowUp"&&(!${HK_ID}&&!${HK_ID})\\)\\{if\\((${HK_ID})\\.cycleMessage\\(-1\\)\\)\\{\\1\\.preventDefault\\(\\);return\\}\\}` +
     `if\\(\\1\\.key==="ArrowDown"&&\\2\\)\\{if\\(\\3\\.cycleMessage\\(1\\)\\)\\{\\1\\.preventDefault\\(\\);return\\}\\}`,
 );
 const HIST_KEYS_KEY_ON_RE = new RegExp(
   `if\\((${HK_ID})\\.key==="ArrowUp"&&\\/\\*ccup-histKeys\\*\\/\\1\\.(?:metaKey|ctrlKey)&&(!${HK_ID}&&!${HK_ID})\\)\\{if\\((${HK_ID})\\.cycleMessage\\(-1\\)\\)\\{\\1\\.preventDefault\\(\\);return\\}\\}` +
-    `if\\(\\1\\.key==="ArrowDown"&&\\1\\.(?:metaKey|ctrlKey)&&\\2\\)\\{if\\(\\3\\.cycleMessage\\(1\\)\\)\\{\\1\\.preventDefault\\(\\);return\\}\\}`,
+    `if\\(\\1\\.key==="ArrowDown"&&\\1\\.(?:metaKey|ctrlKey)&&\\2\\)\\{if\\(\\3\\.cycleMessage\\(1\\)\\)\\{\\1\\.preventDefault\\(\\);return\\}\\}` +
+    `((?:\\/\\*ccup:histKeysCaret\\*\\/[\\s\\S]*?\\/\\*ccup:histKeysCaretEnd\\*\\/)?)`,
 );
 // Caret gates in the history hook; captures (1)=direction, (2)=offset,
 // (3)=range, (4)=input ref, (5)=text.
@@ -1245,12 +1265,23 @@ const HIST_KEYS_GATE_ON_RE = new RegExp(
     `if\\(\\1===1&&!1\\)\\{if\\(!\\(\\3\\.endContainer===\\(\\4\\.current\\.firstChild\\|\\|\\4\\.current\\)&&\\2===(${HK_ID})\\.length\\)\\)return!1\\}`,
 );
 
+// The caret branch for event e and popup gates g, or "" off macOS.
+function histKeysCaretStr(e: string, g: string): string {
+  if (!HIST_KEYS_CARET) return "";
+  return (
+    `${HIST_KEYS_CARET_MARKER}if(${e}.metaKey&&${e}.ctrlKey&&!${e}.altKey&&!${e}.shiftKey&&${g}&&/^[ae]$/i.test(${e}.key)){` +
+    `var ccupT=${e}.currentTarget,ccupA=${e}.key.toLowerCase()==="a";${e}.preventDefault();` +
+    `window.getSelection()?.collapse(ccupT,ccupA?0:ccupT.childNodes.length);` +
+    `ccupT.scrollTop=ccupA?0:ccupT.scrollHeight;return}${HIST_KEYS_CARET_END}`
+  );
+}
 function histKeysKeyStr(e: string, g: string, h: string, on: boolean): string {
   const up = on ? `${HIST_KEYS_MARKER}${e}.${HIST_KEYS_MOD}&&` : "";
   const down = on ? `${e}.${HIST_KEYS_MOD}&&` : "";
   return (
     `if(${e}.key==="ArrowUp"&&${up}${g}){if(${h}.cycleMessage(-1)){${e}.preventDefault();return}}` +
-    `if(${e}.key==="ArrowDown"&&${down}${g}){if(${h}.cycleMessage(1)){${e}.preventDefault();return}}`
+    `if(${e}.key==="ArrowDown"&&${down}${g}){if(${h}.cycleMessage(1)){${e}.preventDefault();return}}` +
+    (on ? histKeysCaretStr(e, g) : "")
   );
 }
 function histKeysGateStr(
@@ -1277,12 +1308,14 @@ function histKeysPresent(c: string): boolean {
     (HIST_KEYS_GATE_OFF_RE.test(c) || HIST_KEYS_GATE_ON_RE.test(c))
   );
 }
-// true only when BOTH edits are ON. fnSet writes the pair in one pass so a
-// mixed state is not produced; if one ever appeared it reports false and a
-// want=ON reconcile renormalizes it (strip, then re-apply both).
+// true only when BOTH edits are ON, the keydown pair with exactly the caret
+// branch this platform bakes. fnSet writes the pair in one pass so a mixed
+// state is not produced; if one ever appeared it reports false and a want=ON
+// reconcile renormalizes it (strip, then re-apply both).
 function histKeysCurrentOn(c: string): boolean | undefined {
-  const key = HIST_KEYS_KEY_ON_RE.test(c)
-    ? true
+  const on = HIST_KEYS_KEY_ON_RE.exec(c);
+  const key = on
+    ? on[4] === histKeysCaretStr(on[1], on[2])
     : HIST_KEYS_KEY_OFF_RE.test(c)
       ? false
       : undefined;
@@ -1296,6 +1329,7 @@ function histKeysCurrentOn(c: string): boolean | undefined {
 }
 function histKeysSet(c: string, on: boolean): string {
   let out = c
+    .replace(HIST_KEYS_CARET_RE, "")
     .replace(HIST_KEYS_KEY_ON_RE, (_w, e, g, h) =>
       histKeysKeyStr(e, g, h, false),
     )
@@ -1310,6 +1344,15 @@ function histKeysSet(c: string, on: boolean): string {
     .replace(HIST_KEYS_GATE_OFF_RE, (_w, d, f, r, n, p) =>
       histKeysGateStr(d, f, r, n, p, true),
     );
+}
+
+// The webview bundle with the recall keys set as asked (the caret branch
+// riding along where this platform bakes it), or null when an anchor is gone.
+// scripts/repro's hist-keys.mjs serves this, so it runs exactly what an apply
+// writes and doubles as the drift canary.
+export function histKeysWebview(js: string, on: boolean): string | null {
+  const out = histKeysSet(js, on);
+  return histKeysCurrentOn(out) === on ? out : null;
 }
 
 // Permission-code size match (ON): the permission "Allow this command?" dialog

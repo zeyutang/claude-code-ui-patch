@@ -14,6 +14,7 @@
   An invalid regular expression shows its error under the input.
 - `chatFindBar` opens on the chat header and covers its New session button, which used to show past the bar's right edge.
 - The prompt history's hide button is one line tall, like the delete button on the last entry.
+- On macOS, with `chatInputCtrlUpDownToHistory` on, `Cmd`+`Ctrl`+`A` and `Cmd`+`Ctrl`+`E` move the caret to the very start and end of the message you are typing.
 
 ## 1.6.2
 

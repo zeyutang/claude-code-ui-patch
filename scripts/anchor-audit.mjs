@@ -190,6 +190,9 @@ function expectedMarkers() {
     add(`/*ccup:uce:${tag}*/`);
   }
   for (const m of OLD_FORM_MARKERS) markers.delete(m);
+  if (process.platform !== "darwin") {
+    for (const m of MAC_MARKERS) markers.delete(m);
+  }
   return markers;
 }
 
@@ -197,6 +200,11 @@ function expectedMarkers() {
 // wrote, and never emits any more. They turn up in the literal scan above like
 // any other, so they are dropped from the expected set by name.
 const OLD_FORM_MARKERS = ["/*ccup-uce*/"];
+
+// Markers the patcher bakes on macOS only: the recall keys' caret chords stand
+// in for the Cmd+Up/Down the recall pair takes there, while other platforms
+// keep Ctrl+Home/End. An audit run elsewhere owes none of them.
+const MAC_MARKERS = ["/*ccup:histKeysCaret*/", "/*ccup:histKeysCaretEnd*/"];
 
 // Markers a point emits only while it still has to patch the feature in. When a
 // Claude Code build absorbs the feature the point reports "native" (see nativeOn

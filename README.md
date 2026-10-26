@@ -71,6 +71,7 @@ Behavior
    │      ├── chatFindBar{Next,Previous}MatchKeys       # extra match chords, comma-separated
    │      └── chatFindBar{Next,Previous}MatchBlockKeys  # block-skip chords atop Cmd/Ctrl+(Shift+)Enter
    ├── chatInputCtrlUpDownToHistory    # recall sent messages via Cmd/Ctrl+Up/Down only, if On
+   │                                   #   (macOS: Cmd+Ctrl+A/E move to the input's start/end)
    ├── chatInputMaxLines               # input box: grow to N lines + keep bottom gap, 0 -> native
    ├── chatPopupInputMaxLines          # question "Other" + permission box: N lines, 0 -> native
    ├── chatJumpToMessageButtons        # prev/next above input/permission box: jump turns, if On

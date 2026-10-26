@@ -3,7 +3,7 @@
 // six prompts, with real mouse events. The checks assert:
 //   uuid      every sticky header carries its message's data-ccup-uuid
 //   button    the last entry, and no other, has a delete button: hidden until
-//             the row is hovered, one line square on the first line's axis,
+//             the row is hovered, one line square on the second line's axis,
 //             after the text, inside the row, and 20px in from the list's
 //             right edge, clear of the overlay scrollbar even hovered
 //   arm       a first click shows "sure?" in bold red over the button,
@@ -414,8 +414,8 @@ export async function run(ctx) {
       m && `${m.w}x${m.h}, line ${m.lh}`,
     );
     check(
-      "button: on the first line, after the text, inside the row",
-      m && Math.abs(m.top) < 0.6 && m.afterText && m.inRow,
+      "button: on the second line, after the text, inside the row",
+      m && Math.abs(m.top - m.lh) < 0.6 && m.afterText && m.inRow,
       m &&
         JSON.stringify({ top: m.top, afterText: m.afterText, inRow: m.inRow }),
     );

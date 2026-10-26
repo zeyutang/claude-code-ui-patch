@@ -2,7 +2,9 @@
 // on the REAL webview bundle booted against a stub host. It checks that every
 // persisted session row (live or archived) gets the button and the fresh
 // active row none, that on hover it sits on its siblings' line at their size,
-// right of the archive or unarchive button, that a real click only arms it
+// right of the archive or unarchive button, with the row's buttons ending 20px
+// in from the list's edge (clear of VS Code's overlay scrollbar) and the time
+// label where it was, that a real click only arms it
 // (the row's other buttons hide, a bold red "sure?" sits flush with the right
 // edge of the button group, and nothing is sent) and leaving the button
 // disarms it, that a second click sends
@@ -239,8 +241,9 @@ export async function run(ctx) {
     return dlg && [...dlg.querySelectorAll("button[id]")]
       .find((b) => b.textContent.includes(${JSON.stringify(title)}));
   })()`;
-  // A row with its delete button and the archive or unarchive button beside
-  // it, as client boxes in CSS px.
+  // A row with its delete button, the archive or unarchive button beside it,
+  // its button group and time label, as client boxes in CSS px, and the right
+  // edge of the list's scroller, where an overlay scrollbar draws.
   const rowInfo = (title) =>
     ctx.evaluate(`(() => {
       const row = ${ROW(title)};
@@ -252,8 +255,12 @@ export async function run(ctx) {
       };
       const del = row.querySelector('[title="Delete session"]');
       const sib = row.querySelector('[title="Archive session"],[title="Unarchive session"]');
+      let sc = row.parentElement;
+      while (sc && !/auto|scroll/.test(getComputedStyle(sc).overflowY)) sc = sc.parentElement;
       return { row: box(row), del: box(del), sib: box(sib),
-        delSvg: box(del && del.querySelector("svg")), sibSvg: box(sib && sib.querySelector("svg")) };
+        delSvg: box(del && del.querySelector("svg")), sibSvg: box(sib && sib.querySelector("svg")),
+        bar: box(del && del.parentElement), time: box(row.querySelector('[class*="sessionTime"]')),
+        edge: sc ? sc.getBoundingClientRect().right : null };
     })()`);
   // The delete button's state, its button group (the row's actions span) and
   // the group's other buttons, and the box of the "sure?" chip, which is the
@@ -356,6 +363,15 @@ export async function run(ctx) {
           near(g.delSvg.h, g.sibSvg.h) &&
           g.del.x + g.del.w <= g.row.x + g.row.w + 0.5,
         `delete ${JSON.stringify(g.del)}, ${sib} ${JSON.stringify(g.sib)}`,
+      );
+      // VS Code's overlay scrollbar covers the list's last 16px once hovered
+      // (1.143 on macOS); headless runs draw none, so this reads the inset.
+      const inset = g.edge - (g.bar.x + g.bar.w);
+      const timeIn = g.row.x + g.row.w - (g.time.x + g.time.w);
+      check(
+        `${title}: the buttons end 20px in from the list's edge, clear of the scrollbar, and the time label keeps its place`,
+        g.edge !== null && inset >= 19.5 && near(timeIn, 8),
+        `buttons ${inset}px in, time ${timeIn}px in from the row's edge`,
       );
     }
 

@@ -2076,18 +2076,34 @@ const SDEL_TRASH_D =
 // (see ccupSessionDeleteWeb).
 const SDEL_HELPER_PROP = "__ccupSessionDelete";
 const SDEL_RESTART_NOTE = "Reload the window to start using session delete.";
-// The sheet the helper adds for the button's states. While a button is armed,
-// the row's button group (the actions span holding rename, archive or
-// unarchive, and delete) hides its other buttons, keeping their room so the
-// row does not reflow, and the button trades its icon for a bold red "sure?"
-// chip (the look of last turn delete's chip), as tall as the group and flush
-// with its right edge. A row whose delete is out dims and takes no pointer.
-const SDEL_CSS =
-  "[data-ccup-sdel-bar]{position:relative}" +
-  "[data-ccup-sdel-bar]>:not([data-ccup-sdel-arm]){visibility:hidden}" +
-  "[data-ccup-sdel-arm]>svg{visibility:hidden}" +
-  '[data-ccup-sdel-arm]::after{content:"sure?";position:absolute;top:0;right:0;bottom:0;display:flex;align-items:center;padding:0 6px;border-radius:4px;background:var(--app-menu-background);box-shadow:0 0 0 1px var(--app-input-border);color:var(--vscode-errorForeground,#f14c4c);font-weight:700;white-space:nowrap}' +
-  "[data-ccup-sdel-going]{opacity:.5;pointer-events:none}";
+// How far in from the list's right edge every row's button group (the actions
+// span holding rename, archive or unarchive, and delete) ends. The list's
+// overlay scrollbar, once hovered, covers the last 16px (VS Code 1.143 on
+// macOS, as for PROMPT_HIST_DEL_INSET), and the list has no padding of its
+// own, so past the row's 8px of padding the group keeps a margin for the rest
+// plus a few pixels of air. The time label sharing the group's slot stays
+// where it is.
+const SDEL_GROUP_INSET = 20;
+const SDEL_ROW_PAD = 8;
+
+// The sheet the helper adds: the inset, when the group's class is known, and
+// the button's states. While a button is armed, its group hides the other
+// buttons, keeping their room so the row does not reflow, and the button
+// trades its icon for a bold red "sure?" chip (the look of last turn delete's
+// chip), as tall as the group and flush with its right edge. A row whose
+// delete is out dims and takes no pointer.
+function sdelCss(group: string | null): string {
+  return (
+    (group
+      ? `.${group}{margin-right:${SDEL_GROUP_INSET - SDEL_ROW_PAD}px}`
+      : "") +
+    "[data-ccup-sdel-bar]{position:relative}" +
+    "[data-ccup-sdel-bar]>:not([data-ccup-sdel-arm]){visibility:hidden}" +
+    "[data-ccup-sdel-arm]>svg{visibility:hidden}" +
+    '[data-ccup-sdel-arm]::after{content:"sure?";position:absolute;top:0;right:0;bottom:0;display:flex;align-items:center;padding:0 6px;border-radius:4px;background:var(--app-menu-background);box-shadow:0 0 0 1px var(--app-input-border);color:var(--vscode-errorForeground,#f14c4c);font-weight:700;white-space:nowrap}' +
+    "[data-ccup-sdel-going]{opacity:.5;pointer-events:none}"
+  );
+}
 
 // The delete button's helper, compiled into the webview bundle by toString,
 // so it may use only its parameters and the page's globals (the DOM through
@@ -2250,6 +2266,30 @@ function sdelRowFind(c: string): { unit: N; edit: Edit } | null {
   for (const name of [sess, active, archive, unarchive]) {
     if (bindingSite(el, name, row) !== row) return null;
   }
+  // The button group, the element whose children array holds the buttons,
+  // and its class from the bundle's class map, for the inset rule. A group
+  // whose class cannot be told apart keeps the native inset.
+  const kids = el.parent.parent;
+  const groupProps: N | null =
+    kids?.type === "Property" && keyName(kids) === "children"
+      ? (kids.parent ?? null)
+      : null;
+  const groupCls =
+    groupProps && hasKeys(groupProps, ["className", "children"])
+      ? propOf(groupProps, "className")!.value
+      : null;
+  const groupKey = isSheetMember(groupCls) ? memberProp(groupCls) : null;
+  const groups =
+    groupKey && /^\w+$/.test(groupKey)
+      ? new Set(
+          [
+            ...c.matchAll(
+              new RegExp(`[{,]${groupKey}:"(${groupKey}_[-\\w]+)"`, "g"),
+            ),
+          ].map((m) => m[1]),
+        )
+      : new Set<string>();
+  const group = groups.size === 1 ? [...groups][0] : null;
 
   const del = "ccupDel";
   const ev = "ccupEv";
@@ -2272,7 +2312,7 @@ function sdelRowFind(c: string): { unit: N; edit: Edit } | null {
     `title:"Delete session",children:${svg}})`;
   const helper =
     `(${ccupSessionDeleteWeb.toString()})` +
-    `(${JSON.stringify(SDEL_CSS)},${JSON.stringify(SDEL_RESTART_NOTE)})`;
+    `(${JSON.stringify(sdelCss(group))},${JSON.stringify(SDEL_RESTART_NOTE)})`;
   const text =
     `,(${archive}||${unarchive})&&!${active}&&${sess}.sessionId.value&&` +
     `((${del})=>${button})(window.${SDEL_HELPER_PROP}||` +
@@ -6220,9 +6260,10 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-item${HOVER} .ccup-hist-hide,.ccup-hist-item:focus-visible .ccup-hist-hide{visibility:visible}` +
     `.ccup-hist-hide${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-hide{color:inherit}" +
-    // The last entry's delete button, one line square on the first line's
-    // axis, and the "sure?" chip an armed one shows over its own box.
-    `.ccup-hist-del{flex:none;align-self:flex-start;position:relative;display:flex;align-items:center;justify-content:center;width:1lh;height:1lh;margin:0 ${PROMPT_HIST_DEL_INSET - 13}px 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
+    // The last entry's delete button, one line square on the second line's
+    // axis (the entry is two lines tall), and the "sure?" chip an armed one
+    // shows over its own box.
+    `.ccup-hist-del{flex:none;align-self:flex-end;position:relative;display:flex;align-items:center;justify-content:center;width:1lh;height:1lh;margin:0 ${PROMPT_HIST_DEL_INSET - 13}px 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
     ".ccup-hist-del svg{display:block;width:16px;height:16px}" +
     `.ccup-hist-item${HOVER} .ccup-hist-del,.ccup-hist-item:focus-visible .ccup-hist-del,.ccup-hist-del[data-arm]{visibility:visible}` +
     `.ccup-hist-del${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +

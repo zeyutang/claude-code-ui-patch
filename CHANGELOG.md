@@ -5,6 +5,9 @@
 - On Claude Code 2.1.307 and later, a long message of yours opened with "Show more" shows its last lines and its "Show less" button again, which had been cut off below the message's edge.
   "Show less" now stays at the bottom of the open message while you scroll through it, and at the end it sits below the last line instead of covering it.
 - The panel's tab shows its own icon instead of a generic file icon.
+- On Claude Code 2.1.285 and later, with `chatPromptHistoryButton` on, the last entry in the prompt history has a delete button: click it, then "sure?", and that turn stops and leaves the conversation, its reply and transcript lines included, as if the prompt had never been sent.
+  Only the last turn has one, so delete one turn at a time to go further back.
+  Always applied, no setting of its own.
 
 ## 1.6.2
 

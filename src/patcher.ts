@@ -2355,29 +2355,9 @@ function sdelHostFind(
   );
   if (bases.length !== 1) return null;
 
-  // The session store, as the base opens it: `S.load(this.cwd,this.logger)`.
-  const loads = new Set<string>();
-  walk(bases[0], (n) => {
-    if (
-      n.type === "CallExpression" &&
-      memberProp(n.callee) === "load" &&
-      n.arguments.length === 2 &&
-      sdelIsThisMember(n.arguments[0], "cwd") &&
-      sdelIsThisMember(n.arguments[1], "logger")
-    ) {
-      const s = idName(n.callee.object);
-      if (s) loads.add(s);
-    }
-  });
-  if (loads.size !== 1) return null;
-  const store = [...loads][0];
-  const stores = classesWith("resolveSessionFile(").filter(
-    (k) =>
-      idName(k.id) === store &&
-      sdelMethod(k, "resolveSessionFile") &&
-      sdelMethod(k, "load", true),
-  );
-  if (stores.length !== 1 || idName(sub.id) === store) return null;
+  // The session store, as the base opens it (see commsStore).
+  const store = commsStore(c, bases[0]);
+  if (!store || idName(sub.id) === store) return null;
   // The subclass reads that same binding itself, unshadowed, so the method
   // inserted into it reaches the store too.
   let reaches = false;
@@ -2785,6 +2765,766 @@ function untitledStaysPatch(native: string): string | null {
 export function untitledStaysWebview(web: string): string | null {
   return untitledStaysBuild(web.replace(STAY_FRAG_RE, ""));
 }
+
+// ---------------------------------------------------------------------------
+// Last turn delete (always on, two halves): the prompt history list
+// (promptHist) gives its last entry a delete button, and a confirmed click
+// takes that turn out of the conversation as if it had never been sent. Only
+// the last turn has one: every later turn builds on the ones before it, so
+// cutting one from the middle would strand whatever came after, while
+// deleting backward one turn at a time reaches any point.
+//
+// Nothing native deletes a turn in place. Fork and rewind start a new session
+// from the turn before, and the CLI's own rewind_conversation control request
+// (2.1.200 on), which cuts its live conversation and leaves the process
+// running, is a request only other clients send. It refuses on its own when
+// the turn cannot go cleanly (a queued prompt, a later turn it has not
+// shown, a target compacted away), interrupts a turn still running, stops
+// the background agents and MCP tasks that turn spawned, forgets the files
+// read in it, and records the cut as an explicit last-prompt checkpoint
+// ({leafUuid, explicit, rewound}) that its resume honors. Disk keeps the dead
+// branch, though, and the extension host's reader ignores that checkpoint:
+// it shows the branch whose leaf comes last in the file, so a reload would
+// bring the deleted turn back until the next prompt grows a newer one. The
+// checkpoint also repeats the deleted prompt as the session's lastPrompt.
+//
+// The webview half (turnRewind) is two fragments in webview/index.js:
+//   mgr  at the head of the session manager's constructor: window's
+//        __ccupTurnRewind bridge, built around the manager, whose run(uuid)
+//        stops the active session's turn, waits for it to wind down, asks the
+//        host to rewind, and then drops the turn from the view (its messages,
+//        the todo list a TodoWrite in it set, the reply suggestion)
+//   row  in the user message component's container props: data-ccup-uuid,
+//        the message's own uuid, which the sticky header that the history
+//        list reads therefore carries
+// The host half (turnRewindHost) is two fragments in extension.js:
+//   case    at the head of the comms base's request switch: ccup_rewind_turn
+//           goes to the method below
+//   method  ccupRewindTurn, at the end of that class, running the compiled
+//           ccupTurnRewindHost with the session store and ccupTurnScrub
+// The handler sends rewind_conversation down the request's channel, with the
+// turn's prompt as both target and last seen message and interrupt on, and
+// then scrubs the transcript: the prompt, every entry descending from it,
+// the plain queue records sending it, the snapshots keyed to its messages and
+// the turn's own last-prompt and ai-title stamps go, the checkpoint names the
+// kept conversation's last prompt again, and everything else (session
+// metadata, request logs the CLI deduplicates against, lines appended
+// meanwhile) stays byte for byte. Subagent transcripts and saved tool output
+// that only the dropped lines mention go too. Then every list re-reads.
+//
+// The halves are all or nothing across the two files, as for session delete,
+// and every site is found by structure (src/derive.ts). Each insertion is
+// wrapped in /*ccup:trw:<site>*/.../*ccup:trwEnd*/, so stripping the
+// fragments restores the stock bytes.
+// ---------------------------------------------------------------------------
+const TRW_END = "/*ccup:trwEnd*/";
+const TRW_MGR = "/*ccup:trw:mgr*/";
+const TRW_ROW = "/*ccup:trw:row*/";
+const TRW_CASE = "/*ccup:trw:case*/";
+const TRW_METHOD = "/*ccup:trw:method*/";
+const TRW_FRAG_RE = /\/\*ccup:trw:[-\w]+\*\/[\s\S]*?\/\*ccup:trwEnd\*\//g;
+const TRW_WEBVIEW_FILE = "webview/index.js";
+const TRW_HOST_FILE = "extension.js";
+const trwEdit = (marker: string, e: Edit): Edit => ({
+  pos: e.pos,
+  text: `${marker}${e.text}${TRW_END}`,
+});
+const trwStrip = (c: string): string => c.replace(TRW_FRAG_RE, "");
+// How far ahead of a token its class may start (the comms base spans about
+// 150KB, with the rewind_code case some 100KB in), and its function.
+const TRW_CLASS_REACH = 400000;
+const TRW_ROW_REACH = 30000;
+// The members of a session the bridge touches.
+const TRW_SESSION_METHODS = [
+  "interrupt",
+  "launchClaude",
+  "getConnection",
+  "showNotification",
+  "reloadSessionDiff",
+];
+const TRW_SESSION_FIELDS = [
+  "messages",
+  "heldPrompts",
+  "todos",
+  "promptSuggestion",
+  "busy",
+  "connection",
+  "sessionId",
+  "replayInsertIndex",
+  "turnStarting",
+];
+
+// The dead branch a rewind_conversation leaves in a transcript, taken out.
+// `file` is the session's transcript, `target` the deleted turn's prompt and
+// `sid` the session. Compiled into Claude Code's extension host by toString
+// (see turnRewindHostFind), so it may use only its parameters and Node's
+// globals. The CLI keeps appending (O_APPEND) while this runs, so the file is
+// read whole, the cut planned, and the write done in one synchronous run that
+// carries over whatever landed past the bytes read. Returns how many lines and
+// side files went, null when it left the transcript alone, or "wait" when
+// `needMark` asks for the rewind's checkpoint and the file has none past the
+// prompt yet.
+//
+// The rewind answers before that checkpoint is written: the CLI queues every
+// transcript line and flushes the queue every 100ms, first in first out, so
+// lines of the deleted turn can still be in flight. Once the checkpoint is
+// on disk, all of them are, and nothing the CLI writes after it descends from
+// the turn any more.
+function ccupTurnScrub(
+  file: string,
+  target: string,
+  sid: string,
+  needMark: boolean,
+): { lines: number; files: number } | "wait" | null {
+  const fs = require("fs");
+  const path = require("path");
+  const chain = new Set([
+    "user",
+    "assistant",
+    "attachment",
+    "system",
+    "progress",
+  ]);
+  const parse = (b: Buffer, s: number, e: number): any => {
+    try {
+      return JSON.parse(b.toString("utf8", s, e));
+    } catch {
+      return null;
+    }
+  };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const fd = fs.openSync(file, "r+");
+    try {
+      const size: number = fs.fstatSync(fd).size;
+      const buf: Buffer = Buffer.alloc(size);
+      for (let o = 0; o < size;) {
+        const n = fs.readSync(fd, buf, o, size - o, o);
+        if (n <= 0) return null;
+        o += n;
+      }
+      // Line i spans [st[i], en[i]), its newline (if any) at en[i].
+      const st: number[] = [];
+      const en: number[] = [];
+      for (let s = 0; s < size;) {
+        let e = buf.indexOf(10, s);
+        if (e < 0) e = size;
+        st.push(s);
+        en.push(e);
+        s = e + 1;
+      }
+      const lineAt = (pos: number): number => {
+        let lo = 0;
+        let hi = st.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (st[mid] <= pos) lo = mid;
+          else hi = mid - 1;
+        }
+        return lo;
+      };
+
+      // The prompt: the last line that is the user entry with that uuid.
+      const needle = Buffer.from(`"uuid":"${target}"`);
+      let ti = -1;
+      for (let p = buf.lastIndexOf(needle); p >= 0;) {
+        const i = lineAt(p);
+        const r = parse(buf, st[i], en[i]);
+        if (r && r.type === "user" && r.uuid === target) {
+          ti = i;
+          break;
+        }
+        p = st[i] > 0 ? buf.lastIndexOf(needle, st[i] - 1) : -1;
+      }
+      if (ti < 0) return null;
+      const rec: any[] = [];
+      for (let i = ti; i < st.length; i++) rec[i] = parse(buf, st[i], en[i]);
+
+      // The prompt's subtree: every chain entry descending from it, through a
+      // compaction boundary's logical parent too.
+      const gone = new Set<string>([target]);
+      for (let grew = true; grew;) {
+        grew = false;
+        for (let i = ti + 1; i < st.length; i++) {
+          const r = rec[i];
+          if (!r || !chain.has(r.type) || typeof r.uuid !== "string") continue;
+          if (gone.has(r.uuid)) continue;
+          if (gone.has(r.parentUuid) || gone.has(r.logicalParentUuid)) {
+            gone.add(r.uuid);
+            grew = true;
+          }
+        }
+      }
+      // The rewind's checkpoint closes the turn's own records. One naming an
+      // entry of the subtree is not this rewind's.
+      let mk = -1;
+      for (let i = st.length - 1; i > ti; i--) {
+        const r = rec[i];
+        if (
+          r?.type === "last-prompt" &&
+          r.explicit === true &&
+          r.rewound === true
+        ) {
+          mk = i;
+          break;
+        }
+      }
+      if (mk < 0 && needMark) return "wait";
+      if (mk >= 0 && gone.has(rec[mk].leafUuid)) return null;
+      const end = mk >= 0 ? mk : st.length;
+      // The plain send's queue records, right above the prompt.
+      let from = ti;
+      while (from > 0) {
+        const r = parse(buf, st[from - 1], en[from - 1]);
+        if (r?.type !== "queue-operation" || r.content !== undefined) break;
+        from--;
+      }
+      // The kept conversation's last prompt, for the checkpoint.
+      let last: unknown;
+      for (let i = from - 1; i >= 0 && last === undefined; i--) {
+        if (!buf.subarray(st[i], en[i]).includes('"type":"last-prompt"'))
+          continue;
+        const r = parse(buf, st[i], en[i]);
+        if (r?.type === "last-prompt" && typeof r.lastPrompt === "string")
+          last = r.lastPrompt;
+      }
+      const drops = (i: number): boolean => {
+        if (i < ti) return true;
+        const r = rec[i];
+        if (!r) return false;
+        if (chain.has(r.type) && typeof r.uuid === "string")
+          return gone.has(r.uuid);
+        if (
+          r.type === "file-history-snapshot" ||
+          r.type === "file-history-delta" ||
+          r.type === "attribution-snapshot"
+        )
+          return gone.has(r.messageId);
+        if (r.type === "summary") return gone.has(r.leafUuid);
+        return i < end && (r.type === "last-prompt" || r.type === "ai-title");
+      };
+      const parts: Buffer[] = [];
+      const dropped: string[] = [];
+      for (let i = from; i < st.length; i++) {
+        const stop = en[i] < size ? en[i] + 1 : en[i];
+        if (drops(i)) {
+          dropped.push(buf.toString("utf8", st[i], en[i]));
+          continue;
+        }
+        if (i !== mk) {
+          parts.push(buf.subarray(st[i], stop));
+          continue;
+        }
+        const r = { ...rec[mk] };
+        if (typeof last === "string") r.lastPrompt = last;
+        else delete r.lastPrompt;
+        parts.push(Buffer.from(JSON.stringify(r) + (stop > en[i] ? "\n" : "")));
+      }
+      if (dropped.length === 0) return null;
+      const out = Buffer.concat(parts);
+
+      // The write, unbroken: a file that shrank or changed under the bytes
+      // read is someone else's rewrite, so plan again from a fresh read.
+      const tail = Math.min(size, 4096);
+      const check = Buffer.alloc(tail);
+      if (fs.fstatSync(fd).size < size) continue;
+      fs.readSync(fd, check, 0, tail, size - tail);
+      if (!check.equals(buf.subarray(size - tail))) continue;
+      fs.writeSync(fd, out, 0, out.length, st[from]);
+      let len = st[from] + out.length;
+      const now: number = fs.fstatSync(fd).size;
+      if (now > size) {
+        const extra = Buffer.alloc(now - size);
+        fs.readSync(fd, extra, 0, extra.length, size);
+        fs.writeSync(fd, extra, 0, extra.length, len);
+        len += extra.length;
+      }
+      fs.ftruncateSync(fd, len);
+
+      // Subagent transcripts and saved tool output only the dropped lines
+      // name: random ids, so a mention is a reference.
+      let files = 0;
+      const folder = path.join(path.dirname(file), sid);
+      const goneText = dropped.join("\n");
+      let keptText: string | undefined;
+      for (const sub of ["subagents", "tool-results"]) {
+        let names: string[] = [];
+        try {
+          names = fs.readdirSync(path.join(folder, sub));
+        } catch {
+          continue;
+        }
+        for (const name of names) {
+          const key =
+            sub === "subagents"
+              ? name
+                  .replace(/^agent-/, "")
+                  .replace(/\.(?:jsonl|meta\.json)$/, "")
+              : name;
+          if (!/^[\w.-]{8,}$/.test(key) || !goneText.includes(key)) continue;
+          keptText ??= buf.toString("utf8", 0, st[from]) + out.toString("utf8");
+          if (keptText.includes(key)) continue;
+          try {
+            const p = path.join(folder, sub, name);
+            if (fs.lstatSync(p).isFile()) {
+              fs.unlinkSync(p);
+              files++;
+            }
+          } catch {
+            // gone already, or not ours to remove
+          }
+        }
+      }
+      return { lines: dropped.length, files };
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+  return null;
+}
+
+// The ccup_rewind_turn handler. It is compiled into Claude Code's extension
+// host by toString, as the body of a method on its comms base class, so it
+// runs there and may use only its parameters, `this` (that comms), and Node's
+// globals. `ch` is the request's channel, whose Claude process holds the
+// conversation, and `scrub` is ccupTurnScrub.
+async function ccupTurnRewindHost(
+  this: any,
+  req: any,
+  ch: unknown,
+  store: any,
+  scrub: (
+    file: string,
+    target: string,
+    sid: string,
+    needMark: boolean,
+  ) => unknown,
+): Promise<object> {
+  const done = (o: object) => ({ type: "ccup_rewind_turn_response", ...o });
+  const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+  const id = typeof req?.sessionId === "string" ? req.sessionId : "";
+  const target = typeof req?.targetUuid === "string" ? req.targetUuid : "";
+  if (typeof ch !== "string" || !ch || !uuid.test(id) || !uuid.test(target))
+    return done({ rewound: false, error: "no turn was named" });
+
+  let res: any;
+  try {
+    res = await this.withChannel(ch, async (c: any) => {
+      if (c.sessionId !== undefined && c.sessionId !== id)
+        throw new Error(
+          "this view's Claude process holds another conversation",
+        );
+      const r = await c.query.request({
+        subtype: "rewind_conversation",
+        target_message_uuid: target,
+        last_seen_user_message_uuid: target,
+        interrupt_if_running: true,
+      });
+      return r?.response;
+    });
+  } catch (e) {
+    return done({ rewound: false, error: reason(e) });
+  }
+  if (res?.rewound !== true)
+    return done({
+      rewound: false,
+      error: typeof res?.error === "string" ? res.error : "Claude Code kept it",
+    });
+
+  // The scrub waits up to three seconds for the rewind's checkpoint to land
+  // (see ccupTurnScrub), and then goes ahead without it.
+  let cleaned = false;
+  try {
+    const sessions = await store.load(this.cwd, this.logger);
+    const file = (await sessions.resolveSessionFile(id))?.filePath;
+    if (typeof file === "string") {
+      let got: unknown = "wait";
+      for (let i = 0; got === "wait"; i++) {
+        if (i > 0) await new Promise((r) => setTimeout(r, 100));
+        got = scrub(file, target, id, i < 30);
+      }
+      cleaned = got !== null;
+    }
+  } catch (e) {
+    this.logger?.warn?.(
+      `ccup_rewind_turn: transcript left as it is: ${reason(e)}`,
+    );
+  }
+  // Session delete's wire, when it is in, reaches every list; else this one.
+  const peers =
+    typeof this.ccupPeers === "function" ? this.ccupPeers() : [this];
+  for (const peer of peers) {
+    try {
+      peer.sendSessionStoreChanged();
+    } catch {
+      // a view on its way out
+    }
+  }
+  return done({ rewound: true, cleaned });
+}
+
+// The bridge the history list's delete button calls, window.__ccupTurnRewind,
+// built around the session manager by its constructor. Compiled into the
+// webview bundle by toString, so it may use only its parameter and the page's
+// globals. run(uuid) answers whether the turn went, and says why not in a
+// notification otherwise.
+function ccupTurnRewindWeb(mgr: any): { run(uuid: string): Promise<boolean> } {
+  const busy = new Set<unknown>();
+  const say = (s: any, m: string): void => {
+    try {
+      void s.showNotification(m, "warning");
+    } catch {
+      // no host to tell
+    }
+  };
+  const nap = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const run = async (uuid: string): Promise<boolean> => {
+    const s = mgr.activeSession?.value;
+    if (!s || typeof uuid !== "string" || busy.has(s)) return false;
+    busy.add(s);
+    try {
+      const id = s.sessionId.value;
+      const at = (): number =>
+        s.messages.value.findIndex((x: any) => x?.uuid === uuid);
+      if (!id || at() < 0) {
+        say(
+          s,
+          "Could not delete the turn: it is no longer in this conversation.",
+        );
+        return false;
+      }
+      if (s.heldPrompts.value.length > 0) {
+        say(
+          s,
+          "Could not delete the turn while a queued message waits to be sent.",
+        );
+        return false;
+      }
+      // The stop, sent whether or not the turn still runs, and then up to
+      // ten seconds for it to wind down; the rewind interrupts what is left.
+      const settle = async (tries: number) => {
+        for (let i = 0; i < tries && (s.busy.value || s.turnStarting); i++)
+          await nap(100);
+      };
+      try {
+        await s.interrupt();
+      } catch {
+        // the rewind's own interrupt still stands
+      }
+      await settle(100);
+      const ch = s.claudeChannelId ?? (await s.launchClaude());
+      const conn = s.connection.value ?? (await s.getConnection());
+      let res: any;
+      try {
+        res = await conn.sendRequest(
+          { type: "ccup_rewind_turn", sessionId: id, targetUuid: uuid },
+          ch,
+        );
+      } catch (e: any) {
+        const m = e?.message ?? String(e);
+        say(
+          s,
+          m === "Unknown request type."
+            ? "Reload the window to start using turn delete."
+            : `Could not delete the turn: ${m}`,
+        );
+        return false;
+      }
+      if (res?.rewound !== true) {
+        say(
+          s,
+          `Could not delete the turn: ${res?.error ?? "Claude Code kept it"}.`,
+        );
+        return false;
+      }
+      // The view drops the turn as the CLI did, once a turn the rewind had to
+      // interrupt has sent its last rows. The todo list is the kept
+      // conversation's last TodoWrite, the one processMessage would have left.
+      await settle(50);
+      const j = at();
+      const kept = j >= 0 ? s.messages.value.slice(0, j) : s.messages.value;
+      s.messages.value = kept;
+      let todos: unknown[] = [];
+      for (const x of kept) {
+        if (x?.type !== "assistant" || !Array.isArray(x.content)) continue;
+        for (const w of x.content) {
+          const b = w?.content;
+          if (
+            b?.type === "tool_use" &&
+            b.name === "TodoWrite" &&
+            Array.isArray(b.input?.todos)
+          )
+            todos = b.input.todos;
+        }
+      }
+      s.todos.value = todos;
+      s.promptSuggestion.value = null;
+      if (s.replayInsertIndex > kept.length) s.replayInsertIndex = kept.length;
+      if (res.cleaned)
+        void Promise.resolve(s.reloadSessionDiff()).catch(() => {});
+      return true;
+    } catch (e: any) {
+      say(s, `Could not delete the turn: ${e?.message ?? String(e)}`);
+      return false;
+    } finally {
+      busy.delete(s);
+    }
+  };
+  return { run };
+}
+
+// The session store as the comms base opens it, `S.load(this.cwd,this.logger)`,
+// when its class has resolveSessionFile and a static load; else null. Shared
+// by session delete and last turn delete. A name bound inside the class does
+// not count: ccupRewindTurn, which last turn delete adds to this very class,
+// opens the store it is handed the same way.
+function commsStore(c: string, base: N): string | null {
+  const loads = new Set<string>();
+  walk(base, (n) => {
+    if (
+      n.type === "CallExpression" &&
+      memberProp(n.callee) === "load" &&
+      n.arguments.length === 2 &&
+      sdelIsThisMember(n.arguments[0], "cwd") &&
+      sdelIsThisMember(n.arguments[1], "logger")
+    ) {
+      const s = idName(n.callee.object);
+      if (s && bindingSite(n, s, base) === null) loads.add(s);
+    }
+  });
+  if (loads.size !== 1) return null;
+  const store = [...loads][0];
+  const stores = unitsWith(
+    c,
+    "resolveSessionFile(",
+    "class ",
+    isClass,
+    TRW_CLASS_REACH,
+  ).filter(
+    (k) =>
+      idName(k.id) === store &&
+      sdelMethod(k, "resolveSessionFile") &&
+      sdelMethod(k, "load", true),
+  );
+  return stores.length === 1 && idName(base.id) !== store ? store : null;
+}
+
+// The host's sites and their two insertions, or null.
+function turnRewindHostFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  // The comms base: the class around the native rewind_code case that also
+  // routes requests, resolves channels, and tells lists the store changed.
+  const bases = unitsWith(
+    c,
+    'case"rewind_code":',
+    "class ",
+    isClass,
+    TRW_CLASS_REACH,
+  ).filter(
+    (k) =>
+      sdelMethod(k, "processRequest") &&
+      sdelMethod(k, "withChannel") &&
+      sdelMethod(k, "sendSessionStoreChanged"),
+  );
+  if (bases.length !== 1) return null;
+  const base = bases[0];
+  const pr = sdelMethod(base, "processRequest")!.value;
+  const env = idName(pr.params[0]);
+  if (!env) return null;
+
+  // Its switch on `<env>.request.type`, whose rewind_code case answers
+  // through `this.withChannel(<env>.channelId, ...)` and rewindFiles.
+  const switches: N[] = [];
+  walkOwn(pr, (n) => {
+    if (
+      n.type === "SwitchStatement" &&
+      memberProp(n.discriminant) === "type" &&
+      isMember(n.discriminant.object, env, "request") &&
+      n.cases.some((k: N) => isStr(k.test, "rewind_code"))
+    )
+      switches.push(n);
+  });
+  if (switches.length !== 1) return null;
+  const sw = switches[0];
+  const rc = sw.cases.find((k: N) => isStr(k.test, "rewind_code"))!;
+  let viaChannel = false;
+  let rewinds = false;
+  walk(rc, (n) => {
+    if (
+      n.type === "CallExpression" &&
+      sdelIsThisMember(n.callee, "withChannel") &&
+      n.arguments.length === 2 &&
+      isMember(n.arguments[0], env, "channelId")
+    )
+      viaChannel = true;
+    if (memberProp(n) === "rewindFiles") rewinds = true;
+  });
+  if (!viaChannel || !rewinds || bindingSite(sw, env, pr) !== pr) return null;
+  const store = commsStore(c, base);
+  if (!store) return null;
+
+  // The case goes first in the switch, so no case falls through into it,
+  // and the method last in the class, after a `;` that ends a trailing field.
+  return {
+    units: [[base, isClass]],
+    edits: [
+      trwEdit(TRW_CASE, {
+        pos: sw.cases[0].start,
+        text: `case"ccup_rewind_turn":return this.ccupRewindTurn(${env}.request,${env}.channelId);`,
+      }),
+      trwEdit(TRW_METHOD, {
+        pos: base.body.end - 1,
+        text:
+          `;ccupRewindTurn(ccupReq,ccupCh){return(${ccupTurnRewindHost.toString()})` +
+          `.call(this,ccupReq,ccupCh,${store},${ccupTurnScrub.toString()})}`,
+      }),
+    ],
+  };
+}
+
+// The webview's sites and their two insertions, or null.
+function turnRewindWebFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  // The session manager, one per webview, which owns the active session.
+  const mgrs = unitsWith(
+    c,
+    "doListSessions(",
+    "class ",
+    isClass,
+    STAY_CLASS_REACH,
+  ).filter(
+    (k) =>
+      sdelMethod(k, "doListSessions") &&
+      sdelField(k, "activeSession") &&
+      sdelField(k, "createdByUser"),
+  );
+  if (mgrs.length !== 1 || mgrs[0].superClass) return null;
+  const mgr = mgrs[0];
+  const ctor = (mgr.body.body as N[]).find(
+    (m) => m.type === "MethodDefinition" && m.kind === "constructor",
+  );
+  if (!ctor || ctor.value.body.type !== "BlockStatement") return null;
+
+  // The session class carries every member the bridge touches.
+  const sessions = unitsWith(
+    c,
+    "loadFromServer(",
+    "class ",
+    isClass,
+    TRW_CLASS_REACH,
+  ).filter(
+    (k) =>
+      TRW_SESSION_METHODS.every((m) => sdelMethod(k, m)) &&
+      TRW_SESSION_FIELDS.every((f) => sdelField(k, f)) &&
+      (k.body.body as N[]).some(
+        (m) =>
+          m.type === "MethodDefinition" &&
+          m.kind === "get" &&
+          idName(m.key) === "claudeChannelId",
+      ),
+  );
+  if (sessions.length !== 1) return null;
+
+  // The user message component, `{session,message,held,...}` (the assistant
+  // one takes no held), and its container's props: the object with
+  // data-transcript-message whose className reads the sticky header class.
+  // Since 2.1.300 it also takes sentMessage, the session's own message behind
+  // a row a plugin engine redraws, which then carries the uuid.
+  const rows = unitsWith(
+    c,
+    '"data-transcript-message"',
+    "function",
+    isFn,
+    TRW_ROW_REACH,
+  ).filter((f) => hasKeys(f.params[0], ["session", "message", "held"]));
+  if (rows.length !== 1) return null;
+  const row = rows[0];
+  const sent =
+    boundName(row.params[0], "sentMessage") ??
+    boundName(row.params[0], "message");
+  const props: N[] = [];
+  walk(row, (n) => {
+    if (
+      n.type === "ObjectExpression" &&
+      propOf(n, "data-transcript-message") &&
+      propOf(n, "className")
+    )
+      props.push(n);
+  });
+  if (!sent || props.length !== 1) return null;
+  let sticky = false;
+  walk(propOf(props[0], "className")!.value, (n) => {
+    if (memberProp(n) === "stickyHeader") sticky = true;
+  });
+  if (!sticky || bindingSite(props[0], sent, row) !== row) return null;
+
+  return {
+    units: [
+      [mgr, isClass],
+      [row, isFn],
+    ],
+    edits: [
+      trwEdit(TRW_MGR, {
+        pos: ctor.value.body.start + 1,
+        text: `window.__ccupTurnRewind=(${ccupTurnRewindWeb.toString()})(this);`,
+      }),
+      trwEdit(TRW_ROW, {
+        pos: propOf(props[0], "data-transcript-message")!.end,
+        text: `,"data-ccup-uuid":${sent}.uuid`,
+      }),
+    ],
+  };
+}
+
+// Each half's native file with its fragments in, or null when a site is
+// missing or an edit would not parse.
+const turnRewindHostBuild = sdelMemo((native) => {
+  const sites = turnRewindHostFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+const turnRewindWebBuild = sdelMemo((native) => {
+  const sites = turnRewindWebFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+
+// The two ALWAYS_POINTS patches, each gated on the other file's sites.
+function turnRewindWebPatch(native: string, read: BundleReader): string | null {
+  const host = read(TRW_HOST_FILE);
+  if (host === undefined || turnRewindHostBuild(trwStrip(host)) === null)
+    return null;
+  return turnRewindWebBuild(native);
+}
+function turnRewindHostPatch(
+  native: string,
+  read: BundleReader,
+): string | null {
+  const web = read(TRW_WEBVIEW_FILE);
+  if (web === undefined || turnRewindWebBuild(trwStrip(web)) === null)
+    return null;
+  return turnRewindHostBuild(native);
+}
+
+// Either file as an apply writes this point into it given the other, or null
+// when either half's sites are gone. scripts/repro's turn-delete.mjs serves
+// the webview one and drives the host one, so both run exactly what the
+// patcher writes and double as the drift canary.
+export function turnRewindWebview(web: string, host: string): string | null {
+  return turnRewindWebPatch(trwStrip(web), (rel) =>
+    rel === TRW_HOST_FILE ? host : undefined,
+  );
+}
+export function turnRewindHost(host: string, web: string): string | null {
+  return turnRewindHostPatch(trwStrip(host), (rel) =>
+    rel === TRW_WEBVIEW_FILE ? web : undefined,
+  );
+}
+export const turnRewindScrub = ccupTurnScrub;
 
 // ---------------------------------------------------------------------------
 // Input box selection redraw (always on): the input box's mention and
@@ -5268,6 +6008,18 @@ function jumpMsgSet(c: string, on: boolean): string {
 // first reply arrives, so marks made in that moment land under the URL's
 // previous id (or none) and fail to match once the id comes in.
 //
+// The last entry, and only the last, carries a delete button at its right end
+// once the last turn delete point is in (window.__ccupTurnRewind, see
+// turnRewindWebFind): one line tall, ending far enough in from the list's
+// right edge that the list's overlay scrollbar, even hovered and wide, never
+// covers it, and shown on hover or keyboard focus like the hide button. A first click arms it, the trash icon giving
+// way to "sure?" in bold red, right-aligned to the button's right edge, and
+// leaving the button disarms it. A second click hands the header's
+// data-ccup-uuid to the bridge, which stops the turn and deletes it, and dims
+// the row meanwhile. The list then rebuilds from the shorter header set, and
+// hidden marks from that position on are dropped, since the next prompts take
+// those positions.
+//
 // Focus follows the menu-button pattern without disturbing the composer: the
 // button and the list swallow mousedown (preventDefault + stopPropagation, as
 // the jump buttons do), so a click never moves focus or the composer's caret,
@@ -5305,6 +6057,11 @@ const PROMPT_HIST_STORE = "ccup-prompt-history-hidden";
 const PROMPT_HIST_STORE_CAP = 200;
 // The hide button's square, and so the number column's floor.
 const PROMPT_HIST_HIDE_PX = 24;
+// How far in from the list's right edge the delete button ends. The list's
+// overlay scrollbar, once hovered, covers the last 16px (VS Code 1.143 on
+// macOS), and the list's border and padding and the row's padding come to
+// 13px, so the button keeps a margin for the rest plus a few pixels of air.
+const PROMPT_HIST_DEL_INSET = 20;
 
 // The full marked line for this bundle, or undefined when a required anchor is
 // gone. Deterministic given the bundle content, so equality against the on-disk
@@ -5368,6 +6125,17 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-item${HOVER} .ccup-hist-hide,.ccup-hist-item:focus-visible .ccup-hist-hide{visibility:visible}` +
     `.ccup-hist-hide${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-hide{color:inherit}" +
+    // The last entry's delete button, one line square on the first line's
+    // axis, and the "sure?" chip an armed one shows over its own box.
+    `.ccup-hist-del{flex:none;align-self:flex-start;position:relative;display:flex;align-items:center;justify-content:center;width:1lh;height:1lh;margin:0 ${PROMPT_HIST_DEL_INSET - 13}px 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
+    ".ccup-hist-del svg{display:block;width:16px;height:16px}" +
+    `.ccup-hist-item${HOVER} .ccup-hist-del,.ccup-hist-item:focus-visible .ccup-hist-del,.ccup-hist-del[data-arm]{visibility:visible}` +
+    `.ccup-hist-del${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
+    ".ccup-hist-item[data-cur] .ccup-hist-del{color:inherit}" +
+    ".ccup-hist-sure{display:none;position:absolute;top:0;right:0;height:1lh;padding:0 6px;border-radius:5px;background:var(--app-menu-background);box-shadow:0 0 0 1px var(--app-input-border);color:var(--vscode-errorForeground,#f14c4c);font-weight:700;white-space:nowrap}" +
+    ".ccup-hist-del[data-arm] svg{visibility:hidden}" +
+    ".ccup-hist-del[data-arm] .ccup-hist-sure{display:block}" +
+    ".ccup-hist-row[data-going]{opacity:.5;pointer-events:none}" +
     // The fold standing in for a run of hidden entries: one slim muted row.
     ".ccup-hist-fold{display:flex;align-items:center;gap:8px;padding:1px 8px;line-height:1.6;color:var(--app-secondary-foreground)}" +
     ".ccup-hist-fold .ccup-hist-num{color:inherit}" +
@@ -5389,6 +6157,8 @@ function promptHistBuild(c: string): string | undefined {
     "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2 12Q12 2 22 12Q12 22 2 12Z'/><circle cx='12' cy='12' r='3'/><path d='M4 4l16 16'/></svg>";
   const chevron =
     "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 6l6 6-6 6'/></svg>";
+  // The last entry's delete button wears the session list delete's trash.
+  const trash = `<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='${SDEL_TRASH_D}'/></svg>`;
   // A message block's text: the expandable's content, or a slash-command echo.
   const blockText = slash
     ? `c?c.textContent:a[i].classList.contains("slashCommandMessage_${sticky}")?a[i].textContent:""`
@@ -5397,7 +6167,7 @@ function promptHistBuild(c: string): string | undefined {
     `(function(){try{` +
     `if(window.__ccupPromptHist)return;window.__ccupPromptHist=1;` +
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
-    `var BARS="${bars}",EYE="${eyeOff}",CHEV="${chevron}",T="Prompt History",NL=String.fromCharCode(92)+"n",` +
+    `var BARS="${bars}",EYE="${eyeOff}",CHEV="${chevron}",TRASH="${trash}",T="Prompt History",NL=String.fromCharCode(92)+"n",` +
     `SK="${PROMPT_HIST_STORE}",raf=0,gen=0,gl=0,P=null,on=0,pBox=null,pBtn=null,pFoc=null,pHs=[],pCur=-1,` +
     `pin=-1,pinTop=0,rowOf=[],keyOf=[],curEl=null;` +
     HOVER_TIP_JS +
@@ -5460,6 +6230,7 @@ function promptHistBuild(c: string): string | undefined {
     `pHs=hs;rowOf=[];keyOf=[];curEl=null;for(i=0;i<n;i++)keyOf[i]=i+":"+hsh(tx[i]);` +
     `for(i=0;i<n;i=j+1){j=i;if(hid.has(keyOf[i])){while(j+1<n&&hid.has(keyOf[j+1]))j++;g=fold(i,j)}else g=entry(i,tx[i]);` +
     `for(q=i;q<=j;q++)rowOf[q]=g;f.appendChild(g)}` +
+    `if(n&&window.__ccupTurnRewind&&rowOf[n-1].hasAttribute("data-i"))rowOf[n-1].appendChild(dbtn(n-1));` +
     `P.textContent="";P.appendChild(f);P.scrollTop=st;P.style.setProperty("--ccup-hist-w",String(n).length+"ch");` +
     `if(pCur>=0)mark(pCur);if(fi>=0&&n)focRow(rowOf[Math.min(fi,n-1)])}` +
     // The current entry: a clicked one while the view stays where its glide
@@ -5482,6 +6253,22 @@ function promptHistBuild(c: string): string | undefined {
     `var y=r.offsetTop,b=y+r.offsetHeight;if(y<P.scrollTop)P.scrollTop=y-4;else if(b>P.scrollTop+P.clientHeight)P.scrollTop=b-P.clientHeight+4}` +
     `function hide(i){var s=hidden();s.add(keyOf[i]);keep(s);build(pHs)}` +
     `function unhide(a,b){var s=hidden();for(var i=a;i<=b;i++)s.delete(keyOf[i]);keep(s);build(pHs)}` +
+    // The last entry's delete button: a click arms it, a second deletes the
+    // turn through the bridge, and leaving the button disarms it.
+    `function dbtn(i){var b=document.createElement("button");b.type="button";b.className="ccup-hist-del";b.tabIndex=-1;` +
+    `b.setAttribute("aria-label","Delete turn "+(i+1));b.innerHTML=TRASH+"<span class='ccup-hist-sure'>sure?</span>";` +
+    `b.addEventListener("mouseleave",function(){disarm(b)});return b}` +
+    `function disarm(b){if(b.hasAttribute("data-arm")){b.removeAttribute("data-arm");` +
+    `b.setAttribute("aria-label",b.getAttribute("aria-label").replace(/^Confirm: d/,"D"))}}` +
+    `function del(r,b){if(r.hasAttribute("data-going"))return;` +
+    `if(!b.hasAttribute("data-arm")){b.setAttribute("data-arm","");` +
+    `b.setAttribute("aria-label","Confirm: d"+b.getAttribute("aria-label").slice(1));return}` +
+    `disarm(b);var i=+r.getAttribute("data-i"),h=pHs[i],u=h&&h.getAttribute("data-ccup-uuid"),api=window.__ccupTurnRewind;` +
+    `if(!u||!api||i!==pHs.length-1)return;r.setAttribute("data-going","");` +
+    `Promise.resolve().then(function(){return api.run(u)}).then(function(ok){if(ok)forget(i)},function(){})` +
+    `.then(function(){r.removeAttribute("data-going")})}` +
+    // Marks from a deleted position on: the next prompts take those positions.
+    `function forget(i){var s=hidden(),c=0;s.forEach(function(k){if(parseInt(k,10)>=i){s.delete(k);c++}});if(c)keep(s)}` +
     // An entry jumps, a fold brings its run back.
     `function act(r){if(r.hasAttribute("data-i"))jumpTo(+r.getAttribute("data-i"));` +
     `else unhide(+r.getAttribute("data-a"),+r.getAttribute("data-b"))}` +
@@ -5508,7 +6295,8 @@ function promptHistBuild(c: string): string | undefined {
     `["pointerdown","pointerup","mouseup","dblclick"].forEach(function(n){P.addEventListener(n,stop)});` +
     `P.addEventListener("click",function(e){e.stopPropagation();var t=e.target;if(!t||!t.closest)return;` +
     `var r=t.closest(".ccup-hist-item,.ccup-hist-fold");if(!r||r.parentNode!==P)return;` +
-    `if(t.closest(".ccup-hist-hide"))hide(+r.getAttribute("data-i"));else act(r)});` +
+    `var d=t.closest(".ccup-hist-del");if(d)del(r,d);` +
+    `else if(t.closest(".ccup-hist-hide"))hide(+r.getAttribute("data-i"));else act(r)});` +
     `P.addEventListener("keydown",keys)}` +
     `pFoc=document.activeElement;pBox=box;pBtn=b;on=1;hideTip();box.appendChild(P);build(hs);fit();mark(cur(t,hs));` +
     `var it=rowOf[pCur];P.scrollTop=it?it.offsetTop-(P.clientHeight-it.offsetHeight)/2:P.scrollHeight;` +
@@ -8700,6 +9488,22 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     frags: MSPAN_FRAG_RE,
     patch: mathSpansPatch,
     inert: (native) => !mathNative(native),
+  },
+  {
+    kind: "inline",
+    id: "turnRewind",
+    label: "last turn delete",
+    file: TRW_WEBVIEW_FILE,
+    frags: TRW_FRAG_RE,
+    patch: turnRewindWebPatch,
+  },
+  {
+    kind: "inline",
+    id: "turnRewindHost",
+    label: "last turn delete handler",
+    file: TRW_HOST_FILE,
+    frags: TRW_FRAG_RE,
+    patch: turnRewindHostPatch,
   },
 ];
 

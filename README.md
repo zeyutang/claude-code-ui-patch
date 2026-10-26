@@ -98,7 +98,8 @@ Always applied                         # no setting; installing this patch is th
    ├── untitled session stays          # opening the history keeps you on an Untitled session
    ├── editor selection colors         # selected text in the editor's selection colors
    ├── input box redraw                # selecting chat text no longer redraws the input box
-   └── inline math spans               # fix for math rendering
+   ├── inline math spans               # fix for math rendering
+   └── last turn delete                # prompt history's last entry: delete that turn
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)
@@ -148,3 +149,9 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   Each response switches on its own, and all of them are back to rendered after a webview reload.
 - **`chatFindBar` replaces native `Cmd`/`Ctrl`+`F` widget inside the chat webview** (tab and sidebar alike).
   Math in agent responses matches by its TeX source, as its raw markdown reads, so `\frac{a}{b}` finds that fraction while the symbols it renders do not match.
+- **Last turn delete reaches the last turn only.**
+  With `chatPromptHistoryButton` on, the last entry in the prompt history has a delete button: a first click turns it into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.
+  Every turn builds on the ones before it, so removing one from the middle would leave the later turns answering a conversation that no longer holds it.
+  To go further back, delete one turn at a time.
+  The turn's file edits stay, so use the message's "Rewind code to here" first if you want them undone.
+  Deleting a conversation's only turn empties it but keeps the title Claude Code gave it.

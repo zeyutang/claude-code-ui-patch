@@ -2,11 +2,17 @@
 // on the REAL webview bundle booted against a stub host. It checks that every
 // persisted session row (live or archived) gets the button and the fresh
 // active row none, that on hover it sits on its siblings' line at their size,
-// right of the archive or unarchive button, that a real click sends one
-// delete_session with the row's id and title without opening the session,
-// that the row leaves the list once the host announces session_store_changed
-// (what the host half sends after a delete), and that a host without the
-// handler gets the reload notice instead.
+// right of the archive or unarchive button, that a real click only arms it
+// (the row's other buttons hide, a bold red "sure?" sits flush with the right
+// edge of the button group, and nothing is sent) and leaving the button
+// disarms it, that a second click sends
+// one confirmed delete_session with the row's id and title without opening
+// the session and dims the row while the host works, that the row leaves the
+// list once the host announces session_store_changed (what the host half
+// sends after a delete), that the keyboard arms and confirms the same way
+// (a held Enter never confirms, blur disarms), and that a refusal or a host
+// without the handler leaves the row in place, the latter with the reload
+// notice.
 //
 //   node scripts/cdp-driver.mjs scripts/repro/session-delete.mjs 760 620
 //
@@ -56,12 +62,15 @@ const IDS = {
   arch2: "55555555-5555-4555-8555-555555555555",
 };
 const NOTICE = "Reload the window to start using session delete.";
+// The stub theme's error foreground, which the chip's text takes.
+const RED = "rgb(244, 135, 113)";
 
 // The stub host: just enough of the init state for the chat to mount (see the
 // real-webview-mock notes), the session list below, and a delete_session
-// handler that drops the row and announces the store change, or answers like
-// a host without the handler. Responses go out synchronously, or the first
-// render races ahead of get_claude_state.
+// handler that drops the row and announces the store change after
+// __deleteDelay ms, refuses, or answers like a host without the handler.
+// Other responses go out synchronously, or the first render races ahead of
+// get_claude_state.
 const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="/wv/index.css">
 <style>
@@ -70,7 +79,7 @@ const page = `<!doctype html><html><head><meta charset="utf-8">
 --vscode-font-family:system-ui;--vscode-font-size:13px;--vscode-foreground:#cccccc;
 --vscode-descriptionForeground:#9d9d9d;--vscode-sideBar-background:#181818;
 --vscode-editor-background:#1f1f1f;--vscode-input-background:#262626;--vscode-input-border:#3c3c3c;
---vscode-input-foreground:#cccccc;--vscode-focusBorder:#0078d4;
+--vscode-input-foreground:#cccccc;--vscode-focusBorder:#0078d4;--vscode-errorForeground:#f48771;
 --vscode-list-activeSelectionBackground:#04395e;--vscode-list-hoverBackground:#2a2d2e;
 --vscode-widget-border:#313131;--vscode-menu-background:#1f1f1f;
 --vscode-toolbar-hoverBackground:#5a5d5e50;--vscode-icon-foreground:#cccccc;color-scheme:dark}
@@ -80,7 +89,7 @@ body{background:var(--vscode-sideBar-background);color:var(--vscode-foreground)}
 <div id="root" data-initial-auth-status='{"authMethod":"claude_ai"}'></div>
 <script>
 window.IS_SIDEBAR = true; window.IS_FULL_EDITOR = false; window.IS_SESSION_LIST_ONLY = false;
-window.__reqs = []; window.__notes = []; window.__deleteMode = "ok";
+window.__reqs = []; window.__notes = []; window.__deleteMode = "ok"; window.__deleteDelay = 0;
 const NOW = Date.now(), MIN = 60e3, DAY = 86400e3;
 window.__sessions = [
   ["${IDS.live1}", "Katex 0.19.0 upgrade", 40 * MIN, false],
@@ -127,12 +136,16 @@ window.acquireVsCodeApi = () => ({
         resp = { type: "show_notification_response" };
         break;
       case "delete_session":
-        if (window.__deleteMode === "unknown")
-          return respond(msg.requestId, { type: "error", error: "Unknown request type." });
-        window.__sessions = window.__sessions.filter((s) => s.id !== r.sessionId);
-        respond(msg.requestId, { type: "delete_session_response", deleted: true });
-        return deliver({ type: "request", channelId: "", requestId: "store-" + Date.now(),
-          request: { type: "session_store_changed" } });
+        return setTimeout(() => {
+          if (window.__deleteMode === "unknown")
+            return respond(msg.requestId, { type: "error", error: "Unknown request type." });
+          if (window.__deleteMode === "refuse")
+            return respond(msg.requestId, { type: "delete_session_response", deleted: false });
+          window.__sessions = window.__sessions.filter((s) => s.id !== r.sessionId);
+          deliver({ type: "request", channelId: "", requestId: "store-" + Date.now(),
+            request: { type: "session_store_changed" } });
+          respond(msg.requestId, { type: "delete_session_response", deleted: true });
+        }, window.__deleteDelay);
     }
     respond(msg.requestId, resp);
   },
@@ -202,13 +215,35 @@ export async function run(ctx) {
       button: "left",
       clickCount: type === "mouseMoved" ? 0 : 1,
     });
-  // A row of the open dropdown by its title, with its delete button and the
-  // archive or unarchive button beside it, as client boxes in CSS px.
+  const clickAt = async (x, y) => {
+    await mouse("mouseMoved", x, y);
+    await mouse("mousePressed", x, y);
+    await mouse("mouseReleased", x, y);
+  };
+  const key = async (k, autoRepeat = false) => {
+    const base = {
+      key: k,
+      code: k === " " ? "Space" : k,
+      windowsVirtualKeyCode: k === " " ? 32 : 13,
+    };
+    await ctx.cdp("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      autoRepeat,
+      ...base,
+    });
+    await ctx.cdp("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  };
+  // The open dropdown's row by its title, in page code.
+  const ROW = (title) => `(() => {
+    const dlg = document.querySelector('[role=dialog][aria-label="Past conversations"]');
+    return dlg && [...dlg.querySelectorAll("button[id]")]
+      .find((b) => b.textContent.includes(${JSON.stringify(title)}));
+  })()`;
+  // A row with its delete button and the archive or unarchive button beside
+  // it, as client boxes in CSS px.
   const rowInfo = (title) =>
     ctx.evaluate(`(() => {
-      const dlg = document.querySelector('[role=dialog][aria-label="Past conversations"]');
-      const row = dlg && [...dlg.querySelectorAll("button[id]")]
-        .find((b) => b.textContent.includes(${JSON.stringify(title)}));
+      const row = ${ROW(title)};
       if (!row) return null;
       const box = (el) => {
         if (!el) return null;
@@ -220,25 +255,53 @@ export async function run(ctx) {
       return { row: box(row), del: box(del), sib: box(sib),
         delSvg: box(del && del.querySelector("svg")), sibSvg: box(sib && sib.querySelector("svg")) };
     })()`);
-  // Hover the row, then press its delete button with real mouse events.
-  const hover = async (title) => {
-    const g = await rowInfo(title);
+  // The delete button's state, its button group (the row's actions span) and
+  // the group's other buttons, and the box of the "sure?" chip, which is the
+  // button's ::after: hit testing lands on the button wherever the chip
+  // covers, so its edges are where that stops, walked in half pixels.
+  const delState = (title) =>
+    ctx.evaluate(`(() => {
+      const row = ${ROW(title)};
+      const del = row && row.querySelector('[title="Delete session"]');
+      if (!del) return null;
+      const b = del.getBoundingClientRect(), a = getComputedStyle(del, "::after");
+      const bar = del.parentElement, g = bar.getBoundingClientRect();
+      const others = [...bar.children].filter((x) => x !== del)
+        .map((x) => [x.getAttribute("title"), getComputedStyle(x).visibility]);
+      const on = (x, y) => document.elementFromPoint(x, y) === del;
+      const cy = b.y + b.height / 2;
+      let l = b.right - 0.5, r = b.right - 0.5;
+      while (l > g.x - 120 && on(l - 0.5, cy)) l -= 0.5;
+      while (r < b.right + 40 && on(r + 0.5, cy)) r += 0.5;
+      let t = cy, d = cy;
+      while (t > b.y - 20 && on(l + 1, t - 0.5)) t -= 0.5;
+      while (d < b.bottom + 20 && on(l + 1, d + 0.5)) d += 0.5;
+      return { armed: del.hasAttribute("data-ccup-sdel-arm"),
+        label: del.getAttribute("aria-label"), content: a.content,
+        weight: a.fontWeight, color: a.color,
+        svg: getComputedStyle(del.querySelector("svg")).visibility,
+        del: { x: b.x, y: b.y, r: b.right, b: b.bottom },
+        bar: { x: g.x, y: g.y, r: g.right, b: g.bottom, w: g.width }, others,
+        name: row.querySelector('[class*="sessionName"]').getBoundingClientRect().width,
+        chip: { l, r: r + 0.5, t, b: d + 0.5 },
+        going: row.hasAttribute("data-ccup-sdel-going"),
+        opacity: getComputedStyle(row).opacity };
+    })()`);
+  // Hover the row, then the delete button's center, which a press there hits.
+  const toDelete = async (title) => {
+    let g = await rowInfo(title);
     await mouse("mouseMoved", g.row.x + g.row.w / 2, g.row.y + g.row.h / 2);
     await ctx.sleep(150);
-    return rowInfo(title);
-  };
-  const pressDelete = async (title) => {
-    const g = await hover(title);
-    const x = g.del.x + g.del.w / 2;
-    const y = g.del.y + g.del.h / 2;
-    await mouse("mouseMoved", x, y);
-    await mouse("mousePressed", x, y);
-    await mouse("mouseReleased", x, y);
+    g = await rowInfo(title);
+    return { x: g.del.x + g.del.w / 2, y: g.del.y + g.del.h / 2, g };
   };
   const listed = (title) =>
     ctx.evaluate(
       `!!document.querySelector('[role=dialog]')?.textContent.includes(${JSON.stringify(title)})`,
     );
+  const sentDeletes = () =>
+    ctx.evaluate(`window.__reqs.filter((r) => typeof r === "object")`);
+  const near = (a, b) => Math.abs(a - b) <= 0.5;
 
   try {
     await ctx.navigate(`http://127.0.0.1:${server.address().port}/`);
@@ -280,9 +343,8 @@ export async function run(ctx) {
       ["Katex 0.19.0 upgrade", "archive"],
       ["Prompt navigator git issue", "unarchive"],
     ]) {
-      const g = await hover(title);
+      const { g } = await toDelete(title);
       await ctx.shot(`hover-${sib}`);
-      const near = (a, b) => Math.abs(a - b) < 0.5;
       check(
         `${title}: on hover, beside ${sib} at its size`,
         g.del.w > 0 &&
@@ -297,39 +359,177 @@ export async function run(ctx) {
       );
     }
 
-    await pressDelete("Markdown button placement conflict");
-    const gone = await until(
-      `!document.querySelector("[role=dialog]")?.textContent.includes("Markdown button placement conflict")`,
-    );
-    const sent = await ctx.evaluate(
-      `window.__reqs.filter((r) => typeof r === "object")`,
+    // A first click arms the button and sends nothing.
+    const T1 = "Markdown button placement conflict";
+    let at = await toDelete(T1);
+    const calm = await delState(T1);
+    await clickAt(at.x, at.y);
+    await ctx.sleep(100);
+    let s = await delState(T1);
+    await ctx.shot("armed");
+    check(
+      "a first click only arms the button",
+      s.armed &&
+        s.label === "Confirm: delete session" &&
+        (await sentDeletes()).length === 0 &&
+        (await listed(T1)),
+      JSON.stringify({ armed: s.armed, label: s.label }),
     );
     check(
-      "a click sends delete_session with the row's id and title",
-      sent.length === 1 &&
-        sent[0].sessionId === IDS.arch2 &&
-        sent[0].title === "Markdown button placement conflict",
-      JSON.stringify(sent),
+      'the armed button shows a bold red "sure?" in place of its icon',
+      s.content === '"sure?"' &&
+        Number(s.weight) >= 700 &&
+        s.color === RED &&
+        s.svg === "hidden",
+      JSON.stringify({ content: s.content, weight: s.weight, color: s.color }),
     );
-    check("the row leaves the list on session_store_changed", !!gone);
+    check(
+      "the group's other buttons hide while it is armed",
+      calm.others.length >= 2 &&
+        calm.others.every(([, v]) => v === "visible") &&
+        s.others.length === calm.others.length &&
+        s.others.every(([, v]) => v === "hidden"),
+      JSON.stringify({ before: calm.others, armed: s.others }),
+    );
+    check(
+      "the group keeps its room, so the row does not reflow",
+      near(s.bar.w, calm.bar.w) &&
+        near(s.bar.r, calm.bar.r) &&
+        near(s.name, calm.name),
+      JSON.stringify({ before: calm.bar, armed: s.bar }),
+    );
+    check(
+      '"sure?" is flush with the group\'s right edge and as tall as the group',
+      near(s.chip.r, s.bar.r) &&
+        near(s.chip.t, s.bar.y) &&
+        near(s.chip.b, s.bar.b) &&
+        s.chip.l < s.del.x &&
+        s.chip.l >= s.bar.x,
+      `chip ${JSON.stringify(s.chip)}, group ${JSON.stringify(s.bar)}`,
+    );
     check(
       "the dropdown stays open (the row's own click never fired)",
       await ctx.evaluate(
         `!!document.querySelector('[role=dialog][aria-label="Past conversations"]')`,
       ),
     );
-    await ctx.shot("after-delete");
 
-    await ctx.evaluate(`window.__deleteMode = "unknown"`);
-    await pressDelete("Claude-code extension settings");
-    const note = await until(`window.__notes[0] ?? null`);
+    // Leaving the button disarms it.
+    await mouse("mouseMoved", at.g.row.x + 30, at.y);
+    await ctx.sleep(100);
+    s = await delState(T1);
     check(
-      "a host without the handler: the reload notice, and the row stays",
-      note?.[0] === NOTICE &&
-        note?.[1] === "warning" &&
-        (await listed("Claude-code extension settings")),
-      JSON.stringify(note),
+      "leaving the button disarms it, and the other buttons come back",
+      !s.armed &&
+        s.content === "none" &&
+        s.label === null &&
+        s.svg === "visible" &&
+        s.others.every(([, v]) => v === "visible"),
+      JSON.stringify({ armed: s.armed, content: s.content, others: s.others }),
     );
+
+    // Two clicks delete: the request goes out confirmed, the row dims while
+    // the host works, and it leaves the list on session_store_changed.
+    await ctx.evaluate(`window.__deleteDelay = 600`);
+    at = await toDelete(T1);
+    await clickAt(at.x, at.y);
+    await ctx.sleep(50);
+    await clickAt(at.x, at.y);
+    await ctx.sleep(150);
+    s = await delState(T1);
+    let sent = await sentDeletes();
+    check(
+      "a second click sends one confirmed delete_session with the row's id and title",
+      sent.length === 1 &&
+        sent[0].sessionId === IDS.arch2 &&
+        sent[0].title === T1 &&
+        sent[0].confirmed === true,
+      JSON.stringify(sent),
+    );
+    check(
+      "the row dims while the host works",
+      s && s.going && Number(s.opacity) === 0.5 && !s.armed,
+      s && JSON.stringify({ going: s.going, opacity: s.opacity }),
+    );
+    await ctx.shot("going");
+    check(
+      "the row leaves the list on session_store_changed",
+      !!(await until(
+        `!document.querySelector("[role=dialog]")?.textContent.includes(${JSON.stringify(T1)})`,
+      )),
+    );
+    check(
+      "the dropdown stays open",
+      await ctx.evaluate(
+        `!!document.querySelector('[role=dialog][aria-label="Past conversations"]')`,
+      ),
+    );
+    await ctx.shot("after-delete");
+    await ctx.evaluate(`window.__deleteDelay = 0`);
+
+    // The keyboard: Enter arms, a held Enter's repeats do not confirm, blur
+    // disarms, and a second press confirms.
+    const T2 = "Current branch merge into develop";
+    at = await toDelete(T2);
+    await mouse("mouseMoved", at.g.row.x + 30, at.y);
+    const focusDel = `(() => { const d = ${ROW(T2)}.querySelector('[title="Delete session"]'); d.focus(); return document.activeElement === d; })()`;
+    check("the delete button takes focus", await ctx.evaluate(focusDel));
+    await key("Enter");
+    await key("Enter", true);
+    await key("Enter", true);
+    await ctx.sleep(100);
+    s = await delState(T2);
+    check(
+      "Enter arms, and a held Enter's repeats send nothing",
+      s.armed && (await sentDeletes()).length === 1,
+      JSON.stringify({ armed: s.armed, sent: (await sentDeletes()).length }),
+    );
+    await ctx.evaluate(`document.activeElement.blur()`);
+    await ctx.sleep(50);
+    s = await delState(T2);
+    check("blur disarms", !s.armed, JSON.stringify({ armed: s.armed }));
+    await ctx.evaluate(focusDel);
+    await key("Enter");
+    await key(" ");
+    sent = await sentDeletes();
+    check(
+      "Enter, then Space, deletes",
+      sent.length === 2 &&
+        sent[1].sessionId === IDS.live2 &&
+        sent[1].confirmed === true &&
+        !!(await until(
+          `!document.querySelector("[role=dialog]")?.textContent.includes(${JSON.stringify(T2)})`,
+        )),
+      JSON.stringify(sent[1]),
+    );
+
+    // A refusal and a host without the handler leave the row, live again.
+    const T3 = "Claude-code extension settings";
+    for (const mode of ["refuse", "unknown"]) {
+      await ctx.evaluate(`window.__deleteMode = ${JSON.stringify(mode)}`);
+      at = await toDelete(T3);
+      await clickAt(at.x, at.y);
+      await ctx.sleep(50);
+      await clickAt(at.x, at.y);
+      await ctx.sleep(300);
+      s = await delState(T3);
+      const notes = await ctx.evaluate(`window.__notes`);
+      check(
+        mode === "refuse"
+          ? "a refusal: the row stays, undimmed and disarmed"
+          : "a host without the handler: the reload notice, and the row stays",
+        (await listed(T3)) &&
+          !s.going &&
+          !s.armed &&
+          Number(s.opacity) === 1 &&
+          (mode === "refuse"
+            ? notes.length === 0
+            : notes.length === 1 &&
+              notes[0][0] === NOTICE &&
+              notes[0][1] === "warning"),
+        JSON.stringify({ going: s.going, opacity: s.opacity, notes }),
+      );
+    }
   } finally {
     server.close();
   }

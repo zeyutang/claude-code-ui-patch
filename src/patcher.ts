@@ -2004,13 +2004,16 @@ export function hiddenCursorWebview(
 // from that button's own jsx factory and class-map members, with Heroicons'
 // trash beside the set's archive and unarchive icons. It renders where the
 // list hands the row an archive or an unarchive handler (a local row; the Web
-// tab passes neither) and the session has an id. A click sends
-// {type:"delete_session",sessionId,title} through the session's
-// connectionProvider, the shared transport, without the per-session listener
-// wiring getConnection would add to a row that is about to go. A host still
-// running its pre-patch code answers "Unknown request type.", which the click
-// turns into a native notification asking for the reload that loads the
-// handler.
+// tab passes neither) and the session has an id. A first click arms it: the
+// row's other buttons hide, and the icon gives way to a bold red "sure?" (as
+// on last turn delete's button) flush with the right edge of the row's button
+// group, and leaving the button or its focus disarms it. A second click sends
+// {type:"delete_session",sessionId,title,confirmed:true} through the
+// session's connectionProvider, the shared transport, without the per-session
+// listener wiring getConnection would add to a row that is about to go, and
+// dims the row until the list drops it. A host still running its pre-patch
+// code answers "Unknown request type.", which the click turns into a native
+// notification asking for the reload that loads the handler.
 //
 // The host half (sessionDeleteHost) is three fragments in extension.js:
 //   wire    at the head of the webview provider's wireLiveRegistry(comms),
@@ -2023,14 +2026,17 @@ export function hiddenCursorWebview(
 //           goes to the method below, everything else falls through untouched
 //   method  ccupDeleteSession, ahead of processRequest in the same class,
 //           running the compiled ccupSessionDeleteHost with the session store
-// The handler refuses while anything could still write the transcript, asks
-// in a modal, moves the transcript and the session's folder beside it to the
-// trash (offering a permanent delete where the file system has none), and
-// sends session_store_changed to every comms: the one notice after which a
-// list's re-read drops sessions missing from disk (an archive_sync re-read
-// keeps them). Builds without the live-session registry (2.1.270 has no
-// sessionHeldElsewhere hook) cannot tell whether another window or a
-// terminal holds a session, so the provider anchors require it.
+// The handler refuses while anything could still write the transcript, moves
+// the transcript and the session's folder beside it to the trash (asking in a
+// modal before a permanent delete where the file system has none), and sends
+// session_store_changed to every comms: the one notice after which a list's
+// re-read drops sessions missing from disk (an archive_sync re-read keeps
+// them). A request without `confirmed` comes from a webview loaded before the
+// button confirmed in place, whose single click confirmed nothing, so it gets
+// a reload notice and deletes nothing. Builds without the live-session
+// registry (2.1.270 has no sessionHeldElsewhere hook) cannot tell whether
+// another window or a terminal holds a session, so the provider anchors
+// require it.
 //
 // The halves are all or nothing across the two files: each builds only when
 // the other file's sites are found too, so a drifted build never shows a
@@ -2066,20 +2072,105 @@ const SDEL_CLASS_REACH = 400000;
 // come from (the bundle ships the same path for its own trash icon).
 const SDEL_TRASH_D =
   "m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0";
-// The click, kept on window so every row shares one copy: one request, and
-// the host confirms, deletes and refreshes every list by itself. The busy
-// set swallows a second click while that request is still out.
+// The button's click and disarm, kept on window so every row shares one copy
+// (see ccupSessionDeleteWeb).
 const SDEL_HELPER_PROP = "__ccupSessionDelete";
 const SDEL_RESTART_NOTE = "Reload the window to start using session delete.";
-const SDEL_WEBVIEW_HELPER =
-  `(s)=>{try{var w=window,id=s.sessionId.value,` +
-  `busy=w.__ccupSessionDeleteBusy||(w.__ccupSessionDeleteBusy=new Set);` +
-  `if(!id||busy.has(id))return;busy.add(id);` +
-  `Promise.resolve().then(()=>s.connectionProvider()).then((c)=>c.sendRequest(` +
-  `{type:"delete_session",sessionId:id,title:s.summary&&s.summary.value||"Untitled"})` +
-  `.catch((e)=>{var m=e&&e.message||String(e);return c.showNotification(` +
-  `m==="Unknown request type."?${JSON.stringify(SDEL_RESTART_NOTE)}:"Could not delete the session: "+m,"warning")}))` +
-  `.catch(()=>{}).finally(()=>busy.delete(id))}catch{}}`;
+// The sheet the helper adds for the button's states. While a button is armed,
+// the row's button group (the actions span holding rename, archive or
+// unarchive, and delete) hides its other buttons, keeping their room so the
+// row does not reflow, and the button trades its icon for a bold red "sure?"
+// chip (the look of last turn delete's chip), as tall as the group and flush
+// with its right edge. A row whose delete is out dims and takes no pointer.
+const SDEL_CSS =
+  "[data-ccup-sdel-bar]{position:relative}" +
+  "[data-ccup-sdel-bar]>:not([data-ccup-sdel-arm]){visibility:hidden}" +
+  "[data-ccup-sdel-arm]>svg{visibility:hidden}" +
+  '[data-ccup-sdel-arm]::after{content:"sure?";position:absolute;top:0;right:0;bottom:0;display:flex;align-items:center;padding:0 6px;border-radius:4px;background:var(--app-menu-background);box-shadow:0 0 0 1px var(--app-input-border);color:var(--vscode-errorForeground,#f14c4c);font-weight:700;white-space:nowrap}' +
+  "[data-ccup-sdel-going]{opacity:.5;pointer-events:none}";
+
+// The delete button's helper, compiled into the webview bundle by toString,
+// so it may use only its parameters and the page's globals (the DOM through
+// the any-typed globalThis, since the project compiles without the DOM lib).
+// click(session, button) arms a button, or sends one delete_session from an
+// armed one, and the host deletes and refreshes every list without asking
+// again; off(button) disarms. A session whose request is still out takes no
+// further click.
+function ccupSessionDeleteWeb(
+  css: string,
+  reloadNote: string,
+): { click(s: any, el: any): void; off(el: any): void } {
+  const g = globalThis as Record<string, any>;
+  try {
+    const sheet = g.document.createElement("style");
+    sheet.textContent = css;
+    g.document.head.appendChild(sheet);
+  } catch {
+    // no sheet: an armed button looks unchanged but still takes two clicks
+  }
+  const busy = new Set<string>();
+  const off = (el: any): void => {
+    if (!el?.hasAttribute?.("data-ccup-sdel-arm")) return;
+    el.removeAttribute("data-ccup-sdel-arm");
+    el.removeAttribute("aria-label");
+    el.parentElement?.removeAttribute("data-ccup-sdel-bar");
+  };
+  const click = (s: any, el: any): void => {
+    try {
+      const id = s.sessionId.value;
+      if (!id || busy.has(id)) return;
+      if (!el.hasAttribute("data-ccup-sdel-arm")) {
+        el.setAttribute("data-ccup-sdel-arm", "");
+        el.setAttribute("aria-label", "Confirm: delete session");
+        el.parentElement?.setAttribute("data-ccup-sdel-bar", "");
+        return;
+      }
+      off(el);
+      busy.add(id);
+      const row = el.closest("button");
+      row?.setAttribute("data-ccup-sdel-going", "");
+      let deleted = false;
+      Promise.resolve()
+        .then(() => s.connectionProvider())
+        .then((c: any) =>
+          c
+            .sendRequest({
+              type: "delete_session",
+              sessionId: id,
+              title: s.summary?.value || "Untitled",
+              confirmed: true,
+            })
+            .then(
+              (r: any) => {
+                deleted = r?.deleted === true;
+              },
+              (e: any) => {
+                const m = e?.message || String(e);
+                return c.showNotification(
+                  m === "Unknown request type."
+                    ? reloadNote
+                    : `Could not delete the session: ${m}`,
+                  "warning",
+                );
+              },
+            ),
+        )
+        .catch(() => {})
+        .finally(() => {
+          busy.delete(id);
+          // A deleted row leaves with the list's next read, which the host
+          // asks for before it answers; one still listed by then wakes up.
+          g.setTimeout(
+            () => row?.removeAttribute("data-ccup-sdel-going"),
+            deleted ? 5000 : 0,
+          );
+        });
+    } catch {
+      // a click never breaks the list
+    }
+  };
+  return { click, off };
+}
 
 // Whether `fn`'s own body calls `name(arg)`.
 function sdelCallsWith(fn: N, name: string, arg: string): boolean {
@@ -2162,23 +2253,30 @@ function sdelRowFind(c: string): { unit: N; edit: Edit } | null {
 
   const del = "ccupDel";
   const ev = "ccupEv";
-  const fire = `${ev}.stopPropagation(),${del}(${sess})`;
+  const fire = `${del}.click(${sess},${ev}.currentTarget)`;
+  const disarm = `(${ev})=>${del}.off(${ev}.currentTarget)`;
   const svg =
     `${jsx}("svg",{xmlns:"http://www.w3.org/2000/svg",fill:"none",viewBox:"0 0 24 24",` +
     `strokeWidth:1.5,stroke:"currentColor","aria-hidden":"true",` +
     `className:${c.slice(iconCls!.start, iconCls!.end)},` +
     `children:${jsx}("path",{strokeLinecap:"round",strokeLinejoin:"round",` +
     `d:${JSON.stringify(SDEL_TRASH_D)}})})`;
+  // A held Enter repeats, and must not confirm what its first press armed.
   const button =
     `${jsx}("span",{role:"button",tabIndex:0,` +
     `className:${c.slice(btnCls.start, btnCls.end)},` +
-    `onClick:(${ev})=>{${fire}},` +
-    `onKeyDown:(${ev})=>{if(${ev}.key==="Enter"||${ev}.key===" ")${ev}.preventDefault(),${fire}},` +
+    `onClick:(${ev})=>{${ev}.stopPropagation(),${fire}},` +
+    `onKeyDown:(${ev})=>{if(${ev}.key==="Enter"||${ev}.key===" "){${ev}.preventDefault(),${ev}.stopPropagation();` +
+    `if(!${ev}.repeat)${fire}}},` +
+    `onMouseLeave:${disarm},onBlur:${disarm},` +
     `title:"Delete session",children:${svg}})`;
+  const helper =
+    `(${ccupSessionDeleteWeb.toString()})` +
+    `(${JSON.stringify(SDEL_CSS)},${JSON.stringify(SDEL_RESTART_NOTE)})`;
   const text =
     `,(${archive}||${unarchive})&&!${active}&&${sess}.sessionId.value&&` +
     `((${del})=>${button})(window.${SDEL_HELPER_PROP}||` +
-    `(window.${SDEL_HELPER_PROP}=${SDEL_WEBVIEW_HELPER}))`;
+    `(window.${SDEL_HELPER_PROP}=${helper}))`;
   return { unit: row, edit: sdelEdit(SDEL_ROW, { pos: el.end, text }) };
 }
 
@@ -2210,6 +2308,10 @@ async function ccupSessionDeleteHost(
     void vscode.window.showWarningMessage(message);
     return done(false);
   };
+  // The button confirms in place, on a second click. A webview loaded before
+  // it did sends one click as the whole request.
+  if (req.confirmed !== true)
+    return warn("Reload the window to finish updating session delete.");
 
   // Anything that could still write the transcript: a tab of this window
   // (including one a reload has not revived yet) or its sidebar; a Claude
@@ -2249,17 +2351,6 @@ async function ccupSessionDeleteHost(
   if (typeof file !== "string")
     return warn(`Could not find the transcript of '${title}'.`);
 
-  const bin = process.platform === "win32" ? "Recycle Bin" : "Trash";
-  const move = `Move to ${bin}`;
-  const sure = await vscode.window.showWarningMessage(
-    `Are you sure you want to delete '${title}'?`,
-    { modal: true, detail: `You can restore it from the ${bin}.` },
-    move,
-  );
-  if (sure !== move) return done(false);
-  // The dialog can stay up while another window or a terminal resumes it.
-  if (await busy()) return done(false);
-
   // The transcript goes first, since it is what lists the session, then the
   // folder beside it with the session's subagent transcripts and tool output.
   const targets = [file];
@@ -2269,6 +2360,7 @@ async function ccupSessionDeleteHost(
   } catch {
     // no folder: the session never kept anything beside its transcript
   }
+  const bin = process.platform === "win32" ? "Recycle Bin" : "Trash";
   let useTrash = true;
   let removed = 0;
   try {
@@ -2278,6 +2370,9 @@ async function ccupSessionDeleteHost(
         await vscode.workspace.fs.delete(uri, { recursive: true, useTrash });
       } catch (e) {
         if (!useTrash) throw e;
+        // "sure?" agreed to a move to the trash, not to a delete that cannot
+        // be undone, so where the file system has no trash that still asks,
+        // and the session must still be free once the dialog closes.
         const forever = "Delete Permanently";
         const pick = await vscode.window.showWarningMessage(
           `Could not move '${title}' to the ${bin}.`,
@@ -2287,7 +2382,7 @@ async function ccupSessionDeleteHost(
           },
           forever,
         );
-        if (pick !== forever) break;
+        if (pick !== forever || (await busy())) break;
         useTrash = false;
         await vscode.workspace.fs.delete(uri, { recursive: true, useTrash });
       }

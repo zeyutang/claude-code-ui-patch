@@ -8,6 +8,7 @@
 - On Claude Code 2.1.285 and later, with `chatPromptHistoryButton` on, the last entry in the prompt history has a delete button: click it, then "sure?", and that turn stops and leaves the conversation, its reply and transcript lines included, as if the prompt had never been sent.
   Only the last turn has one, so delete one turn at a time to go further back.
   Always applied, no setting of its own.
+- Deleting a conversation from the session list no longer opens a dialog: click its delete button, then the "sure?" that takes the place of the row's buttons, and the conversation moves to the Trash.
 
 ## 1.6.2
 

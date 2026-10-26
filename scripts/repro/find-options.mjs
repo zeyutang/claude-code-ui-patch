@@ -7,10 +7,11 @@
 //            above and below, and in the editor tab (no header) it keeps the
 //            top-right corner
 //   toggles  Match Case, Match Whole Word and Use Regular Expression sit
-//            inside the input box as unchecked checkboxes with the codicon
-//            glyphs, each hover tip is its bare label, and a click flips it
-//            without taking the focus from the input and searches again
-//            from the active match
+//            inside the input box as unchecked checkboxes whose codicon
+//            glyphs paint under the webview's content security policy (which
+//            refuses the bundle's codicon font), each hover tip is its bare
+//            label, and a click flips it without taking the focus from the
+//            input and searches again from the active match
 //   search   the counts for each option and their combinations, a case fold
 //            that keeps every later match on its own text (U+0130 lowercases
 //            to two code units), a pattern spanning lines only when it names
@@ -105,9 +106,17 @@ function transcript() {
   ];
 }
 
-// The stub host, as in find-typing.mjs; ?editor=1 boots the editor tab's
-// layout, whose header renders empty and hidden.
+// The stub host, as in find-typing.mjs, under the content security policy
+// Claude Code gives its webview, the stub's origin standing in for the
+// webview's source: no font loads from a data: URI, and no fetch at all.
+// ?editor=1 boots the editor tab's layout, whose header renders empty and
+// hidden.
+const NONCE = "ccupfindoptions";
+const CSP =
+  "default-src 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; " +
+  `img-src 'self' data:; script-src 'nonce-${NONCE}'; worker-src 'self';`;
 const page = (editor) => `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${CSP}">
 <link rel="stylesheet" href="/wv/index.css">
 <style>
 :root{--vscode-editor-font-family:monospace;--vscode-editor-font-size:12px;
@@ -120,8 +129,8 @@ body{background:var(--vscode-sideBar-background);color:var(--vscode-foreground)}
 </style></head><body class="vscode-dark">
 <pre id="claude-error"></pre>
 <div id="root" data-initial-auth-status='{"authMethod":"claude_ai"}' data-initial-session="${R}"></div>
-<script src="/messages.js"></script>
-<script>
+<script nonce="${NONCE}" src="/messages.js"></script>
+<script nonce="${NONCE}">
 window.IS_SIDEBAR = ${!editor}; window.IS_FULL_EDITOR = ${editor}; window.IS_SESSION_LIST_ONLY = false;
 const R = "${R}", NOW = Date.now();
 const SESSION = { id: R, summary: "Options", customTitle: "Options", lastModified: NOW,
@@ -169,7 +178,7 @@ window.acquireVsCodeApi = () => ({
   },
 });
 </script>
-<script type="module" src="/wv/index.js"></script>
+<script nonce="${NONCE}" type="module" src="/wv/index.js"></script>
 </body></html>`;
 
 const TYPES = {
@@ -267,7 +276,46 @@ export async function run(ctx) {
   const base = `http://127.0.0.1:${server.address().port}/`;
 
   const ev = (s) => ctx.evaluate(s);
+  // ctx.evaluate does not await promises.
+  const evAsync = async (s) =>
+    (
+      await ctx.cdp("Runtime.evaluate", {
+        expression: s,
+        awaitPromise: true,
+        returnByValue: true,
+      })
+    ).result.value;
   const J = (o) => JSON.stringify(o);
+  // The device pixels of box b (CSS px) within a few levels of color css (an
+  // rgb() string), counted on a capture decoded in the page, with the bitmap
+  // that tells one glyph from another.
+  const inkOf = async (b, css) => {
+    const png = (
+      await ctx.cdp("Page.captureScreenshot", {
+        format: "png",
+        clip: { x: b.l, y: b.t, width: b.w, height: b.h, scale: 1 },
+      })
+    ).data;
+    const rgb = css.match(/\d+/g).slice(0, 3).map(Number);
+    return evAsync(`(async () => {
+      const img = new Image();
+      img.src = "data:image/png;base64,${png}";
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = img.width;
+      c.height = img.height;
+      const g = c.getContext("2d");
+      g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height).data, want = ${J(rgb)};
+      let n = 0, bits = "";
+      for (let i = 0; i < d.length; i += 4) {
+        const on = [0, 1, 2].every((j) => Math.abs(d[i + j] - want[j]) < 48);
+        if (on) n++;
+        bits += on ? 1 : 0;
+      }
+      return { n, bits };
+    })()`);
+  };
   const until = async (expr, ms) => {
     for (let t = 0; t < ms; t += 50) {
       if (await ev(expr)) return true;
@@ -379,16 +427,15 @@ export async function run(ctx) {
     );
     await ctx.shot("find-options-sidebar");
 
-    // toggles: inside the input box, unchecked, glyphs from the codicon font.
+    // toggles: inside the input box, unchecked, each glyph a mask image.
     const t = await ev(`(() => {
       const f = __fo.box(__fo.field()), i = __fo.box(__fo.input());
       return ["c", "w", "r"].map((k) => {
-        const o = __fo.opt(k), b = __fo.box(o);
+        const o = __fo.opt(k), b = __fo.box(o), cs = getComputedStyle(o, "::before");
         return { k, label: o.getAttribute("aria-label"), role: o.getAttribute("role"),
-          checked: o.getAttribute("aria-checked"),
+          checked: o.getAttribute("aria-checked"), box: b, color: getComputedStyle(o).color,
           inside: b.l >= f.l && b.r <= f.r && b.t >= f.t && b.b <= f.b && b.l >= i.r - 0.5,
-          glyph: getComputedStyle(o, "::before").content.codePointAt(1).toString(16),
-          font: getComputedStyle(o, "::before").fontFamily };
+          content: cs.content, mask: cs.webkitMaskImage || cs.maskImage || "" };
       });
     })()`);
     check(
@@ -404,18 +451,37 @@ export async function run(ctx) {
       ),
       J(t),
     );
+    // The webview's policy refuses the bundle's codicon font face, a data:
+    // URI, so a glyph drawn in that font shows as a missing-glyph box.
+    const face = await evAsync(`(async () => {
+      try {
+        await document.fonts.load("16px codicon", String.fromCharCode(0xeab1));
+      } catch {}
+      return [...document.fonts].filter((f) => f.family === "codicon").map((f) => f.status);
+    })()`);
     check(
-      "toggles: the codicon glyphs (case-sensitive, whole-word, regex)",
-      J(t.map((x) => x.glyph)) === J(["eab1", "eb7e", "eb38"]) &&
-        t.every((x) => x.font === "codicon"),
-      J(t.map((x) => [x.glyph, x.font])),
+      "precondition: the policy keeps the codicon font face from loading",
+      J(face) === J(["error"]),
+      J(face),
     );
     check(
-      "toggles: the codicon font loads",
-      await until(
-        `[...document.fonts].some((f) => f.family === "codicon" && f.status === "loaded")`,
-        3000,
-      ),
+      "toggles: each glyph is a mask image of an SVG path, with no text to fall back to a missing glyph",
+      t.every(
+        (x) =>
+          x.content === '""' &&
+          x.mask.startsWith('url("data:image/svg+xml') &&
+          decodeURIComponent(x.mask).includes('<path d="M'),
+      ) && new Set(t.map((x) => x.mask)).size === 3,
+      J(t.map((x) => [x.content, x.mask.slice(0, 40)])),
+    );
+    // What each toggle paints: device pixels in the toggle's own color.
+    const inks = [];
+    for (const x of t) inks.push(await inkOf(x.box, x.color));
+    check(
+      "toggles: each glyph paints in the toggle's color, and the three differ",
+      inks.every((k) => k.n >= 20) &&
+        new Set(inks.map((k) => k.bits)).size === 3,
+      J(inks.map((k) => k.n)),
     );
     const tips = [];
     for (const k of ["c", "w", "r"]) {

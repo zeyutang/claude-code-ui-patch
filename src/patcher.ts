@@ -6538,18 +6538,18 @@ export function promptHistWebview(
 //           shows (the editor tab hides it), it keeps the top-right corner
 //   options Match Case, Match Whole Word, and Use Regular Expression, toggles
 //           inside the input as in the editor's find widget: its codicon
-//           glyphs (the bundle ships the font), a hover tip each, and no
-//           chords. A flip searches again from the active match, and the
-//           state persists in the webview's localStorage, as the editor keeps
-//           its own per workspace. Whole word is the editor's rule: each end
-//           of a match meets the haystack's edge, a non-word neighbor, or a
-//           non-word character of the match itself, word characters being
-//           Unicode letters, marks, digits, and connector punctuation. A
-//           regular expression runs with the u flag, one haystack line at a
-//           time unless the pattern names a line break itself (\n, \r, or
-//           \W, the editor's test), and skips empty matches, which paint
-//           nothing. An invalid one finds nothing and shows its error under
-//           the input
+//           glyphs (read out of the font the bundle ships, see
+//           codiconGlyphSvgs), a hover tip each, and no chords. A flip
+//           searches again from the active match, and the state persists in
+//           the webview's localStorage, as the editor keeps its own per
+//           workspace. Whole word is the editor's rule: each end of a match
+//           meets the haystack's edge, a non-word neighbor, or a non-word
+//           character of the match itself, word characters being Unicode
+//           letters, marks, digits, and connector punctuation. A regular
+//           expression runs with the u flag, one haystack line at a time
+//           unless the pattern names a line break itself (\n, \r, or \W, the
+//           editor's test), and skips empty matches, which paint nothing. An
+//           invalid one finds nothing and shows its error under the input
 //   scan    a TreeWalker over the transcript container (.messagesContainer_
 //           <hash>, baked at patch time like the scroll-dot button) collects
 //           visible text nodes into one haystack with per-node offsets;
@@ -6648,10 +6648,154 @@ const FINDBAR_CSS_ANCHOR_RE = /\.messagesContainer_[-\w]+/;
 // Set by native math's formula component alone (its scroll helpers only read
 // it), on a span it keeps while swapping raw source and KaTeX inside.
 const FINDBAR_MATH_ATTR = "data-redrawn";
-// Monaco's codicon font face, which the bundle's stylesheet declares (as a
-// data URI), and the option toggles draw their glyphs from.
-const FINDBAR_CODICON_RE =
-  /@font-face\{[^}]*font-family:\s*["']?codicon["']?\s*[;}]/;
+// The option toggles' codicons, by toggle: case-sensitive, whole-word, regex.
+const FINDBAR_GLYPHS: [string, number][] = [
+  ["c", 0xeab1],
+  ["w", 0xeb7e],
+  ["r", 0xeb38],
+];
+
+// The option toggles' glyphs as SVG documents, read out of the codicon font
+// that Monaco's stylesheet declares in the bundle's index.css, or null when
+// the face, a table, or a glyph is missing, or a glyph is composite. The face
+// is a data: URI, which the webview never loads, since its content security
+// policy allows fonts from the webview's own source alone, while data: images
+// are allowed. So each glyph's outline becomes an SVG path in the font's em
+// box (y flipped, the baseline where the font puts it, as its own rendering
+// would place the glyph), which the stylesheet paints as a mask. The patch
+// ships no glyphs of its own: each is derived from Claude Code's font on the
+// user's machine.
+function codiconGlyphSvgs(css: string): string[] | null {
+  let b64 = "";
+  for (const m of css.matchAll(/@font-face\{([^}]*)\}/g)) {
+    if (!/font-family:\s*["']?codicon["']?\s*(?:;|$)/.test(m[1])) continue;
+    b64 =
+      /url\(\s*["']?data:[^;,)]*;base64,([A-Za-z0-9+/=]+)/.exec(m[1])?.[1] ??
+      "";
+    break;
+  }
+  if (!b64) return null;
+  try {
+    const f = Buffer.from(b64, "base64");
+    const u16 = (o: number): number => f.readUInt16BE(o);
+    const i16 = (o: number): number => f.readInt16BE(o);
+    const u32 = (o: number): number => f.readUInt32BE(o);
+    const tab: Record<string, number> = {};
+    for (let i = 0, n = u16(4); i < n; i++) {
+      tab[f.toString("latin1", 12 + 16 * i, 16 + 16 * i)] = u32(20 + 16 * i);
+    }
+    const need = ["head", "hhea", "hmtx", "maxp", "cmap", "loca", "glyf"];
+    if (need.some((t) => tab[t] === undefined)) return null;
+    const longLoca = i16(tab.head + 50) === 1;
+    const asc = i16(tab.hhea + 4);
+    const desc = i16(tab.hhea + 6);
+    const nhm = u16(tab.hhea + 34);
+    const nglyphs = u16(tab.maxp + 4);
+    // The first format 4 subtable maps the BMP, the codicons' private use
+    // area included.
+    let cm = -1;
+    for (let i = 0, n = u16(tab.cmap + 2); i < n && cm < 0; i++) {
+      const st = tab.cmap + u32(tab.cmap + 8 + 8 * i);
+      if (u16(st) === 4) cm = st;
+    }
+    if (cm < 0) return null;
+    const segs = u16(cm + 6) / 2;
+    const glyphOf = (c: number): number => {
+      for (let s = 0; s < segs; s++) {
+        if (c > u16(cm + 14 + 2 * s)) continue;
+        const start = u16(cm + 16 + 2 * segs + 2 * s);
+        if (c < start) return 0;
+        const delta = i16(cm + 16 + 4 * segs + 2 * s);
+        const ro = cm + 16 + 6 * segs + 2 * s;
+        if (!u16(ro)) return (c + delta) & 0xffff;
+        const g = u16(ro + u16(ro) + 2 * (c - start));
+        return g ? (g + delta) & 0xffff : 0;
+      }
+      return 0;
+    };
+    const loca = (g: number): number =>
+      longLoca ? u32(tab.loca + 4 * g) : 2 * u16(tab.loca + 2 * g);
+    const num = (v: number): string => String(Math.round(v * 10) / 10);
+    const out: string[] = [];
+    for (const [, cp] of FINDBAR_GLYPHS) {
+      const g = glyphOf(cp);
+      if (!g || g >= nglyphs || loca(g + 1) <= loca(g)) return null;
+      let p = tab.glyf + loca(g);
+      const nc = i16(p);
+      if (nc <= 0) return null;
+      const ends: number[] = [];
+      for (let i = 0; i < nc; i++) ends.push(u16(p + 10 + 2 * i));
+      const np = ends[nc - 1] + 1;
+      p += 10 + 2 * nc;
+      p += 2 + u16(p); // the hinting instructions
+      const flags: number[] = [];
+      while (flags.length < np) {
+        const fl = f[p++];
+        flags.push(fl);
+        if (fl & 8) for (let r = f[p++]; r > 0; r--) flags.push(fl);
+      }
+      // x then y, each a byte (its sign in the flag) or a word, or repeated.
+      const coords = (short: number, same: number): number[] => {
+        const v: number[] = [];
+        let c = 0;
+        for (const fl of flags) {
+          if (fl & short) c += fl & same ? f[p++] : -f[p++];
+          else if (!(fl & same)) {
+            c += i16(p);
+            p += 2;
+          }
+          v.push(c);
+        }
+        return v;
+      };
+      const xs = coords(2, 16);
+      const ys = coords(4, 32);
+      if (p > f.length) return null; // byte reads past the end give undefined
+      // Each contour from an on-curve point, an implied one between two
+      // off-curve points, a virtual start for a contour with none.
+      let d = "";
+      for (let ci = 0, s = 0; ci < nc; s = ends[ci] + 1, ci++) {
+        const pt: number[][] = [];
+        for (let k = s; k <= ends[ci]; k++) {
+          pt.push([xs[k], asc - ys[k], flags[k] & 1]);
+        }
+        const on = pt.findIndex((q) => q[2]);
+        const seq =
+          on < 0
+            ? (() => {
+                const a = pt[pt.length - 1];
+                const m = [(a[0] + pt[0][0]) / 2, (a[1] + pt[0][1]) / 2, 1];
+                return [m, ...pt, m];
+              })()
+            : [...pt.slice(on), ...pt.slice(0, on), pt[on]];
+        const at = (q: number[]): string => num(q[0]) + " " + num(q[1]);
+        d += "M" + at(seq[0]);
+        let ctl: number[] | null = null;
+        for (let i = 1; i < seq.length; i++) {
+          const q = seq[i];
+          if (q[2]) {
+            d += ctl ? "Q" + at(ctl) + " " + at(q) : "L" + at(q);
+            ctl = null;
+          } else {
+            if (ctl) {
+              const m = [(ctl[0] + q[0]) / 2, (ctl[1] + q[1]) / 2];
+              d += "Q" + at(ctl) + " " + at(m);
+            }
+            ctl = q;
+          }
+        }
+        d += "Z";
+      }
+      const adv = u16(tab.hmtx + 4 * Math.min(g, nhm - 1));
+      out.push(
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${adv} ${asc - desc}"><path d="${d}"/></svg>`,
+      );
+    }
+    return out;
+  } catch {
+    return null; // a read past the end of a truncated or malformed font
+  }
+}
 
 interface FindChord {
   k: string; // KeyboardEvent.key, lowercased
@@ -8328,17 +8472,20 @@ function findBarSet(c: string, on: boolean): string {
 // findMatch theme tokens (the same yellow/orange the native find paints), and
 // the bar itself on the editorWidget/input tokens with the chat's own --app-*
 // variables as first choice, so it reads native in either surface and theme.
-// The option toggles take the inputOption tokens and the editor's codicon
-// glyphs from the font face the stylesheet declares (Monaco's), or their text
-// look-alikes on a stylesheet without one.
+// The option toggles take the inputOption tokens and the editor's codicons,
+// painted in the toggle's color through masks of the glyphs read out of the
+// bundle's codicon font (codiconGlyphSvgs), or text look-alikes when there is
+// no font to read.
 function findBarCssBuild(css: string): string | undefined {
   if (!FINDBAR_CSS_ANCHOR_RE.test(css)) return undefined;
   const ghost = "var(--app-ghost-button-hover-background,rgba(128,128,128,.2))";
-  const glyphs = FINDBAR_CODICON_RE.test(css)
-    ? ".ccup-find-opt::before{font:16px/1 codicon}" +
-      '.ccup-find-opt[data-opt=c]::before{content:"\\eab1"}' +
-      '.ccup-find-opt[data-opt=w]::before{content:"\\eb7e"}' +
-      '.ccup-find-opt[data-opt=r]::before{content:"\\eb38"}'
+  const svgs = codiconGlyphSvgs(css);
+  const glyphs = svgs
+    ? '.ccup-find-opt::before{content:"";width:16px;height:16px;background:currentColor;-webkit-mask-position:center;-webkit-mask-size:16px 16px;-webkit-mask-repeat:no-repeat}' +
+      FINDBAR_GLYPHS.map(
+        ([k], i) =>
+          `.ccup-find-opt[data-opt=${k}]::before{-webkit-mask-image:url("data:image/svg+xml,${encodeURIComponent(svgs[i])}")}`,
+      ).join("")
     : ".ccup-find-opt::before{font:600 11px/1 var(--vscode-font-family,system-ui)}" +
       '.ccup-find-opt[data-opt=c]::before{content:"Aa"}' +
       '.ccup-find-opt[data-opt=w]::before{content:"ab";text-decoration:underline}' +

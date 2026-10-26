@@ -6190,8 +6190,6 @@ const PROMPT_HIST_GAP = 40; // the row's 34px offset plus 6px of air
 // it keeps (most recently touched first).
 const PROMPT_HIST_STORE = "ccup-prompt-history-hidden";
 const PROMPT_HIST_STORE_CAP = 200;
-// The hide button's square, and so the number column's floor.
-const PROMPT_HIST_HIDE_PX = 24;
 // How far in from the list's right edge the delete button ends. The list's
 // overlay scrollbar, once hovered, covers the last 16px (VS Code 1.143 on
 // macOS), and the list's border and padding and the row's padding come to
@@ -6247,15 +6245,18 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-item${HOVER}{background:var(--app-list-hover-background)}` +
     ".ccup-hist-item[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
     ".ccup-hist-item:focus-visible,.ccup-hist-fold:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
-    `.ccup-hist-num{flex:none;min-width:max(var(--ccup-hist-w,1ch),${PROMPT_HIST_HIDE_PX}px);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-claude-orange,#d97757)}` +
+    // At least as wide as the hide button, an entry's line (2em at its
+    // line-height 2), in folds too, whose shorter line keeps the same column.
+    `.ccup-hist-num{flex:none;min-width:max(var(--ccup-hist-w,1ch),2em);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-claude-orange,#d97757)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-num{color:inherit;opacity:.75}" +
     ".ccup-hist-txt{flex:1 1 auto;min-width:0;height:2lh;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere}" +
     ".ccup-hist-nl{margin:0 .3em;color:var(--app-secondary-foreground);opacity:.7;font-family:var(--app-monospace-font-family,monospace);font-size:.85em}" +
-    // The number over the hide button in one column, the button on the second
-    // line's axis and flush right under the number (font:inherit, or the
-    // button's own UA font would size 1lh), shown with its entry's hover or focus.
+    // The number over the hide button in one column, the button one line
+    // square on the second line, as the delete button is, and flush right
+    // under the number (font:inherit, or the button's own UA font would size
+    // 1lh), shown with its entry's hover or focus.
     ".ccup-hist-lead{flex:none;display:flex;flex-direction:column}" +
-    `.ccup-hist-hide{flex:none;align-self:flex-end;display:flex;align-items:center;justify-content:center;width:${PROMPT_HIST_HIDE_PX}px;height:${PROMPT_HIST_HIDE_PX}px;margin:calc((1lh - ${PROMPT_HIST_HIDE_PX}px)/2) 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
+    `.ccup-hist-hide{flex:none;align-self:flex-end;display:flex;align-items:center;justify-content:center;width:1lh;height:1lh;margin:0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
     ".ccup-hist-hide svg{display:block;width:16px;height:16px}" +
     `.ccup-hist-item${HOVER} .ccup-hist-hide,.ccup-hist-item:focus-visible .ccup-hist-hide{visibility:visible}` +
     `.ccup-hist-hide${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +

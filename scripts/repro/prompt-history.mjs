@@ -25,9 +25,9 @@
 //   keys      Up/Down then Enter jump from the keyboard, and Escape closes and
 //             hands focus back to the input box with its caret where it was
 //   close     a click on the transcript closes it, and so does the button
-//   hide      an entry's hover button, under its number and clear of the
-//             list's right edge where the scrollbar draws, folds it away
-//             without a jump, a
+//   hide      an entry's hover button, one line square on the second line,
+//             under its number and clear of the list's right edge where the
+//             scrollbar draws, folds it away without a jump, a
 //             neighbor joins the same fold, which carries the dividers an
 //             entry does, the other numbers stay, the fold survives a reload
 //             (stored under the conversation's id), and a click on it brings
@@ -661,8 +661,8 @@ export async function run(ctx) {
       });
     const hideBtn = (i) =>
       `${PANE} .ccup-hist-item[data-i="${i}"] .ccup-hist-hide`;
-    // Hovers entry i, reads its hide button (visibility, box and icon size),
-    // optionally shoots it hovered, then clicks it.
+    // Hovers entry i, reads its hide button (visibility, box and icon size,
+    // the line it sits on), optionally shoots it hovered, then clicks it.
     const hideVia = async (i, shot) => {
       await ctx.evaluate(
         `(function(){var p=${q(PANE)},it=p.querySelector('.ccup-hist-item[data-i="${i}"]');` +
@@ -675,7 +675,8 @@ export async function run(ctx) {
           `it=b.closest(".ccup-hist-item"),n=it.querySelector(".ccup-hist-num").getBoundingClientRect(),` +
           `t=it.querySelector(".ccup-hist-txt").getBoundingClientRect(),w=it.getBoundingClientRect(),` +
           `p=${q(PANE)}.getBoundingClientRect();` +
-          `return{vis:getComputedStyle(b).visibility,box:r.width+"x"+r.height,icon:s.width+"x"+s.height,` +
+          `return{vis:getComputedStyle(b).visibility,w:r.width,h:r.height,lh:parseFloat(getComputedStyle(b).lineHeight),` +
+          `icon:s.width+"x"+s.height,line2:r.top-t.top,` +
           `under:r.top>=n.bottom-0.5,flush:Math.abs(r.right-n.right)<0.6,beforeText:r.right<=t.left+0.5,` +
           `inRow:r.bottom<=w.bottom+0.5,fromRight:Math.round(p.right-r.right)}})()`,
       );
@@ -707,8 +708,12 @@ export async function run(ctx) {
     const stH = await scrollTop();
     const hv = await hideVia(3, "hide-hover");
     check(
-      "hide: a 24px button with a 16px icon shows on hover",
-      hv.vis === "visible" && hv.box === "24x24" && hv.icon === "16x16",
+      "hide: a one-line square button with a 16px icon shows on hover, on the second line",
+      hv.vis === "visible" &&
+        Math.abs(hv.w - hv.lh) < 0.5 &&
+        Math.abs(hv.h - hv.lh) < 0.5 &&
+        hv.icon === "16x16" &&
+        Math.abs(hv.line2 - hv.lh) < 0.6,
       JSON.stringify(hv),
     );
     check(

@@ -10,6 +10,7 @@
   Always applied, no setting of its own.
 - Deleting a conversation from the session list no longer opens a dialog: click its delete button, then the "sure?" that takes the place of the row's buttons, and the conversation moves to the Trash.
 - The session list's buttons sit further in from the right edge, where the list's scrollbar no longer covers them.
+- The prompt history's hide button is one line tall, like the delete button on the last entry.
 
 ## 1.6.2
 

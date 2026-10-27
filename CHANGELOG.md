@@ -13,7 +13,8 @@
 - `chatFindBar` has Match Case, Match Whole Word, and Use Regular Expression toggles in its input, as the editor's find widget does, each with a hover tip, and they stay as you left them after a reload.
   An invalid regular expression shows its error under the input.
 - `chatFindBar` opens on the chat header and covers its New session button, which used to show past the bar's right edge.
-- The prompt history's hide button is one line tall, like the delete button on the last entry.
+- The prompt history's hide button is one line tall, like the delete button on the last entry, and sits closer to the entry's left edge and its text, which leaves the messages more of the list's width.
+  The list's icons grow and shrink with `chat.fontSize`, as its text does.
 - On macOS, with `chatInputCtrlUpDownToHistory` on, `Cmd`+`Ctrl`+`A` and `Cmd`+`Ctrl`+`E` move the caret to the very start and end of the message you are typing.
 
 ## 1.6.2

@@ -6171,20 +6171,23 @@ function jumpMsgSet(c: string, on: boolean): string {
 // clutters the outline. Each entry carries an eye-off button under its number,
 // on the number column's otherwise empty second line, shown on hover or
 // keyboard focus (Delete or Backspace does the same from the keyboard). The
-// right end, where it first sat, is where the list's own scrollbar draws, and
-// the number column is at least as wide as the button. A run of consecutive
-// hidden entries renders as one slim fold row in their place ("2 hidden" and
-// the range, e.g. 23-24, behind a chevron in the number column). A click on
-// the fold, or Enter on it, brings the run back. Visible entries keep their transcript numbers, and when the current
-// entry is hidden its fold carries the highlight. Headers carry no message id,
-// so an entry is named by its position and an FNV-1a hash of its text: a
-// rewound or edited transcript, where a position now holds another message,
-// never hides the wrong one. The marks persist per conversation in the
-// webview's localStorage (where Claude Code keeps its own UI flags), keyed by
-// the ?session= id the webview mirrors into its URL, the 200 most recently
-// touched conversations kept. A brand-new conversation has no id until its
-// first reply arrives, so marks made in that moment land under the URL's
-// previous id (or none) and fail to match once the id comes in.
+// right end, where it first sat, is where the list's own scrollbar draws. The
+// button leaves as little air to the row's left edge and to the text as below
+// it (the row's 2px padding), reaching into the gap the number keeps to the
+// text, since it shows only on hover. A run of consecutive hidden entries
+// renders as one slim fold row in their place ("2 hidden" and the range, e.g.
+// 23-24, behind a chevron in the number column). A click on the fold, or Enter
+// on it, brings the run back. Visible entries keep their transcript numbers,
+// and when the current entry is hidden its fold carries the highlight. Headers
+// carry no message id, so an entry is named by its position and an FNV-1a
+// hash of its text: a rewound or edited transcript, where a position now holds
+// another message, never hides the wrong one. The marks persist per
+// conversation in the webview's localStorage (where Claude Code keeps its own
+// UI flags), keyed by the ?session= id the webview mirrors into its URL, the
+// 200 most recently touched conversations kept. A brand-new conversation has
+// no id until its first reply arrives, so marks made in that moment land
+// under the URL's previous id (or none) and fail to match once the id comes
+// in.
 //
 // The last entry, and only the last, carries a delete button at its right end
 // once the last turn delete point is in (window.__ccupTurnRewind, see
@@ -6280,7 +6283,7 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-pane{box-sizing:border-box;position:absolute;right:0;bottom:calc(100% + ${PROMPT_HIST_GAP}px);z-index:22;width:max-content;min-width:min(${PROMPT_HIST_MIN_W}px,100%);max-width:100%;max-height:50vh;overflow-y:auto;overscroll-behavior:contain;margin:0;padding:4px;border:1px solid var(--app-input-border);border-radius:var(--corner-radius-large,8px);background:var(--app-menu-background);color:var(--app-primary-foreground);box-shadow:0 4px 12px var(--vscode-widget-shadow,#0000005c);font-family:var(--vscode-chat-font-family);font-size:var(--vscode-chat-font-size,13px);text-align:left;outline:none;animation:fadeIn .15s ease-out}` +
     // Entries and folds alike: the row box, its shape, and the dividers.
     ".ccup-hist-row{position:relative;border-radius:var(--app-list-border-radius,4px);cursor:pointer;outline:none}" +
-    ".ccup-hist-item{display:flex;align-items:baseline;gap:8px;padding:2px 8px;line-height:2}" +
+    ".ccup-hist-item{display:flex;align-items:baseline;gap:8px;padding:2px 8px 2px 2px;line-height:2}" +
     `.ccup-hist-row+.ccup-hist-row::before{content:"";position:absolute;top:0;left:8px;right:8px;height:1px;background:var(--app-input-border);pointer-events:none}` +
     `.ccup-hist-row[data-cur]::before,.ccup-hist-row[data-cur]+.ccup-hist-row::before,` +
     `.ccup-hist-row:focus-visible::before,.ccup-hist-row:focus-visible+.ccup-hist-row::before,` +
@@ -6289,26 +6292,31 @@ function promptHistBuild(c: string): string | undefined {
     ".ccup-hist-item[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
     ".ccup-hist-item:focus-visible,.ccup-hist-fold:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
     // At least as wide as the hide button, an entry's line (2em at its
-    // line-height 2), in folds too, whose shorter line keeps the same column.
-    `.ccup-hist-num{flex:none;min-width:max(var(--ccup-hist-w,1ch),2em);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-claude-orange,#d97757)}` +
+    // line-height 2), less the 6px it reaches into the gap, in folds too,
+    // whose shorter line keeps the same column.
+    `.ccup-hist-num{flex:none;min-width:max(var(--ccup-hist-w,1ch),2em - 6px);text-align:right;font-variant-numeric:tabular-nums;color:var(--app-claude-orange,#d97757)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-num{color:inherit;opacity:.75}" +
     ".ccup-hist-txt{flex:1 1 auto;min-width:0;height:2lh;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere}" +
     ".ccup-hist-nl{margin:0 .3em;color:var(--app-secondary-foreground);opacity:.7;font-family:var(--app-monospace-font-family,monospace);font-size:.85em}" +
     // The number over the hide button in one column, the button one line
-    // square on the second line, as the delete button is, and flush right
-    // under the number (font:inherit, or the button's own UA font would size
-    // 1lh), shown with its entry's hover or focus.
+    // square on the second line, as the delete button is (font:inherit, or
+    // the button's own UA font would size 1lh), shown with its entry's hover
+    // or focus. It reaches 6px past the column into the 8px gap, so with the
+    // row's 2px left padding it keeps the same 2px to the row's left edge and
+    // to the text as to the row's bottom, while the number keeps the full gap.
+    // Its icon is 1.25em of the list's text (about 16px at the default 13px),
+    // so it grows with chat.fontSize as the square does.
     ".ccup-hist-lead{flex:none;display:flex;flex-direction:column}" +
-    `.ccup-hist-hide{flex:none;align-self:flex-end;display:flex;align-items:center;justify-content:center;width:1lh;height:1lh;margin:0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
-    ".ccup-hist-hide svg{display:block;width:16px;height:16px}" +
+    `.ccup-hist-hide{flex:none;align-self:flex-end;display:flex;align-items:center;justify-content:center;width:1lh;height:1lh;margin:0 -6px 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
+    ".ccup-hist-hide svg{display:block;width:1.25em;height:1.25em}" +
     `.ccup-hist-item${HOVER} .ccup-hist-hide,.ccup-hist-item:focus-visible .ccup-hist-hide{visibility:visible}` +
     `.ccup-hist-hide${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-hide{color:inherit}" +
     // The last entry's delete button, one line square on the second line's
-    // axis (the entry is two lines tall), and the "sure?" chip an armed one
-    // shows over its own box.
+    // axis (the entry is two lines tall), its icon sized as the hide
+    // button's, and the "sure?" chip an armed one shows over its own box.
     `.ccup-hist-del{flex:none;align-self:flex-end;position:relative;display:flex;align-items:center;justify-content:center;width:1lh;height:1lh;margin:0 ${PROMPT_HIST_DEL_INSET - 13}px 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
-    ".ccup-hist-del svg{display:block;width:16px;height:16px}" +
+    ".ccup-hist-del svg{display:block;width:1.25em;height:1.25em}" +
     `.ccup-hist-item${HOVER} .ccup-hist-del,.ccup-hist-item:focus-visible .ccup-hist-del,.ccup-hist-del[data-arm]{visibility:visible}` +
     `.ccup-hist-del${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-del{color:inherit}" +
@@ -6316,10 +6324,11 @@ function promptHistBuild(c: string): string | undefined {
     ".ccup-hist-del[data-arm] svg{visibility:hidden}" +
     ".ccup-hist-del[data-arm] .ccup-hist-sure{display:block}" +
     ".ccup-hist-row[data-going]{opacity:.5;pointer-events:none}" +
-    // The fold standing in for a run of hidden entries: one slim muted row.
-    ".ccup-hist-fold{display:flex;align-items:center;gap:8px;padding:1px 8px;line-height:1.6;color:var(--app-secondary-foreground)}" +
+    // The fold standing in for a run of hidden entries: one slim muted row,
+    // its chevron (about 12px at the default 13px) scaling with the text too.
+    ".ccup-hist-fold{display:flex;align-items:center;gap:8px;padding:1px 8px 1px 2px;line-height:1.6;color:var(--app-secondary-foreground)}" +
     ".ccup-hist-fold .ccup-hist-num{color:inherit}" +
-    ".ccup-hist-fold .ccup-hist-num svg{display:inline-block;width:12px;height:12px;vertical-align:-1px}" +
+    ".ccup-hist-fold .ccup-hist-num svg{display:inline-block;width:.9em;height:.9em;vertical-align:-.08em}" +
     ".ccup-hist-fold-n,.ccup-hist-fold-r{font-size:.85em}" +
     ".ccup-hist-fold-r{color:var(--app-claude-orange,#d97757);font-variant-numeric:tabular-nums}" +
     `.ccup-hist-fold${HOVER}{background:var(--app-list-hover-background);color:var(--app-primary-foreground)}` +

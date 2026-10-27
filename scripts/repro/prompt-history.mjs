@@ -25,11 +25,15 @@
 //   keys      Up/Down then Enter jump from the keyboard, and Escape closes and
 //             hands focus back to the input box with its caret where it was
 //   close     a click on the transcript closes it, and so does the button
-//   hide      an entry's hover button, one line square on the second line,
+//   hide      an entry's hover button, one line square on the second line
+//             with an icon 1.25em of the text (the fold's chevron .9em),
 //             under its number and clear of the list's right edge where the
-//             scrollbar draws, folds it away without a jump, a
-//             neighbor joins the same fold, which carries the dividers an
-//             entry does, the other numbers stay, the fold survives a reload
+//             scrollbar draws, as close to the row's left edge and the text
+//             as to its bottom (2px) while the number keeps 8px to the text,
+//             at 13px and at 15.25px chat text, folds it away without a jump,
+//             a neighbor joins the same fold, which carries the dividers an
+//             entry does and keeps the entries' columns, the other numbers
+//             stay, the fold survives a reload
 //             (stored under the conversation's id), and a click on it brings
 //             the run back. From the keyboard, Delete hides and Enter on the
 //             fold restores, and a hidden current entry hands its highlight
@@ -661,25 +665,48 @@ export async function run(ctx) {
       });
     const hideBtn = (i) =>
       `${PANE} .ccup-hist-item[data-i="${i}"] .ccup-hist-hide`;
-    // Hovers entry i, reads its hide button (visibility, box and icon size,
-    // the line it sits on), optionally shoots it hovered, then clicks it.
-    const hideVia = async (i, shot) => {
+    // Hovers entry i and reads its hide button: visibility, box and icon
+    // size, the line it sits on, its air to the row's left and bottom edges
+    // and to the text, and how far the number's digits end from the text.
+    const hoverHide = async (i) => {
       await ctx.evaluate(
         `(function(){var p=${q(PANE)},it=p.querySelector('.ccup-hist-item[data-i="${i}"]');` +
           `p.scrollTop=it.offsetTop-(p.clientHeight-it.offsetHeight)/2})()`,
       );
       await moveTo(center(await entryBox(i)));
       await ctx.sleep(60);
-      const b = await json(
+      return json(
         `(function(){var b=${q(hideBtn(i))},r=b.getBoundingClientRect(),s=b.querySelector("svg").getBoundingClientRect(),` +
-          `it=b.closest(".ccup-hist-item"),n=it.querySelector(".ccup-hist-num").getBoundingClientRect(),` +
+          `it=b.closest(".ccup-hist-item"),n=it.querySelector(".ccup-hist-num"),nr=n.getBoundingClientRect(),` +
           `t=it.querySelector(".ccup-hist-txt").getBoundingClientRect(),w=it.getBoundingClientRect(),` +
-          `p=${q(PANE)}.getBoundingClientRect();` +
+          `p=${q(PANE)}.getBoundingClientRect(),g=document.createRange();g.selectNodeContents(n);var d=g.getBoundingClientRect();` +
           `return{vis:getComputedStyle(b).visibility,w:r.width,h:r.height,lh:parseFloat(getComputedStyle(b).lineHeight),` +
-          `icon:s.width+"x"+s.height,line2:r.top-t.top,` +
-          `under:r.top>=n.bottom-0.5,flush:Math.abs(r.right-n.right)<0.6,beforeText:r.right<=t.left+0.5,` +
-          `inRow:r.bottom<=w.bottom+0.5,fromRight:Math.round(p.right-r.right)}})()`,
+          `fs:parseFloat(getComputedStyle(b).fontSize),iw:s.width,ih:s.height,line2:r.top-t.top,` +
+          `under:r.top>=nr.bottom-0.5,beforeText:r.right<=t.left+0.5,` +
+          `inRow:r.bottom<=w.bottom+0.5,fromRight:Math.round(p.right-r.right),` +
+          `left:+(r.left-w.left).toFixed(2),bottom:+(w.bottom-r.bottom).toFixed(2),toText:+(t.left-r.right).toFixed(2),` +
+          `numToText:+(t.left-d.right).toFixed(2),textX:+(t.left-w.left).toFixed(2)}})()`,
       );
+    };
+    // The square keeps the 2px it has below it (the row's padding) to the
+    // row's left edge and to the text too, while the number's digits keep
+    // the row's full 8px gap to the text.
+    const airOk = (b) =>
+      b.under &&
+      b.beforeText &&
+      b.inRow &&
+      b.fromRight > 100 &&
+      Math.abs(b.bottom - 2) < 0.6 &&
+      Math.abs(b.left - b.bottom) < 0.6 &&
+      Math.abs(b.toText - b.bottom) < 0.6 &&
+      Math.abs(b.numToText - 8) < 0.6;
+    // The icon is 1.25em of the list's text, whatever its size.
+    const iconOk = (b) =>
+      Math.abs(b.iw - 1.25 * b.fs) < 0.05 &&
+      Math.abs(b.ih - 1.25 * b.fs) < 0.05;
+    // Hovers entry i, optionally shoots its hide button hovered, then clicks it.
+    const hideVia = async (i, shot) => {
+      const b = await hoverHide(i);
       if (shot) {
         await moveTo(center(await rect(hideBtn(i))));
         await ctx.sleep(60);
@@ -708,17 +735,17 @@ export async function run(ctx) {
     const stH = await scrollTop();
     const hv = await hideVia(3, "hide-hover");
     check(
-      "hide: a one-line square button with a 16px icon shows on hover, on the second line",
+      "hide: a one-line square button with a 1.25em icon shows on hover, on the second line",
       hv.vis === "visible" &&
         Math.abs(hv.w - hv.lh) < 0.5 &&
         Math.abs(hv.h - hv.lh) < 0.5 &&
-        hv.icon === "16x16" &&
+        iconOk(hv) &&
         Math.abs(hv.line2 - hv.lh) < 0.6,
       JSON.stringify(hv),
     );
     check(
-      "hide: it sits under the number, flush right, before the text, clear of the scrollbar edge",
-      hv.under && hv.flush && hv.beforeText && hv.inRow && hv.fromRight > 100,
+      "hide: under the number, 2px from the row's left edge and the text as from its bottom, the number 8px from the text, clear of the scrollbar edge",
+      airOk(hv),
       JSON.stringify(hv),
     );
     let fs = await folds();
@@ -757,6 +784,24 @@ export async function run(ctx) {
       "hide: the fold has a divider above and below, like an entry",
       fd.above === '"" 1px' && fd.below === '"" 1px',
       JSON.stringify(fd),
+    );
+    // The fold keeps the entries' columns: its chevron, .9em of the text, ends
+    // where the next entry's number does, and its label starts where that
+    // entry's text does.
+    const fa = await json(
+      `(function(){var g=${q(`${PANE} .ccup-hist-fold`)},e=g.nextElementSibling,r=document.createRange();` +
+        `r.selectNodeContents(e.querySelector(".ccup-hist-num"));` +
+        `var c=g.querySelector(".ccup-hist-num svg").getBoundingClientRect(),n=r.getBoundingClientRect(),` +
+        `l=g.querySelector(".ccup-hist-fold-n").getBoundingClientRect(),t=e.querySelector(".ccup-hist-txt").getBoundingClientRect();` +
+        `return{chevron:+(c.right-n.right).toFixed(2),label:+(l.left-t.left).toFixed(2),` +
+        `size:+(c.width/parseFloat(getComputedStyle(g).fontSize)).toFixed(3)}})()`,
+    );
+    check(
+      "hide: the fold's .9em chevron ends with the numbers, its label starts with the text",
+      Math.abs(fa.chevron) < 0.6 &&
+        Math.abs(fa.label) < 0.6 &&
+        Math.abs(fa.size - 0.9) < 0.005,
+      JSON.stringify(fa),
     );
     const nums = await json(
       `[...document.querySelectorAll("${PANE} .ccup-hist-item .ccup-hist-num")]` +
@@ -850,6 +895,26 @@ export async function run(ctx) {
     check(
       "hide: and comes back current",
       (await curEntry()) === PROMPTS.length - 1,
+    );
+    // At a larger chat font (15.25px) the square grows with the line and its
+    // icon with the text, and the air stays the same.
+    await ctx.evaluate(
+      `document.documentElement.style.setProperty("--vscode-chat-font-size","15.25px")`,
+    );
+    await ctx.sleep(60);
+    const hl = await hoverHide(5);
+    await ctx.evaluate(
+      `document.documentElement.style.removeProperty("--vscode-chat-font-size")`,
+    );
+    check(
+      "hide: at a 15.25px chat font the square grows to the 30.5px line, its icon to 1.25em, same air",
+      hl.vis === "visible" &&
+        Math.abs(hl.lh - 30.5) < 0.1 &&
+        Math.abs(hl.w - hl.lh) < 0.5 &&
+        Math.abs(hl.h - hl.lh) < 0.5 &&
+        iconOk(hl) &&
+        airOk(hl),
+      JSON.stringify(hl),
     );
     await ctx.evaluate(`localStorage.removeItem("ccup-prompt-history-hidden")`);
     await key("Escape", "Escape", 27);

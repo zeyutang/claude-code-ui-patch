@@ -3,7 +3,8 @@
 // six prompts, with real mouse events. The checks assert:
 //   uuid      every sticky header carries its message's data-ccup-uuid
 //   button    the last entry, and no other, has a delete button: hidden until
-//             the row is hovered, one line square on the second line's axis,
+//             the row is hovered, one line square on the second line's axis
+//             with an icon 1.25em of the text (so it follows chat.fontSize),
 //             after the text, inside the row, and 20px in from the list's
 //             right edge, clear of the overlay scrollbar even hovered
 //   arm       a first click shows "sure?" in bold red over the button,
@@ -346,10 +347,11 @@ export async function run(ctx) {
       `(function(){var b=${q(`${row} .ccup-hist-del`)};if(!b)return null;` +
         `var r=b.getBoundingClientRect(),it=b.closest(".ccup-hist-item"),w=it.getBoundingClientRect(),` +
         `t=it.querySelector(".ccup-hist-txt"),tr=t.getBoundingClientRect(),cs=getComputedStyle(it),` +
-        `p=${q(PANE)}.getBoundingClientRect(),s=b.querySelector("svg").getBoundingClientRect();` +
+        `p=${q(PANE)}.getBoundingClientRect(),s=b.querySelector("svg").getBoundingClientRect(),` +
+        `fs=parseFloat(getComputedStyle(b).fontSize);` +
         `return{vis:getComputedStyle(b).visibility,w:r.width,h:r.height,lh:parseFloat(getComputedStyle(t).lineHeight),` +
         `top:r.top-tr.top,afterText:r.left>=tr.right-0.5,inRow:r.right<=w.right-parseFloat(cs.paddingRight)+0.5,` +
-        `fromRight:p.right-r.right,icon:s.width+"x"+s.height}})()`,
+        `fromRight:p.right-r.right,icon:Math.round(s.width/fs*1e3)/1e3+"x"+Math.round(s.height/fs*1e3)/1e3}})()`,
     );
   };
 
@@ -409,9 +411,12 @@ export async function run(ctx) {
     const m = await measure(PROMPTS.length - 1);
     check("button: shows on hover", m?.vis === "visible", m?.vis);
     check(
-      "button: one line square",
-      m && Math.abs(m.w - m.lh) < 0.6 && Math.abs(m.h - m.lh) < 0.6,
-      m && `${m.w}x${m.h}, line ${m.lh}`,
+      "button: one line square, its icon 1.25em of the text",
+      m &&
+        Math.abs(m.w - m.lh) < 0.6 &&
+        Math.abs(m.h - m.lh) < 0.6 &&
+        m.icon === "1.25x1.25",
+      m && `${m.w}x${m.h}, line ${m.lh}, icon ${m.icon}em`,
     );
     check(
       "button: on the second line, after the text, inside the row",

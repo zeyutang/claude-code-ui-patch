@@ -451,6 +451,14 @@ export async function run(ctx) {
       ),
       J(t),
     );
+    // The editor's 20px squares 2px apart read cramped here.
+    const gaps = t.slice(1).map((x, i) => x.box.l - t[i].box.r);
+    check(
+      "toggles: 22px wide and 4px apart, roomier than the editor's 20px and 2px",
+      t.every((x) => Math.abs(x.box.w - 22) < 0.5) &&
+        gaps.every((g) => Math.abs(g - 4) < 0.5),
+      `widths ${J(t.map((x) => x.box.w))}, gaps ${J(gaps)}`,
+    );
     // The webview's policy refuses the bundle's codicon font face, a data:
     // URI, so a glyph drawn in that font shows as a missing-glyph box.
     const face = await evAsync(`(async () => {

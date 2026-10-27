@@ -8539,7 +8539,7 @@ function findBarCssBuild(css: string): string | undefined {
     "::highlight(ccup-find-active){background-color:var(--vscode-editor-findMatchBackground,rgba(237,148,30,.8));color:var(--vscode-editor-foreground,inherit)}" +
     ".ccup-find-bar{position:fixed;top:8px;right:16px;z-index:1200;display:none;align-items:center;gap:4px;max-width:calc(100vw - 20px);padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--app-input-border,#454545));border-radius:6px;background:var(--vscode-editorWidget-background,var(--app-input-background,#252526));color:var(--vscode-editorWidget-foreground,var(--app-primary-foreground,#cccccc));box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36));font-size:12px}" +
     ".ccup-find-bar[data-open]{display:flex}" +
-    ".ccup-find-bar .ccup-find-field{flex:1 1 auto;display:flex;align-items:center;min-width:120px;min-height:24px;box-sizing:border-box;padding-right:2px;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));border-radius:4px;background:var(--app-input-background,var(--vscode-input-background,#3c3c3c))}" +
+    ".ccup-find-bar .ccup-find-field{flex:1 1 auto;display:flex;align-items:center;min-width:132px;min-height:24px;box-sizing:border-box;padding-right:2px;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));border-radius:4px;background:var(--app-input-background,var(--vscode-input-background,#3c3c3c))}" +
     ".ccup-find-bar .ccup-find-field:focus-within{border-color:var(--app-input-active-border,var(--vscode-focusBorder,#007fd4))}" +
     ".ccup-find-bar[data-err] .ccup-find-field{border-color:var(--vscode-inputValidation-errorBorder,#be1100)}" +
     ".ccup-find-bar input{flex:1 1 auto;width:200px;min-width:0;box-sizing:border-box;margin:0;border:none;background:transparent;color:var(--app-input-foreground,var(--vscode-input-foreground,#cccccc));padding:2px 6px;font-size:calc(var(--vscode-chat-font-size,13px)*.9);font-family:inherit;outline:none}" +
@@ -8553,7 +8553,10 @@ function findBarCssBuild(css: string): string | undefined {
     `.ccup-find-bar button[data-off]${HOVER}{background:transparent}` +
     ".ccup-find-bar svg{display:block;width:16px;height:16px}" +
     ".ccup-find-bar .ccup-find-sep{margin-left:4px}" +
-    ".ccup-find-bar .ccup-find-opt{flex:none;width:20px;height:20px;margin-left:2px;box-sizing:border-box;border:1px solid transparent;border-radius:3px}" +
+    // The toggles a little wider and further apart than the editor's 20px
+    // squares 2px apart, so a full-width glyph (whole word's bracket) keeps
+    // some room inside its checked box and the three read apart.
+    ".ccup-find-bar .ccup-find-opt{flex:none;width:22px;height:20px;margin-left:4px;box-sizing:border-box;border:1px solid transparent;border-radius:3px}" +
     `.ccup-find-bar .ccup-find-opt${HOVER}{background:var(--vscode-inputOption-hoverBackground,${ghost})}` +
     ".ccup-find-bar .ccup-find-opt[aria-checked=true]{border-color:var(--vscode-inputOption-activeBorder,#007acc);background:var(--vscode-inputOption-activeBackground,rgba(0,122,204,.4));color:var(--vscode-inputOption-activeForeground,#ffffff)}" +
     glyphs +

@@ -19,6 +19,7 @@
 - On Claude Code 2.1.286 and later, each row of the Bookmarks pane has a notepad button that adds a note of your own, which the row then shows in place of the response's opening line.
   `Enter` or clicking away keeps the note, `Escape` leaves it as it was, and emptying the box removes it.
   Always applied, no setting.
+- With `chatScrollToBottomDot` on, a permission or question prompt that arrives while you are reading further up the chat leaves you there again on Claude Code 2.1.302 and later, instead of scrolling you down to it.
 
 ## 1.6.2
 

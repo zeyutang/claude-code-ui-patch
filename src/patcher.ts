@@ -6153,6 +6153,17 @@ function dimCss(chat: string, preq: string | undefined): string {
 // helper and container ref (in a lookahead, as before). Each insertion is
 // self-delimiting (marker, identifier, `.current`, then the condition's own
 // closing paren), so stripping them restores the stock bytes.
+//
+// 2.1.302 moved the settle-glide into a hook of its own, a scrollend listener
+// that re-aims while the settle ref holds a start time, and the fall-through
+// into a decision over {atBottom, scrolledAway, settlingSince, now}, which
+// scrolls nowhere for a view scrolled away, nor for one away from the bottom
+// with no glide under way. The two branches kept their shape, so the same
+// conjuncts guard them, and a guarded view away from the bottom stays put.
+// The same release put a call into the "first messages arrived" branch,
+// between its helper call and its atBottom write (a refresh of the math
+// typesetting near the view), so the lookahead reads that branch with any
+// calls there.
 const PERM_YANK_MARKER = "/*ccup:permYankGuard*/";
 // Condition and smooth flag: brace- and semicolon-free spans, which bounds the
 // greedy run to the one statement and lets the condition carry its own parens.
@@ -6188,6 +6199,9 @@ const PERM_YANK_LEGACY_RE = new RegExp(
     PERM_YANK_SMOOTH +
     String.raw`\);return\}`,
 );
+// The calls the "first messages arrived" branch may make between its helper
+// call and its atBottom write (2.1.302 added one).
+const PERM_YANK_SETTLE_MORE = String.raw`(?:[^;{}]*?,)?`;
 // The 2.1.275 form: the answered branch (captures: 1=its head through the
 // condition, 3=away ref, 4=settle ref, 5=helper, 6=container ref), running on
 // into the pending branch's head (2 ends at its condition), then that branch's
@@ -6198,7 +6212,9 @@ const PERM_YANK_SETTLE_NATIVE_RE = new RegExp(
   String.raw`(if\([^{};]*)` +
     String.raw`(\)\{([\w$]+)\.current=!1,([\w$]+)\.current=null,([\w$]+)\(([\w$]+)\);return\}if\([^{};]*)` +
     String.raw`(\)\{if\(\3\.current=!1,[^{}]*\)\{\4\.current=Date\.now\(\),\5\(\6,!0\);return\}\})` +
-    String.raw`(?=if\([^{}]*\)\{\3\.current=!1,\4\.current=null,\5\(\6\),([\w$]+)\.current=!0;return\})`,
+    String.raw`(?=if\([^{}]*\)\{\3\.current=!1,\4\.current=null,\5\(\6\),` +
+    PERM_YANK_SETTLE_MORE +
+    String.raw`([\w$]+)\.current=!0;return\})`,
 );
 const PERM_YANK_SETTLE_GUARD = String.raw`&&\/\*ccup:permYankGuard\*\/`;
 // Both conditions guarded by the same atBottom ref (captures: 1=atBottom,
@@ -6209,7 +6225,9 @@ const PERM_YANK_SETTLE_GUARDED_RE = new RegExp(
     String.raw`([\w$]+)\.current\)\{([\w$]+)\.current=!1,([\w$]+)\.current=null,([\w$]+)\(([\w$]+)\);return\}if\([^{};]*` +
     PERM_YANK_SETTLE_GUARD +
     String.raw`\1\.current\)\{if\(\2\.current=!1,[^{}]*\)\{\3\.current=Date\.now\(\),\4\(\5,!0\);return\}\}` +
-    String.raw`(?=if\([^{}]*\)\{\2\.current=!1,\3\.current=null,\4\(\5\),\1\.current=!0;return\})`,
+    String.raw`(?=if\([^{}]*\)\{\2\.current=!1,\3\.current=null,\4\(\5\),` +
+    PERM_YANK_SETTLE_MORE +
+    String.raw`\1\.current=!0;return\})`,
 );
 // One inserted conjunct, whichever condition it sits in.
 const PERM_YANK_SETTLE_FRAG_RE = new RegExp(

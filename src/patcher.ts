@@ -3705,6 +3705,561 @@ export function turnRewindHost(host: string, web: string): string | null {
 export const turnRewindScrub = ccupTurnScrub;
 
 // ---------------------------------------------------------------------------
+// Bookmark notes (always on, two halves): every row of the Bookmarks pane
+// (Claude Code 2.1.286 on) gets a notepad button after its time, and a click
+// on it opens a one-line box over the row for a note of the user's own. A
+// saved note stands in for the response's opening line in that row, whose
+// button then stays shown, and emptying the box drops the note. Enter or
+// leaving the box saves, and Escape keeps the note as it was.
+//
+// A bookmark is a record {uuid, addedAt, writtenAt?} in its session's file
+// under the extension's global storage (session-bookmarks/<id>.json), read
+// and written through get_session_bookmarks and update_session_bookmark, so
+// it follows the session into every panel and window. Both bundles parse each
+// record with one zod object schema, which drops any key it does not name, so
+// a note rides in the record itself once both schemas name it: ccupNote, an
+// optional string. Only the box caps its length, so no note can make its
+// bookmark invalid (a record that fails the schema is dropped, and the next
+// write deletes it). A note then travels with the native requests and leaves
+// with its bookmark, and a restored bundle ignores it until that session's
+// next bookmark write drops it.
+//
+// The webview half (bookmarkNote) is three fragments in webview/index.js:
+//   schema  the record schema's ccupNote field
+//   text    the row's text, which reads the note first
+//   btn     the button after the row's last child, on the bundle's own jsx
+//           factory, with the helper on window.__ccupBookmarkNote that styles
+//           it, opens the box, and saves
+// The save repeats the native update's steps (the list shows the record at
+// once, the host's answer replaces it unless the store's revision has moved
+// on, a failure rereads the host's list) through the bundle's own session id,
+// store and list functions, read off that native update, but sends none of
+// its analytics, which would count each note as a bookmark added. A host that
+// answers without the note (its bundle not patched yet) gets the user a
+// reload notice.
+// The host half (bookmarkNoteHost) is one fragment in extension.js:
+//   schema  the record schema's ccupNote field
+//
+// The halves are all or nothing across the two files, as for session delete,
+// and every site is found by structure (src/derive.ts). Each insertion is
+// wrapped in /*ccup:bnote:<site>*/.../*ccup:bnoteEnd*/, so stripping the
+// fragments restores the stock bytes.
+// ---------------------------------------------------------------------------
+const BNOTE_END = "/*ccup:bnoteEnd*/";
+const BNOTE_SCHEMA = "/*ccup:bnote:schema*/";
+const BNOTE_TEXT = "/*ccup:bnote:text*/";
+const BNOTE_BTN = "/*ccup:bnote:btn*/";
+const BNOTE_FRAG_RE = /\/\*ccup:bnote:[-\w]+\*\/[\s\S]*?\/\*ccup:bnoteEnd\*\//g;
+const BNOTE_WEBVIEW_FILE = "webview/index.js";
+const BNOTE_HOST_FILE = "extension.js";
+const bnoteEdit = (marker: string, e: Edit): Edit => ({
+  pos: e.pos,
+  text: `${marker}${e.text}${BNOTE_END}`,
+});
+const bnoteStrip = (c: string): string => c.replace(BNOTE_FRAG_RE, "");
+// The record's note field, and the box's length limit.
+const BNOTE_FIELD = "ccupNote";
+const BNOTE_MAX = 200;
+// How far ahead of its token the pane's function and the native update may
+// start, and how far ahead of its addedAt key the record schema's call.
+const BNOTE_FN_REACH = 8000;
+const BNOTE_SCHEMA_REACH = 400;
+const BNOTE_HELPER_PROP = "__ccupBookmarkNote";
+const BNOTE_RELOAD_NOTE = "Reload the window to start using bookmark notes.";
+// A notepad bound by three rings, in the 24-unit outline style of the pane's
+// own bookmark icons.
+const BNOTE_PAD_D =
+  "M7.5 4.5h9a2.25 2.25 0 0 1 2.25 2.25v12a2.25 2.25 0 0 1-2.25 2.25h-9a2.25 2.25 0 0 1-2.25-2.25v-12A2.25 2.25 0 0 1 7.5 4.5ZM9 3v3m3-3v3m3-3v3M8.25 10.5h7.5m-7.5 3h7.5m-7.5 3h4.5";
+
+// The helper's sheet. The button hides until its row is hovered or holds
+// keyboard focus, and stays shown on a row with a note. Its hover square is
+// the pane's icon buttons' own, with the class doubled to outrank the
+// selected row's rule, which paints every span in that row. The box covers
+// the whole row and starts its text where the row's does (12px in, at the
+// row text's 13px), its border the focus outline the list's own module
+// draws, or VS Code's focus border where a theme leaves that unset.
+function bnoteCss(): string {
+  return (
+    ".ccup-bnote-btn{display:flex;flex:none;align-self:center;align-items:center;justify-content:center;width:20px;height:20px;margin:-2px -4px -2px -6px;border-radius:4px;color:var(--app-secondary-foreground);cursor:pointer;opacity:0}" +
+    `${HOVER}>.ccup-bnote-btn,:focus-visible>.ccup-bnote-btn,.ccup-bnote-btn:focus-visible,.ccup-bnote-btn[data-ccup-bnote-on]{opacity:1}` +
+    `.ccup-bnote-btn.ccup-bnote-btn${HOVER},.ccup-bnote-btn.ccup-bnote-btn:focus-visible{background-color:var(--app-ghost-button-hover-background);color:var(--app-primary-foreground);outline:none}` +
+    ".ccup-bnote-btn>svg{display:block;width:14px;height:14px}" +
+    "li:has(>.ccup-bnote-input){position:relative}" +
+    ".ccup-bnote-input{position:absolute;inset:0;z-index:1;box-sizing:border-box;width:100%;height:100%;margin:0;padding:0 11px;border:1px solid var(--app-input-active-border,var(--vscode-focusBorder));border-radius:0;outline:none;background:var(--app-input-background);color:var(--app-input-foreground);font:inherit;font-size:13px}" +
+    ".ccup-bnote-input::placeholder{color:var(--app-input-placeholder-foreground)}"
+  );
+}
+
+// The notes' helper, compiled into the webview bundle by toString, so it may
+// use only its parameters and the page's globals (the DOM through the
+// any-typed globalThis). sidOf, storeOf and norm are the bundle's own session
+// id, per-session store and record list functions (see bnoteSaveFind).
+// edit(el, session, bookmark) opens the box over the row holding `el`, or
+// focuses the one already open there.
+function ccupBookmarkNoteWeb(
+  css: string,
+  sidOf: (s: any) => unknown,
+  storeOf: (id: unknown) => any,
+  norm: (list: unknown) => any[],
+  field: string,
+  max: number,
+  reloadNote: string,
+): { edit(el: any, s: any, bm: any): void } {
+  const g = globalThis as Record<string, any>;
+  try {
+    const sheet = g.document.createElement("style");
+    sheet.textContent = css;
+    g.document.head.appendChild(sheet);
+  } catch {
+    // no sheet: the button shows unstyled and the box opens below the row
+  }
+  const say = (s: any, m: string): void => {
+    try {
+      void s.showNotification(m, "warning");
+    } catch {
+      // no host to tell
+    }
+  };
+  // One record through the native update's steps, without its analytics.
+  const save = (s: any, bm: any, note: string): void => {
+    const id = sidOf(s);
+    const host = s.bookmarkHost?.();
+    if (id === undefined || host === undefined) return;
+    const rec = { ...bm };
+    delete rec[field];
+    if (note) rec[field] = note;
+    const st = storeOf(id);
+    const before = st.list.value.bookmarks;
+    st.list.value = {
+      ...st.list.value,
+      bookmarks: norm([...before.filter((b: any) => b.uuid !== bm.uuid), rec]),
+    };
+    const rev = ++st.revision;
+    const settle = (list: unknown): void => {
+      if (st.revision === rev)
+        st.list.value = { bookmarks: norm(list), loaded: true };
+    };
+    Promise.resolve()
+      .then(() => host.updateSessionBookmark(id, bm.uuid, rec))
+      .then(
+        (list: unknown) => {
+          settle(list);
+          // A host bundle without the field keeps the bookmark, not the note.
+          const kept = norm(list).find((b: any) => b.uuid === bm.uuid);
+          if (note && kept && kept[field] !== note) say(s, reloadNote);
+        },
+        (e: any) => {
+          say(s, `Could not save the note: ${e?.message ?? String(e)}`);
+          return Promise.resolve()
+            .then(() => host.getSessionBookmarks(id))
+            .then(settle, () => settle(before));
+        },
+      )
+      .catch(() => {});
+  };
+  const edit = (el: any, s: any, bm: any): void => {
+    try {
+      const row = el?.closest?.("button");
+      const li = row?.parentElement;
+      if (!li || typeof bm?.uuid !== "string") return;
+      const open = li.querySelector(":scope>.ccup-bnote-input");
+      if (open) {
+        open.focus();
+        return;
+      }
+      const old = typeof bm[field] === "string" ? bm[field] : "";
+      const box = g.document.createElement("input");
+      box.type = "text";
+      box.className = "ccup-bnote-input";
+      box.maxLength = max;
+      box.value = old;
+      box.placeholder = "Add a note";
+      box.setAttribute("aria-label", "Bookmark note");
+      let done = false;
+      const finish = (keep: boolean, back: boolean): void => {
+        if (done) return;
+        done = true;
+        const note = String(box.value).replace(/\s+/g, " ").trim();
+        box.remove();
+        if (keep && note !== old) save(s, bm, note);
+        if (back) (el.isConnected ? el : row).focus?.();
+      };
+      // The box is no React element, but its keys still reach the pane's own
+      // handler, whose Escape closes the pane. The two keys the box answers
+      // stop here, and the rest go on to VS Code, which handles copy, paste
+      // and undo.
+      box.addEventListener("keydown", (e: any) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key !== "Enter" && e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopPropagation();
+        finish(e.key === "Enter", true);
+      });
+      box.addEventListener("blur", () => finish(true, false));
+      li.appendChild(box);
+      box.focus();
+      box.select();
+    } catch {
+      // an edit never breaks the pane
+    }
+  };
+  return { edit };
+}
+
+// `<f>()` with `<f>` a plain identifier: its name, else null.
+function bnoteBareCall(n: N | null | undefined): string | null {
+  return n?.type === "CallExpression" && n.arguments.length === 0
+    ? idName(n.callee)
+    : null;
+}
+const bnoteIsCall = (n: N): boolean => n.type === "CallExpression";
+const bnoteEscape = (name: string): string => name.replace(/\$/g, "\\$");
+
+// The bookmark record schema, the one call
+// `<obj>({uuid:<U>,writtenAt:<num>().optional(),addedAt:<num>()})` assigned to
+// a name whose `.safeParse(` the bundle calls, and the insertion naming
+// ccupNote in it, built on the string constructor of U's own
+// `<U>=<str>().min(1).max(<n>)`. Null when anything differs, or when the
+// schema names ccupNote already.
+function bnoteSchemaFind(c: string): { unit: N; edit: Edit } | null {
+  const found: { call: N; obj: N; uuid: string }[] = [];
+  for (
+    let i = c.indexOf("addedAt:");
+    i >= 0;
+    i = c.indexOf("addedAt:", i + 1)
+  ) {
+    const open = c.lastIndexOf("({", i);
+    if (open < 0 || i - open > BNOTE_SCHEMA_REACH) continue;
+    let s = open;
+    while (s > 0 && /[\w$]/.test(c[s - 1])) s--;
+    if (s === open || c[s - 1] === ".") continue;
+    const call = parseUnitAt(c, s, bnoteIsCall);
+    const obj = call?.arguments[0];
+    if (
+      !call ||
+      !idName(call.callee) ||
+      call.arguments.length !== 1 ||
+      obj.type !== "ObjectExpression" ||
+      obj.start !== open + 1 ||
+      !hasKeys(obj, ["uuid", "writtenAt", "addedAt"]) ||
+      propOf(obj, BNOTE_FIELD)
+    )
+      continue;
+    const uuid = idName(propOf(obj, "uuid")!.value);
+    const num = bnoteBareCall(propOf(obj, "addedAt")!.value);
+    const w = propOf(obj, "writtenAt")!.value;
+    if (
+      !uuid ||
+      !num ||
+      w.type !== "CallExpression" ||
+      w.arguments.length !== 0 ||
+      memberProp(w.callee) !== "optional" ||
+      bnoteBareCall(w.callee.object) !== num
+    )
+      continue;
+    if (!found.some((f) => f.call.start === call.start))
+      found.push({ call, obj, uuid });
+  }
+  if (found.length !== 1) return null;
+  const { call, obj, uuid } = found[0];
+  const name = /([\w$]+)=$/.exec(
+    c.slice(Math.max(0, call.start - 80), call.start),
+  )?.[1];
+  if (!name || !c.includes(`${name}.safeParse(`)) return null;
+  const strs = new Set<string>();
+  const decl = new RegExp(`(?<![\\w$.])${bnoteEscape(uuid)}=(?![=>])`, "g");
+  for (const m of c.matchAll(decl)) {
+    const v = parseUnitAt(c, m.index! + m[0].length, bnoteIsCall);
+    const min = v?.callee.object;
+    if (
+      !v ||
+      memberProp(v.callee) !== "max" ||
+      v.arguments.length !== 1 ||
+      min?.type !== "CallExpression" ||
+      memberProp(min.callee) !== "min" ||
+      min.arguments.length !== 1 ||
+      min.arguments[0].type !== "Literal" ||
+      min.arguments[0].value !== 1
+    )
+      continue;
+    const str = bnoteBareCall(min.callee.object);
+    if (str) strs.add(str);
+  }
+  if (strs.size !== 1) return null;
+  const prop = `${BNOTE_FIELD}:${[...strs][0]}().optional()`;
+  return { unit: call, edit: bnoteEdit(BNOTE_SCHEMA, appendProp(obj, prop)) };
+}
+
+// The native update, the one `function(<s>,<uuid>,<rec>)` calling
+// `<host>.updateSessionBookmark(<id>,<uuid>,<rec>)`, read for the functions
+// its steps go through: <id>=<sidOf>(<s>) beside <host>=<s>.bookmarkHost(),
+// the store <st>=<storeOf>(<id>) whose revision it bumps and whose list.value
+// it writes, and <norm>([...,<rec>]). It must also reread with
+// `<host>.getSessionBookmarks(<id>)`. Null unless all of that holds and each
+// of the three is a function declared once.
+function bnoteSaveFind(
+  c: string,
+): { sidOf: string; storeOf: string; norm: string } | null {
+  const fns = unitsWith(
+    c,
+    ".updateSessionBookmark(",
+    "function",
+    isFn,
+    BNOTE_FN_REACH,
+  ).filter(
+    // a declaration parses as an expression here, so it reads as a named one
+    (f) =>
+      f.type !== "ArrowFunctionExpression" &&
+      !!f.id &&
+      f.params.length === 3 &&
+      f.params.every((p: N) => idName(p)),
+  );
+  if (fns.length !== 1) return null;
+  const fn = fns[0];
+  const [s, uuid, rec] = fn.params.map((p: N) => idName(p)!);
+  const inits = new Map<string, N>();
+  const calls: N[] = [];
+  const bumped = new Set<string>();
+  const written = new Set<string>();
+  walk(fn, (n) => {
+    if (n.type === "VariableDeclarator" && idName(n.id) && n.init)
+      inits.set(idName(n.id)!, n.init);
+    if (n.type === "CallExpression") calls.push(n);
+    if (
+      n.type === "UpdateExpression" &&
+      n.operator === "++" &&
+      memberProp(n.argument) === "revision" &&
+      idName(n.argument.object)
+    )
+      bumped.add(idName(n.argument.object)!);
+    if (
+      n.type === "AssignmentExpression" &&
+      memberProp(n.left) === "value" &&
+      memberProp(n.left.object) === "list" &&
+      idName(n.left.object.object)
+    )
+      written.add(idName(n.left.object.object)!);
+  });
+  // `<f>(<arg>)`: f's name, else null.
+  const callOn = (n: N | undefined, arg: string): string | null =>
+    n?.type === "CallExpression" &&
+    n.arguments.length === 1 &&
+    idName(n.arguments[0]) === arg
+      ? idName(n.callee)
+      : null;
+  const upd = calls.filter(
+    (n) =>
+      memberProp(n.callee) === "updateSessionBookmark" &&
+      n.arguments.length === 3 &&
+      idName(n.arguments[1]) === uuid &&
+      idName(n.arguments[2]) === rec,
+  );
+  if (upd.length !== 1) return null;
+  const host = idName(upd[0].callee.object);
+  const id = idName(upd[0].arguments[0]);
+  if (!host || !id || !isCallOf(inits.get(host), s, "bookmarkHost"))
+    return null;
+  const sidOf = callOn(inits.get(id), s);
+  const stores = [...bumped].filter((x) => written.has(x));
+  const storeOf = stores.length === 1 ? callOn(inits.get(stores[0]), id) : null;
+  const norms = new Set(
+    calls
+      .filter((n) => {
+        const a = n.arguments.length === 1 ? n.arguments[0] : null;
+        return (
+          a?.type === "ArrayExpression" &&
+          idName(a.elements[a.elements.length - 1]) === rec
+        );
+      })
+      .map((n) => idName(n.callee)),
+  );
+  const rereads = calls.some(
+    (n) =>
+      isMember(n.callee, host, "getSessionBookmarks") &&
+      n.arguments.length === 1 &&
+      idName(n.arguments[0]) === id,
+  );
+  const norm = norms.size === 1 ? [...norms][0] : null;
+  if (!sidOf || !storeOf || !norm || !rereads) return null;
+  if (new Set([sidOf, storeOf, norm]).size !== 3) return null;
+  for (const name of [sidOf, storeOf, norm]) {
+    const re = new RegExp(`function ${bnoteEscape(name)}\\(`, "g");
+    if ((c.match(re) ?? []).length !== 1) return null;
+  }
+  return { sidOf, storeOf, norm };
+}
+
+// The webview's sites and their three insertions, or null. The pane is the
+// one `function({session,bookmarks,selected,...})` around the "Show in
+// conversation" link, and its row the one
+// `<jsx>("li",{children:<jsxs>("button",{className,onClick,children:[
+// <jsx>("span",{className,children:<text>}),...]})},...)` that a map callback
+// taking `{bookmark,...}` returns.
+function bnoteWebFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  const schema = bnoteSchemaFind(c);
+  const save = schema ? bnoteSaveFind(c) : null;
+  if (!schema || !save) return null;
+  const panes = unitsWith(
+    c,
+    '"Show in conversation"',
+    "function",
+    isFn,
+    BNOTE_FN_REACH,
+  ).filter((f) => hasKeys(f.params[0], ["session", "bookmarks", "selected"]));
+  if (panes.length !== 1) return null;
+  const pane = panes[0];
+  const sess = boundName(pane.params[0], "session");
+  if (!sess) return null;
+  const rows: { li: N; row: N; bm: string }[] = [];
+  walk(pane, (n) => {
+    if (n.type !== "CallExpression" || !isStr(n.arguments[0], "li")) return;
+    const lp = n.arguments[1];
+    const row = hasKeys(lp, ["children"])
+      ? propOf(lp, "children")!.value
+      : null;
+    const cb = n.parent;
+    if (
+      row?.type !== "CallExpression" ||
+      !isStr(row.arguments[0], "button") ||
+      !hasKeys(row.arguments[1], ["className", "onClick", "children"]) ||
+      !isFn(cb) ||
+      cb!.body !== n ||
+      !hasKeys(cb!.params[0], ["bookmark"])
+    )
+      return;
+    const bm = boundName(cb!.params[0], "bookmark");
+    if (bm) rows.push({ li: n, row, bm });
+  });
+  if (rows.length !== 1) return null;
+  const { li, row, bm } = rows[0];
+  const kids = propOf(row.arguments[1], "children")!.value;
+  const els: N[] = kids.type === "ArrayExpression" ? kids.elements : [];
+  const first = els[0];
+  if (
+    first?.type !== "CallExpression" ||
+    !isStr(first.arguments[0], "span") ||
+    !hasKeys(first.arguments[1], ["className", "children"]) ||
+    els.some((e) => !e)
+  )
+    return null;
+  const jsx = idName(first.callee);
+  if (!jsx) return null;
+  // The session and the bookmark are the pane's and the callback's own, and
+  // everything the fragments call comes from outside the pane.
+  if (
+    bindingSite(li, sess, pane) !== pane ||
+    bindingSite(li, bm, pane) !== li.parent
+  )
+    return null;
+  for (const name of [jsx, save.sidOf, save.storeOf, save.norm]) {
+    if (bindingSite(li, name, pane) !== null) return null;
+  }
+
+  const text = propOf(first.arguments[1], "children")!.value;
+  const on = `${bm}.${BNOTE_FIELD}`;
+  const ev = "ccupEv";
+  const fire = `ccupBn.edit(${ev}.currentTarget,${sess},${bm})`;
+  const svg =
+    `${jsx}("svg",{xmlns:"http://www.w3.org/2000/svg",fill:"none",viewBox:"0 0 24 24",` +
+    `strokeWidth:1.5,stroke:"currentColor","aria-hidden":"true",` +
+    `children:${jsx}("path",{strokeLinecap:"round",strokeLinejoin:"round",` +
+    `d:${JSON.stringify(BNOTE_PAD_D)}})})`;
+  // A held Enter repeats, and must not open the box again behind itself.
+  const button =
+    `${jsx}("span",{role:"button",tabIndex:0,className:"ccup-bnote-btn",` +
+    `"data-ccup-bnote-on":${on}?"":void 0,` +
+    `title:${on}?"Edit note":"Add note",` +
+    `onClick:(${ev})=>{${ev}.stopPropagation(),${fire}},` +
+    `onKeyDown:(${ev})=>{if(${ev}.key==="Enter"||${ev}.key===" "){${ev}.preventDefault(),${ev}.stopPropagation();` +
+    `if(!${ev}.repeat)${fire}}},` +
+    `children:${svg}})`;
+  const helper =
+    `(${ccupBookmarkNoteWeb.toString()})(${JSON.stringify(bnoteCss())},` +
+    `${save.sidOf},${save.storeOf},${save.norm},${JSON.stringify(BNOTE_FIELD)},` +
+    `${BNOTE_MAX},${JSON.stringify(BNOTE_RELOAD_NOTE)})`;
+  return {
+    units: [
+      [pane, isFn],
+      [schema.unit, bnoteIsCall],
+    ],
+    edits: [
+      schema.edit,
+      bnoteEdit(BNOTE_TEXT, { pos: text.start, text: `${on}?${on}:` }),
+      bnoteEdit(BNOTE_BTN, {
+        pos: els[els.length - 1].end,
+        text:
+          `,((ccupBn)=>${button})(window.${BNOTE_HELPER_PROP}||` +
+          `(window.${BNOTE_HELPER_PROP}=${helper}))`,
+      }),
+    ],
+  };
+}
+
+// The host's site, the record schema, in a bundle that answers
+// update_session_bookmark.
+function bnoteHostFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  if (!c.includes('"update_session_bookmark"')) return null;
+  const schema = bnoteSchemaFind(c);
+  return schema
+    ? { units: [[schema.unit, bnoteIsCall]], edits: [schema.edit] }
+    : null;
+}
+
+// Each half's native file with its fragments in, or null when a site is
+// missing or an edit would not parse.
+const bnoteWebBuild = sdelMemo((native) => {
+  const sites = bnoteWebFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+const bnoteHostBuild = sdelMemo((native) => {
+  const sites = bnoteHostFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+
+// The two ALWAYS_POINTS patches, each gated on the other file's sites.
+function bookmarkNoteWebPatch(
+  native: string,
+  read: BundleReader,
+): string | null {
+  const host = read(BNOTE_HOST_FILE);
+  if (host === undefined || bnoteHostBuild(bnoteStrip(host)) === null)
+    return null;
+  return bnoteWebBuild(native);
+}
+function bookmarkNoteHostPatch(
+  native: string,
+  read: BundleReader,
+): string | null {
+  const web = read(BNOTE_WEBVIEW_FILE);
+  if (web === undefined || bnoteWebBuild(bnoteStrip(web)) === null) return null;
+  return bnoteHostBuild(native);
+}
+
+// Either file as an apply writes this point into it given the other, or null
+// when either half's sites are gone. scripts/repro's bookmark-notes.mjs serves
+// the webview one, which builds only when the host's site is found too, so it
+// runs exactly what the patcher writes and doubles as the drift canary for
+// both halves.
+export function bookmarkNoteWebview(web: string, host: string): string | null {
+  return bookmarkNoteWebPatch(bnoteStrip(web), (rel) =>
+    rel === BNOTE_HOST_FILE ? host : undefined,
+  );
+}
+export function bookmarkNoteHost(host: string, web: string): string | null {
+  return bookmarkNoteHostPatch(bnoteStrip(host), (rel) =>
+    rel === BNOTE_WEBVIEW_FILE ? web : undefined,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Input box selection redraw (always on): the input box's mention and
 // slash-command detector (the hook yielding `{atMention,slashCommand,...}`)
 // subscribes to `selectionchange` on the whole document and answers every one
@@ -10090,6 +10645,24 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: TRW_HOST_FILE,
     frags: TRW_FRAG_RE,
     patch: turnRewindHostPatch,
+  },
+  {
+    kind: "inline",
+    id: "bookmarkNote",
+    label: "bookmark notes",
+    file: BNOTE_WEBVIEW_FILE,
+    frags: BNOTE_FRAG_RE,
+    patch: bookmarkNoteWebPatch,
+    inert: (native) => !native.includes(".updateSessionBookmark("),
+  },
+  {
+    kind: "inline",
+    id: "bookmarkNoteHost",
+    label: "bookmark notes store",
+    file: BNOTE_HOST_FILE,
+    frags: BNOTE_FRAG_RE,
+    patch: bookmarkNoteHostPatch,
+    inert: (native) => !native.includes('"update_session_bookmark"'),
   },
 ];
 

@@ -100,7 +100,8 @@ Always applied                         # no setting; installing this patch is th
    ├── editor selection colors         # selected text in the editor's selection colors
    ├── input box redraw                # selecting chat text no longer redraws the input box
    ├── inline math spans               # fix for math rendering
-   └── last turn delete                # prompt history's last entry: delete that turn
+   ├── last turn delete                # prompt history's last entry: delete that turn
+   └── bookmark notes                  # Bookmarks pane rows: annotate a bookmark with your own note
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)
@@ -157,3 +158,9 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   To go further back, delete one turn at a time.
   The turn's file edits stay, so use the message's "Rewind code to here" first if you want them undone.
   Deleting a conversation's only turn empties it but keeps the title Claude Code gave it.
+- **Bookmark notes are kept with Claude Code's own bookmarks.**
+  Each row of the Bookmarks pane has a notepad button after its time, which opens a box for a note of your own.
+  `Enter` or clicking away keeps the note, `Escape` leaves it as it was, and emptying the box removes it.
+  The row then shows your note in place of the response's opening line, in every tab and window that opens the conversation.
+  Removing the bookmark removes its note.
+  Without this patch Claude Code ignores the notes, and the next bookmark change in that conversation discards them.

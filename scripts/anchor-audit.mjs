@@ -229,7 +229,8 @@ const NATIVE_MARKERS = {
 // Markers a point emits only on a build that gives it something to write. An
 // "inert" point owes none there: the math size on a build without native math,
 // where the math css line carries the size for the bundled renderer instead,
-// and the inline math spans fix, which amends the native math guard.
+// the inline math spans fix, which amends the native math guard, and both
+// halves of bookmark notes, which amend the Bookmarks pane (2.1.286 on).
 // Keyed by point id; add an entry whenever a point gains an inert hook.
 const INERT_MARKERS = {
   chatMathSize: ["/*ccup:mathSize*/"],
@@ -243,6 +244,13 @@ const INERT_MARKERS = {
     "/*ccup:mathSpans:pre*/",
     "/*ccup:mathSpansEnd*/",
   ],
+  bookmarkNote: [
+    "/*ccup:bnote:schema*/",
+    "/*ccup:bnote:text*/",
+    "/*ccup:bnote:btn*/",
+    "/*ccup:bnoteEnd*/",
+  ],
+  bookmarkNoteHost: ["/*ccup:bnote:schema*/", "/*ccup:bnoteEnd*/"],
 };
 
 // Markers a size point emits only through its alternate form (see AltForm in

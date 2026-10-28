@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.3
 
 - On Claude Code 2.1.307 and later, a long message of yours opened with "Show more" shows its last lines and its "Show less" button again, which had been cut off below the message's edge.
   "Show less" now stays at the bottom of the open message while you scroll through it, and at the end it sits below the last line instead of covering it.

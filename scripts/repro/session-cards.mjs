@@ -1,10 +1,12 @@
 // Scenario for scripts/cdp-driver.mjs: the session cards, on the REAL webview
 // bundle booted as the sidebar against a stub host that lists six local
-// sessions (plus a Web one) and runs a turn for every prompt sent until the
-// scenario ends it. Real clicks and keys drive it, and the checks assert:
+// sessions (plus an archived and a Web one) and runs a turn for every prompt
+// sent until the scenario ends it. Real clicks and keys drive it, and the
+// checks assert:
 //   mount     the strip is the session body's last child, across the view's
 //             whole width on its bottom edge, the input box 8px above it,
-//             its cards one status bar (22px) tall over a 4px foot
+//             its cards an editor tab (24px) tall in its 13px text over a 1px
+//             groove, the first one flush with the strip's left edge
 //   order     cards run from the session of your last message: the booted
 //             one by its newest prompt (not by the later activity the list
 //             reports for it), the others by the list's activity time, no
@@ -30,15 +32,19 @@
 //   relist    a session the feed reports that the list has not read asks
 //             for one re-read, and its card then shows
 //   reload    the time of a sent prompt survives a reload
-//   fill      as many cards show as fit at their whole title or 96px,
-//             whichever is narrower, and each is as wide as its title allows:
-//             short titles whole, the longer ones splitting the rest evenly,
-//             none past the strip's edge, at 420px, 760px and 250px
+//   titles    every title is cut at one cap of 15 to 40 characters with an
+//             ellipsis, the cap the longest that keeps in view as many cards
+//             as fit at 15, at 420px, 760px and 250px
+//   scroll    the strip holds every non-archived session, scrolls sideways
+//             under the wheel, and brings the card on screen into view when
+//             it changes
 //   settle    an idle strip mutates nothing
-//   look      the card on screen follows VS Code's layout density: no line
-//             at the default density, the blue line along its bottom edge
-//             when compact (both built here, as the patcher would from
-//             window.density.layout)
+//   look      the strip follows VS Code's layout density: at the default
+//             density no groove, the cards on the view's bottom edge and no
+//             line, and when compact the 1px groove and the blue line along
+//             the bottom of the card on screen (both built here, as the
+//             patcher would from window.density.layout); a compact tab height
+//             makes the cards 20px tall
 //   editor    an editor tab (IS_SIDEBAR false) gets no strip
 //   empty     with no session to show the strip stays hidden and the input
 //             box keeps its native 16px
@@ -86,8 +92,9 @@ function liveBundleDir() {
 const id = (d) =>
   `${d.repeat(8)}-${d.repeat(4)}-4${d.repeat(3)}-8${d.repeat(3)}-${d.repeat(12)}`;
 // A boots the view; its last prompt is two and a half hours old though the
-// list reports activity ten minutes ago. G is a session no list read has seen yet, W a
-// Web session.
+// list reports activity ten minutes ago. B and E have titles past the
+// 40-character cap. G is a session no list read has seen yet, Z an archived
+// one, W a Web session.
 const S = {
   A: id("1"),
   B: id("2"),
@@ -96,21 +103,23 @@ const S = {
   E: id("5"),
   F: id("6"),
   G: id("7"),
+  Z: id("8"),
   W: id("9"),
 };
 const TITLES = {
   A: "Cards below the composer",
-  B: "Fix the regex toggle",
+  B: "Fix the regex toggle in the find bar and its whole word rule",
   C: "Bookmark notes",
   D: "KaTeX bump",
-  E: "Anchor audit",
+  E: "Anchor audit for the 2.1.312 release with a bisect table",
   F: "Release notes",
   G: "Started in a tab",
+  Z: "An archived session",
   W: "A Web session",
 };
 // Minutes ago: the list's activity time, and each transcript's last prompt.
-const ACTIVITY = { A: 10, B: 60, C: 120, D: 180, E: 240, F: 360, G: 1 };
-const PROMPT = { A: 150, B: 70, C: 130, D: 190, E: 250, F: 370, G: 2 };
+const ACTIVITY = { A: 10, B: 60, C: 120, D: 180, E: 240, F: 360, G: 1, Z: 5 };
+const PROMPT = { A: 150, B: 70, C: 130, D: 190, E: 250, F: 370, G: 2, Z: 6 };
 
 const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="/wv/index.css">
@@ -144,9 +153,9 @@ const EMPTY = Q.get("s") === "none", NOW = Date.now(), ago = (m) => NOW - m * 60
 if (!EMPTY) document.getElementById("root").dataset.initialSession = S.A;
 const KEY = Object.fromEntries(Object.entries(S).map(([k, v]) => [v, k]));
 const entry = (k) => ({ id: S[k], summary: TITLES[k], customTitle: TITLES[k],
-  lastModified: ago(ACTIVITY[k]), lastActivity: ago(ACTIVITY[k]), archived: false,
+  lastModified: ago(ACTIVITY[k]), lastActivity: ago(ACTIVITY[k]), archived: k === "Z",
   fileSize: 4096, gitBranch: "develop", isCurrentWorkspace: true });
-window.__listed = ["A", "B", "C", "D", "E", "F"];
+window.__listed = ["A", "B", "C", "D", "E", "F", "Z"];
 const msgs = (sid) => { const k = KEY[sid]; if (!k) return []; return [
   { type: "user", uuid: "a" + sid.slice(1), session_id: sid, parent_tool_use_id: null,
     timestamp: new Date(ago(PROMPT[k])).toISOString(), origin: { kind: "human" },
@@ -199,7 +208,7 @@ window.acquireVsCodeApi = () => ({
   setState() {},
   postMessage(msg) {
     if (msg && msg.type === "launch_claude" && msg.resume) window.__chan[msg.resume] = msg.channelId;
-    if (msg && msg.type !== "request") window.__sent.push({ type: msg.type, channelId: msg.channelId });
+    if (msg && msg.type !== "request") window.__sent.push({ type: msg.type, channelId: msg.channelId, resume: msg.resume });
     if (msg && msg.type === "io_message" && msg.message && msg.message.type === "user") live(msg);
     if (!msg || msg.type !== "request") return;
     const r = msg.request;
@@ -262,6 +271,7 @@ export async function run(ctx) {
   const serve = {
     line: P.sessionCardsWebview(native, "line"),
     seamless: P.sessionCardsWebview(native, "seamless"),
+    line20: P.sessionCardsWebview(native, "line", 20),
   };
   let look = "line";
   const cls = (key) =>
@@ -283,7 +293,7 @@ export async function run(ctx) {
   if (
     !check(
       "the patcher builds the strip into this bundle in both looks",
-      !!serve.line && !!serve.seamless,
+      !!serve.line && !!serve.seamless && !!serve.line20,
     )
   )
     return false;
@@ -348,7 +358,17 @@ export async function run(ctx) {
     }
   };
   const center = (b) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
-  const clickCard = async (k) => click(center(await box(cardEl(k))));
+  // A card into the strip's view, as you would scroll to it, then a click.
+  const showCard = (k) =>
+    ctx.evaluate(
+      `(function(){var b=${q(BAR)},e=${cardEl(k)};if(!b||!e)return;var a=e.offsetLeft-8,z=e.offsetLeft+e.offsetWidth+8;` +
+        `if(a<b.scrollLeft)b.scrollLeft=Math.max(0,a);else if(z>b.scrollLeft+b.clientWidth)b.scrollLeft=z-b.clientWidth})()`,
+    );
+  const clickCard = async (k) => {
+    await showCard(k);
+    await ctx.sleep(50);
+    await click(center(await box(cardEl(k))));
+  };
   const key = async (k, code, vk) => {
     for (const type of ["keyDown", "keyUp"]) {
       await ctx.cdp("Input.dispatchKeyEvent", {
@@ -384,46 +404,70 @@ export async function run(ctx) {
       `!!${q(INPUT)}&&!!window.__ccupSessionCards&&document.querySelectorAll(${JSON.stringify(CARD)}).length>=4`,
     );
   };
-  // The strip as laid out: its content width, each card's width, its whole
-  // width (as the strip measures it: its width, less what its label shows,
-  // plus the label's whole text) and whether its title is cut, the next
-  // candidate's whole width (a clone measured in place), and whether any card
-  // runs past the strip's edge.
-  const MIN_W = 96;
+  // The strip as laid out: its content width, whether it scrolls, the label
+  // font and the card chrome around a label (padding, circle, gap), and each
+  // card's width, whole title and label text.
   const layout = () =>
     json(
       `(function(){var b=${q(BAR)},cs=[].slice.call(b.querySelectorAll(${JSON.stringify(CARD)})),` +
-        `ps=getComputedStyle(b),pl=parseFloat(ps.paddingLeft),pr=parseFloat(ps.paddingRight),W=b.clientWidth-pl-pr,rb=b.getBoundingClientRect();` +
-        `function whole(c){var l=c.lastChild;return c.getBoundingClientRect().width-l.clientWidth+l.scrollWidth}` +
-        `var shown=cs.map(function(c){var l=c.lastChild;` +
-        `return{w:c.getBoundingClientRect().width,whole:whole(c),cut:l.scrollWidth>l.clientWidth+1}});` +
-        `var rows=window.__ccupSessionCards.rows,nx=rows[cs.length],nw=null;` +
-        `if(nx){var t=cs[0].cloneNode(true);t.lastChild.textContent=nx.title;` +
-        `t.toggleAttribute("data-pending",nx.pending);t.removeAttribute("data-active");` +
-        `b.appendChild(t);nw=whole(t);t.remove()}` +
-        `return{W:W,shown:shown,next:nw,` +
-        `over:cs.some(function(c){return c.getBoundingClientRect().right>rb.right-pr+0.5})}})()`,
+        `ps=getComputedStyle(b),W=b.clientWidth-parseFloat(ps.paddingLeft)-parseFloat(ps.paddingRight);` +
+        `var byId={};window.__ccupSessionCards.rows.forEach(function(r){byId[r.id]=r.title});` +
+        `var l0=cs[0].lastChild,s=getComputedStyle(l0);` +
+        `return{W:W,scroll:b.scrollWidth>b.clientWidth+1,size:s.fontSize,` +
+        `font:s.fontStyle+" "+s.fontWeight+" "+s.fontSize+" "+s.fontFamily,` +
+        `chrome:cs[0].getBoundingClientRect().width-l0.getBoundingClientRect().width,` +
+        `cards:cs.map(function(c){return{w:c.getBoundingClientRect().width,title:byId[c.dataset.id],text:c.lastChild.textContent}})}})()`,
     );
-  // The rule: the shown cards fit at their whole title or the minimum,
-  // whichever is narrower, and one more would not; each gets at least that;
-  // with a title cut the cards fill the strip, the cut ones equally wide and
-  // no whole one wider, and with none cut each card is its whole width.
-  const fillOk = (L) => {
-    const need = (w) => Math.min(w, MIN_W);
-    const sum = (a) => a.reduce((x, y) => x + y, 0);
-    const needs = sum(L.shown.map((s) => need(s.whole)));
-    const fits =
-      needs <= L.W + 0.5 &&
-      (L.next === null || needs + need(L.next) > L.W - 0.5);
-    const floor = L.shown.every((s) => s.w >= need(s.whole) - 0.5);
-    const cut = L.shown.filter((s) => s.cut).map((s) => s.w);
-    const shares =
-      cut.length === 0
-        ? L.shown.every((s) => Math.abs(s.w - s.whole) < 1)
-        : Math.abs(sum(L.shown.map((s) => s.w)) - L.W) < 1 &&
-          Math.max(...cut) - Math.min(...cut) < 1 &&
-          L.shown.every((s) => s.cut || s.w <= Math.min(...cut) + 1);
-    return { fits, floor, shares };
+  // Widths of texts in a font, on a canvas in the page.
+  const measure = (font, texts) =>
+    json(
+      `(function(){var p=document.createElement("canvas").getContext("2d");p.font=${JSON.stringify(font)};` +
+        `return ${JSON.stringify(texts)}.map(function(t){return p.measureText(t).width})})()`,
+    );
+  const ELLIPSIS = String.fromCharCode(8230);
+  const cutAt = (t, n) => {
+    const a = Array.from(t);
+    return a.length <= n ? t : a.slice(0, n).join("").trimEnd() + ELLIPSIS;
+  };
+  // The rule: one cap N of 15 to 40 characters cuts every title; K cards fit
+  // in view at the 15-character cap (one at least), and N is the longest cap
+  // at which the first K still fit and no card is wider than the strip.
+  const titlesOk = async (L) => {
+    let N = null;
+    for (let n = 40; n >= 15 && N === null; n--)
+      if (L.cards.every((x) => x.text === cutAt(x.title, n))) N = n;
+    const at = async (n) =>
+      (
+        await measure(
+          L.font,
+          L.cards.map((x) => cutAt(x.title, n)),
+        )
+      ).map((w) => w + L.chrome);
+    const w15 = await at(15);
+    let K = 0;
+    for (let room = L.W; K < w15.length; K++) {
+      if (K > 0 && w15[K] > room + 0.5) break;
+      room -= w15[K];
+    }
+    K = Math.max(1, K);
+    const ok = async (n) => {
+      const ws = await at(n);
+      return (
+        ws.slice(0, K).reduce((x, y) => x + y, 0) <= L.W + 0.5 &&
+        Math.max(...ws) <= L.W + 0.5
+      );
+    };
+    const fits = N !== null && (await ok(N));
+    const longest = N !== null && (N === 40 || !(await ok(N + 1)));
+    const widest = Math.max(...L.cards.map((x) => x.w));
+    return {
+      N,
+      K,
+      fits: fits && widest <= L.W + 0.5,
+      longest,
+      n: L.cards.length,
+      scroll: L.scroll,
+    };
   };
 
   try {
@@ -434,7 +478,8 @@ export async function run(ctx) {
       `(function(){var b=${q(BAR)},f=${q(BOX)} && ${q(BOX)}.querySelector("fieldset"),c=b.querySelectorAll(${JSON.stringify(CARD)});` +
         `var rb=b.getBoundingClientRect(),rf=f.getBoundingClientRect(),c0=c[0].getBoundingClientRect();` +
         `return{last:b.parentNode.matches(${JSON.stringify(BODY)})&&!b.nextSibling,h:rb.height,ch:c0.height,top:c0.top-rb.top,gap:rb.top-rf.bottom,` +
-        `edge:innerHeight-rb.bottom,left:rb.left,right:innerWidth-rb.right,marked:b.parentNode.hasAttribute("data-ccup-cards"),n:c.length}})()`,
+        `edge:innerHeight-rb.bottom,left:rb.left,right:innerWidth-rb.right,first:c0.left-rb.left,` +
+        `size:getComputedStyle(c[0].lastChild).fontSize,marked:b.parentNode.hasAttribute("data-ccup-cards"),n:c.length}})()`,
     );
     check(
       "mount: last child of the session body, marked on it",
@@ -449,27 +494,32 @@ export async function run(ctx) {
         Math.abs(g.gap - 8) < 0.6,
     );
     check(
-      "mount: cards one status bar tall at the strip's top, over a 4px foot",
-      g.ch === 22 && Math.abs(g.top) < 0.6 && g.h === 26,
+      "mount: cards an editor tab tall in its text size, over a 1px groove",
+      g.ch === 24 && Math.abs(g.top) < 0.6 && g.h === 25 && g.size === "13px",
+    );
+    check(
+      "mount: the first card flush with the strip's left edge",
+      Math.abs(g.first) < 0.6,
     );
     const L0 = await layout();
-    const fill0 = fillOk(L0);
+    const t0 = await titlesOk(L0);
     check(
-      "fill: at 420px, as many as fit at their whole title or the minimum",
-      fill0.fits && fill0.floor,
-      JSON.stringify(L0),
+      "titles: at 420px, one cap of 15 to 40 characters, the longest that keeps as many in view as fit at 15",
+      t0.N !== null && t0.fits && t0.longest,
+      JSON.stringify({ ...t0, texts: L0.cards.map((x) => x.text) }),
     );
     check(
-      "fill: at 420px, short titles whole and the longer ones share the rest",
-      fill0.shares && L0.shown.some((s) => !s.cut),
-      JSON.stringify(L0.shown),
+      "titles: a title past the cap ends in an ellipsis, a short one whole",
+      L0.cards.some((x) => x.text.endsWith(ELLIPSIS)) &&
+        L0.cards.some((x) => x.text === x.title),
+      JSON.stringify(L0.cards.map((x) => x.text)),
     );
 
     // Order: A by its prompt 150 minutes ago, the rest by activity; no Web.
     const s0 = await strip();
     check(
       "order: by your last message, the booted session by its prompt",
-      s0 === "B C A* D",
+      s0 === "B C A* D E F",
       s0,
     );
     check("active: the session on screen is marked", s0.includes("A*"));
@@ -477,7 +527,7 @@ export async function run(ctx) {
       `(function(){var s=window.__ccupSessionCards.rows.map(function(r){return r.id});return s})()`,
     );
     check(
-      "order: the full model places A by its prompt, no Web",
+      "order: the full model places A by its prompt, no archived or Web session",
       wide.map((i) => LETTER[i]).join(" ") === "B C A D E F",
       wide.map((i) => LETTER[i]).join(" "),
     );
@@ -492,7 +542,7 @@ export async function run(ctx) {
     const s1 = await strip();
     check(
       "pending: awaiting input and unread each mark the card, never the session on screen",
-      s1 === "B! C A* D!",
+      s1 === "B! C A* D! E F",
       s1,
     );
     // Circles: C is idle, A on screen, B waiting.
@@ -547,10 +597,10 @@ export async function run(ctx) {
         [a.x + a.w / 2, a.y - 3],
         [a.x + a.w / 2, a.y + 0.5],
         [a.x - 1, a.y + 0.5],
-        [a.x - 1, a.y + 6],
+        [a.x - 1, a.y + 3.5],
         [a.x + 0.5, a.b - 0.5],
-        [a.x + 7, a.b - 1.5],
-        [cIdle.x + cIdle.w / 2, cIdle.b + 2],
+        [a.x + 4, a.b - 1.5],
+        [cIdle.x + cIdle.w / 2, cIdle.b + 0.5],
       ]);
     const CHAT = "rgb(24, 24, 24)";
     const STRIP = "rgb(43, 43, 43)";
@@ -618,18 +668,52 @@ export async function run(ctx) {
       await ctx.evaluate(`document.activeElement===${q(INPUT)}`),
     );
 
-    // Click: C is open in a tab, so the host focuses that tab.
-    let mark = (await sent()).length;
-    await clickCard("C");
-    await ctx.sleep(300);
-    const toTab = (await sent())
-      .slice(mark)
-      .find((m) => m.type === "request:open_in_editor");
+    // Click: C is open in a tab, so the host focuses that tab, which is the
+    // native guard keeping a session in one place: the sidebar asks for
+    // nothing of C, starts nothing for it, and keeps A on screen. From the
+    // keyboard too.
+    const tabbed = async (go) => {
+      const mark = (await sent()).length;
+      await go();
+      await ctx.sleep(300);
+      const after = (await sent()).slice(mark);
+      return {
+        focus: after.filter((m) => m.type === "request:open_in_editor"),
+        here: after.filter(
+          (m) =>
+            (m.type === "request:get_session_request" && m.sessionId === S.C) ||
+            (m.type === "launch_claude" && m.resume === S.C),
+        ),
+        stays:
+          (await shownTitle()) === TITLES.A &&
+          (await strip()).includes("A*") &&
+          !(await strip()).includes("C*"),
+      };
+    };
+    const byClick = await tabbed(() => clickCard("C"));
     check(
-      "click: a session open in a tab asks the host to focus it",
-      toTab?.sessionId === S.C && (await shownTitle()) === TITLES.A,
-      JSON.stringify(toTab),
+      "click: a session open in a tab gets that tab focused, never a second copy here",
+      byClick.focus.length === 1 &&
+        byClick.focus[0].sessionId === S.C &&
+        byClick.here.length === 0 &&
+        byClick.stays,
+      JSON.stringify(byClick),
     );
+    const byKey = await tabbed(async () => {
+      await showCard("C");
+      await ctx.evaluate(`${cardEl("C")}.focus()`);
+      await key("Enter", "Enter", 13);
+    });
+    check(
+      "keys: Enter on a session open in a tab focuses that tab too",
+      byKey.focus.length === 1 &&
+        byKey.focus[0].sessionId === S.C &&
+        byKey.here.length === 0 &&
+        byKey.stays,
+      JSON.stringify(byKey),
+    );
+    await ctx.evaluate(`${q(INPUT)}.focus()`);
+    let mark = 0;
 
     // Send a prompt in A: its turn starts and A moves first.
     await send("Keep going.");
@@ -658,14 +742,34 @@ export async function run(ctx) {
     // box stays put. A keeps running in the background.
     const bar0 = await ctx.evaluate(`window.__bar0=${q(BAR)},true`);
     const top0 = (await box(`${q(BOX)}.querySelector("fieldset")`)).y;
-    // E sits past the strip's width here, so make room by widening.
-    await ctx.cdp("Emulation.setDeviceMetricsOverride", {
-      width: 760,
-      height: 700,
-      deviceScaleFactor: 2,
-      mobile: false,
-    });
-    await until(`!!${cardEl("E")}`, 2000);
+    // E sits past the strip's right edge here: the wheel over the strip, a
+    // vertical one as a mouse sends, scrolls it sideways into view.
+    const pastEdge = () =>
+      json(
+        `(function(){var b=${q(BAR)}.getBoundingClientRect(),e=${cardEl("E")}.getBoundingClientRect();return e.right>b.right+0.5})()`,
+      );
+    const sc0 = await ctx.evaluate(`${q(BAR)}.scrollLeft`);
+    const hidden0 = await pastEdge();
+    const bb = await box(q(BAR));
+    for (let i = 0; i < 20 && (await pastEdge()); i++) {
+      await ctx.cdp("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x: bb.x + bb.w / 2,
+        y: bb.y + bb.h / 2,
+        deltaX: 0,
+        deltaY: 40,
+      });
+      await ctx.sleep(60);
+    }
+    const sc1 = await ctx.evaluate(`${q(BAR)}.scrollLeft`);
+    const chatTop = await ctx.evaluate(
+      `document.querySelector(".${cls("messagesContainer")}").scrollTop`,
+    );
+    check(
+      "scroll: the wheel over the strip scrolls it sideways to a card past its edge",
+      hidden0 && sc1 > sc0 && !(await pastEdge()) && chatTop === 0,
+      JSON.stringify({ hidden0, sc0, sc1, chatTop }),
+    );
     const top1 = (await box(`${q(BOX)}.querySelector("fieldset")`)).y;
     mark = (await sent()).length;
     await clickCard("E");
@@ -809,7 +913,7 @@ export async function run(ctx) {
       await ctx.evaluate("window.__muts"),
     );
 
-    // Fill at other widths: a wide sidebar (seven candidates by now), then a
+    // Titles at other widths: a wide sidebar (seven sessions by now), then a
     // narrow one.
     for (const width of [760, 250]) {
       await ctx.cdp("Emulation.setDeviceMetricsOverride", {
@@ -820,13 +924,72 @@ export async function run(ctx) {
       });
       await ctx.sleep(400);
       const L = await layout();
-      const f = fillOk(L);
+      const t = await titlesOk(L);
       check(
-        `fill: at ${width}px, as many as fit, each as wide as its title allows, none past the edge`,
-        f.fits && f.floor && f.shares && !L.over,
-        JSON.stringify(L),
+        `titles: at ${width}px, one cap of 15 to 40 characters, the longest that keeps as many in view as fit at 15`,
+        t.N !== null && t.fits && t.longest,
+        JSON.stringify({ ...t, texts: L.cards.map((x) => x.text) }),
       );
     }
+    // Every non-archived session is a card, the archived one never, and the
+    // card on screen comes into view when it changes.
+    const all = await strip();
+    check(
+      "scroll: the strip holds every non-archived local session",
+      all.split(" ").length === 7 &&
+        !all.includes("Z") &&
+        !all.includes("W") &&
+        (await ctx.evaluate(`${q(BAR)}.scrollWidth>${q(BAR)}.clientWidth`)),
+      all,
+    );
+    const lastId = await ctx.evaluate(
+      `[].slice.call(document.querySelectorAll(${JSON.stringify(CARD)})).pop().dataset.id`,
+    );
+    await ctx.evaluate(`${q(BAR)}.scrollLeft=0`);
+    await ctx.evaluate(
+      `(function(){var t=[].slice.call(document.querySelectorAll(${JSON.stringify(CARD)})).find(function(b){return b.tabIndex===0});t.focus()})()`,
+    );
+    await key("End", "End", 35);
+    await key("Enter", "Enter", 13);
+    await until(
+      `!!${q(BAR)}.querySelector('[data-id="${lastId}"][data-active]')`,
+      3000,
+    );
+    await ctx.evaluate(`${q(BAR)}.scrollLeft=0`);
+    await ctx.sleep(100);
+    const inView = async () =>
+      json(
+        `(function(){var b=${q(BAR)}.getBoundingClientRect(),e=${q(BAR)}.querySelector('[data-active]').getBoundingClientRect();return e.left>=b.left-0.5&&e.right<=b.right+0.5})()`,
+      );
+    const before = await inView();
+    // A new render (the next feed report) brings it back only if it moved or
+    // changed, so a scroll of your own stays.
+    await ctx.evaluate(
+      `window.__push({type:"session_states_update",sessions:[],activeSessionId:"",openSessionIds:[],unreadSessionKeys:[]})`,
+    );
+    await ctx.sleep(200);
+    const stays = !(await inView());
+    // Opening another card from the far end brings the new one into view.
+    await ctx.evaluate(`${q(BAR)}.scrollLeft=${q(BAR)}.scrollWidth`);
+    await ctx.sleep(100);
+    const firstId = await ctx.evaluate(
+      `document.querySelector(${JSON.stringify(CARD)}).dataset.id`,
+    );
+    await ctx.evaluate(
+      `(function(){var t=[].slice.call(document.querySelectorAll(${JSON.stringify(CARD)})).find(function(b){return b.tabIndex===0});t.focus()})()`,
+    );
+    await key("Home", "Home", 36);
+    await key("Enter", "Enter", 13);
+    await until(
+      `!!${q(BAR)}.querySelector('[data-id="${firstId}"][data-active]')`,
+      3000,
+    );
+    await ctx.sleep(200);
+    check(
+      "scroll: the card on screen comes into view when it changes, a scroll of your own stays otherwise",
+      before === false && stays && (await inView()),
+      JSON.stringify({ before, stays }),
+    );
     await ctx.cdp("Emulation.setDeviceMetricsOverride", {
       width: 420,
       height: 700,
@@ -869,6 +1032,17 @@ export async function run(ctx) {
         lineCorner !== "rgb(0, 120, 212)",
       JSON.stringify({ line, lineMid, lineCorner }),
     );
+    // A, first since the send, sits flush left: no shoulder and a square
+    // bottom-left corner.
+    const lead = await json(
+      `(function(){var b=${cardEl("A")};return{first:b===b.parentNode.firstElementChild,` +
+        `before:getComputedStyle(b,"::before").display,corner:getComputedStyle(b).borderBottomLeftRadius}})()`,
+    );
+    check(
+      "look: no groove left of the first card",
+      lead.first && lead.before === "none" && lead.corner === "0px",
+      JSON.stringify(lead),
+    );
     await fetch(base + "__look/seamless");
     await boot();
     await ctx.sleep(400);
@@ -878,6 +1052,9 @@ export async function run(ctx) {
       const b = await box(cardEl("A"));
       return colorsAt([[b.x + b.w / 2, b.b - 0.5]]);
     })();
+    const seat = await json(
+      `(function(){var b=${q(BAR)}.getBoundingClientRect(),c=${cardEl("A")}.getBoundingClientRect();return{h:b.height,ch:c.height,edge:innerHeight-c.bottom}})()`,
+    );
     check(
       "look: default keeps the card on screen seamless, with no line",
       plain.bg === "rgb(24, 24, 24)" &&
@@ -886,7 +1063,23 @@ export async function run(ctx) {
         rest.bg === "rgba(0, 0, 0, 0)",
       JSON.stringify({ plain, plainMid, rest }),
     );
+    check(
+      "look: default has no groove, the cards on the view's bottom edge",
+      seat.h === 24 && seat.ch === 24 && Math.abs(seat.edge) < 0.6,
+      JSON.stringify(seat),
+    );
     await ctx.shot("session-cards-seamless");
+    await fetch(base + "__look/line20");
+    await boot();
+    await ctx.sleep(400);
+    const short = await json(
+      `(function(){var b=${q(BAR)}.getBoundingClientRect(),c=${cardEl("A")}.getBoundingClientRect();return{h:b.height,ch:c.height}})()`,
+    );
+    check(
+      "look: a compact editor tab height makes the cards 20px tall",
+      short.ch === 20 && short.h === 21,
+      JSON.stringify(short),
+    );
     await fetch(base + "__look/line");
 
     // Editor tab: no strip at all.

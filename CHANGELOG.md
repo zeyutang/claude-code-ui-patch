@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- New `chatSessionCards` setting: along the bottom of the sidebar chat, below its input box, a strip of cards for your most recent local sessions, the one where you last sent a message first.
+- New `chatSessionCards` setting: along the bottom of the sidebar chat, below its input box, a strip of cards for your local sessions, the one where you last sent a message first, scrolling sideways through every session that is not archived.
   A click opens that session as the Session history list does, and each card's circle turns clay while the session waits on you: a permission or question prompt, or a finished turn you have not seen.
   The card of the session on screen joins the chat above it, and also carries a blue line along its bottom when `window.density.layout` is compact.
 

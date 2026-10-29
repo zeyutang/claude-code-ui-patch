@@ -7179,16 +7179,17 @@ export function promptHistWebview(
 //            host relays from the surface showing it (waiting_input, or a
 //            terminal or window holding it waiting); and for every session,
 //            Claude Code's unread mark. The session on screen never shows one
-// As many cards show as fit with each at its whole title or SCARD_MIN_W,
-// whichever is narrower, so short titles leave room for more. They then share
-// the strip so that each shows as much of its title as it can: every card
-// grows from nothing toward its whole title (flex 1 1 0 under a max-content
-// cap), so a short title takes only its own width and the longer ones split
-// the rest evenly. Each card's whole width is measured once per title and
-// dot, so a resize only recounts. Each is a button with its title in a hover
-// tip and its state in the tip and the accessible name, the strip is a
-// toolbar (one tab stop, arrow keys between cards), and a press keeps focus
-// where it was, as the jump buttons do.
+// The strip holds every such session and scrolls sideways like the editor's
+// tab row, the wheel included, bringing the card on screen into view when
+// it changes or moves. A title shows up to SCARD_TITLE_LONGEST characters and
+// then an ellipsis, and that cap steps down as the strip narrows, never below
+// SCARD_TITLE_SHORTEST: as many cards are kept in view as fit at the shortest
+// cap, and then the longest cap that still fits them all is used, for every
+// card. Widths come from the label's own font on a canvas, kept per text, so
+// a resize measures nothing new. Each card is a button with its whole title
+// in a hover tip and its state in the tip and the accessible name, the strip
+// is a toolbar (one tab stop, arrow keys between cards), and a press keeps
+// focus where it was, as the jump buttons do.
 //
 // The strip lives in the session body (sessionBody_<hash>), the flex column
 // holding the chat, which a session switch keeps: the chat inside it remounts
@@ -7216,16 +7217,16 @@ const SCARD_FILE = "webview/index.js";
 // keeps (most recent first).
 const SCARD_STORE = "ccup-session-cards";
 const SCARD_STORE_CAP = 200;
-// The most cards the strip shows, and the narrowest a card with a longer
-// title gets before one fewer card shows.
-const SCARD_MAX = 12;
-const SCARD_MIN_W = 96;
-// A card's height (the status bar's), the strip's foot below the cards (its
-// far side, as an editor's tab row keeps a few pixels above its tabs), and
-// the air between the input box and the strip, which spans the sidebar's
-// whole width and sits on its bottom edge.
-const SCARD_H = 22;
-const SCARD_FOOT = 4;
+// The most cards the strip holds (it scrolls), and the longest and shortest
+// a title gets before its ellipsis, in characters.
+const SCARD_MAX = 100;
+const SCARD_TITLE_LONGEST = 40;
+const SCARD_TITLE_SHORTEST = 15;
+// A card's height, an editor tab's: window.density.editorTabHeight's default
+// and compact. The strip spans the sidebar's whole width and sits on its
+// bottom edge, SCARD_GAP below the input box.
+const SCARD_TAB_H = 24;
+const SCARD_TAB_H_COMPACT = 20;
 const SCARD_GAP = 8;
 // The members the strip reads off a session, the manager, and the feed.
 const SCARD_SESSION_FIELDS = [
@@ -7256,7 +7257,8 @@ interface ScardCfg {
   store: string;
   cap: number;
   max: number;
-  minW: number;
+  longest: number; // title characters before the ellipsis, at most
+  shortest: number; // and at least, however narrow the strip
 }
 
 // The strip, built around the session manager by its constructor. Compiled
@@ -7438,10 +7440,39 @@ function ccupSessionCardsWeb(
   let raf = 0;
   let host: any = null;
 
-  // Each card's full width (its whole title), by session id, kept while the
-  // session stays a candidate, so a resize measures nothing.
-  const sizes = new Map<string, { k: string; w: number }>();
-  const sizeKey = (r: any): string => r.title;
+  // A title cut to n characters with an ellipsis, counting code points so no
+  // surrogate pair splits, and the width of a label's text, measured on a
+  // canvas in the label's own font and kept per text.
+  const cut = (t: string, n: number): string => {
+    const cs = Array.from(t);
+    return cs.length <= n
+      ? t
+      : `${cs.slice(0, n).join("").trimEnd()}${String.fromCharCode(8230)}`;
+  };
+  const pen = doc.createElement("canvas").getContext("2d");
+  const widths = new Map<string, number>();
+  const textW = (font: string, s: string): number => {
+    const k = `${font}\n${s}`;
+    let v = widths.get(k);
+    if (v === undefined) {
+      if (widths.size > 4000) widths.clear();
+      pen.font = font;
+      v = pen.measureText(s).width as number;
+      widths.set(k, v);
+    }
+    return v;
+  };
+  // The card on screen, and where it sat, when the strip last brought it into
+  // view.
+  let revealed = "";
+  const reveal = (b: any): void => {
+    const r = parseFloat(g.getComputedStyle(bar).paddingRight) || 0;
+    const a = b.offsetLeft - r;
+    const z = b.offsetLeft + b.offsetWidth + r;
+    if (a < bar.scrollLeft) bar.scrollLeft = Math.max(0, a);
+    else if (z > bar.scrollLeft + bar.clientWidth)
+      bar.scrollLeft = z - bar.clientWidth;
+  };
 
   const mark = (on: boolean): void => {
     if (host && host.hasAttribute("data-ccup-cards") !== on)
@@ -7480,7 +7511,6 @@ function ccupSessionCardsWeb(
     return b;
   };
   const paint = (b: any, r: any): void => {
-    if (b.lastChild.textContent !== r.title) b.lastChild.textContent = r.title;
     b.toggleAttribute("data-active", r.active);
     b.toggleAttribute("data-pending", r.pending);
     if (r.active) b.setAttribute("aria-current", "true");
@@ -7511,56 +7541,68 @@ function ccupSessionCardsWeb(
       ]);
       if (key === shown) return;
       shown = key;
-      const ids = new Set(rows.map((r) => r.id));
-      for (const id of sizes.keys()) if (!ids.has(id)) sizes.delete(id);
-      // A card whose title changed is measured in the strip: its width, less
-      // what its label shows, plus the label's whole text.
-      const stale =
-        w > 0 ? rows.filter((r) => sizes.get(r.id)?.k !== sizeKey(r)) : [];
-      for (const r of stale) {
-        const b = cardFor(r.id);
-        paint(b, r);
-        if (b.parentNode !== bar) bar.appendChild(b);
-      }
-      for (const r of stale) {
-        const b = cards.get(r.id);
-        const l = b.lastChild;
-        sizes.set(r.id, {
-          k: sizeKey(r),
-          w: b.offsetWidth - l.clientWidth + l.scrollWidth,
-        });
-      }
-      // As many as fit with each at its whole title or the minimum, whichever
-      // is narrower; the stylesheet then grows them toward their whole titles.
-      let n = 0;
-      for (let room = w; n < rows.length; n++) {
-        if (w <= 0) {
-          n = rows.length;
-          break;
-        }
-        const need = Math.min(sizes.get(rows[n].id)?.w ?? cfg.minW, cfg.minW);
-        if (n > 0 && need > room) break;
-        room -= need;
-      }
-      const show = rows.slice(0, n);
-      const keep = new Set(show.map((r) => r.id));
+      // Every card, in order: the strip scrolls through the ones it cannot
+      // show at once.
+      const keep = new Set(rows.map((r) => r.id));
       for (const [id, b] of cards) {
         if (keep.has(id)) continue;
         b.remove();
         cards.delete(id);
       }
       let stop: any = null;
-      show.forEach((r, i) => {
+      rows.forEach((r, i) => {
         const b = cardFor(r.id);
         paint(b, r);
         if (bar.children[i] !== b) bar.insertBefore(b, bar.children[i] ?? null);
         if (r.active || (!stop && i === 0)) stop = b;
       });
+      // The title cap: as many cards as fit in view at the shortest cap, then
+      // the longest cap that still keeps them all in view. A card is its
+      // chrome (padding, circle, gap) plus its label's text.
+      let n = cfg.longest;
+      if (w > 0 && rows.length) {
+        const b0 = cards.get(rows[0].id);
+        const l0 = b0.lastChild;
+        const s = g.getComputedStyle(l0);
+        const font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+        const chrome =
+          b0.getBoundingClientRect().width - l0.getBoundingClientRect().width;
+        const wide = (r: any, c: number): number =>
+          chrome + textW(font, cut(r.title, c));
+        let k = 0;
+        for (let room = w; k < rows.length; k++) {
+          const need = wide(rows[k], cfg.shortest);
+          if (k > 0 && need > room + 0.5) break;
+          room -= need;
+        }
+        // No card wider than the strip either, which a narrow one keeping a
+        // single card in view would otherwise allow.
+        const first = rows.slice(0, Math.max(1, k));
+        n = cfg.shortest;
+        for (let c = cfg.longest; c > cfg.shortest; c--) {
+          let sum = 0;
+          for (const r of first) sum += wide(r, c);
+          if (sum > w + 0.5 || rows.some((r) => wide(r, c) > w + 0.5)) continue;
+          n = c;
+          break;
+        }
+      }
+      for (const r of rows) {
+        const l = cards.get(r.id).lastChild;
+        const t = cut(r.title, n);
+        if (l.textContent !== t) l.textContent = t;
+      }
       // One tab stop: the focused card, else the session on screen, else the
       // first.
       const f = doc.activeElement;
       if (f && f.parentNode === bar) stop = f;
       for (const b of cards.values()) b.tabIndex = b === stop ? 0 : -1;
+      // The card on screen comes into view when it changes or moves, as the
+      // editor reveals its active tab; a scroll of your own stays otherwise.
+      const at = rows.findIndex((r) => r.active);
+      const now = at < 0 ? "" : `${rows[at].id}:${at}`;
+      if (now && now !== revealed && w > 0) reveal(cards.get(rows[at].id));
+      revealed = now;
     } catch {
       // a render never breaks the chat
     }
@@ -7645,8 +7687,27 @@ function ccupSessionCardsWeb(
     e.stopPropagation();
     all[i].tabIndex = -1;
     all[j].tabIndex = 0;
-    all[j].focus();
+    all[j].focus({ preventScroll: true });
+    reveal(all[j]);
   });
+  // The wheel scrolls the strip sideways, either axis, as over the editor's
+  // tabs; a strip with nothing to scroll lets it pass.
+  bar.addEventListener(
+    "wheel",
+    (e: any) => {
+      if (e.ctrlKey || bar.scrollWidth <= bar.clientWidth) return;
+      const unit =
+        e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? bar.clientWidth : 1;
+      const d =
+        (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * unit;
+      if (!d) return;
+      e.preventDefault();
+      hideTip();
+      bar.scrollLeft += d;
+    },
+    { passive: false },
+  );
+  bar.addEventListener("scroll", hideTip);
   bar.addEventListener("mouseover", (e: any) => {
     const b = cardAt(e.target);
     if (!b) return;
@@ -7694,21 +7755,27 @@ function ccupSessionCardsWeb(
   }
 }
 
-// How the card of the session on screen stands out. Either way it is cut from
-// the chat's own background, as a connected editor tab of VS Code's modern UI
-// is cut from the editor's: no edge between the card and the chat above it,
-// rounded corners on its far (bottom) side, and the strip curving into it
-// where they meet. The look follows window.density.layout, which applies
-// under the modern UI (workbench.experimental.modernUI): at the default
-// density that is all ("seamless"), and at the compact density the card also
-// carries the tab's blue accent line, along its bottom edge rather than the
-// top, since the strip sits below the chat rather than above it ("line").
-// The classic tabs, without the modern UI, carry the line too. Both settings
-// are read, never written, at patch time, so a change to either re-applies
-// (see Patcher.register) and asks for a webview refresh.
+// How the strip sits and how the card of the session on screen stands out.
+// Either way that card is cut from the chat's own background, as a connected
+// editor tab of VS Code's modern UI is cut from the editor's: no edge between
+// the card and the chat above it, rounded corners on its far (bottom) side,
+// and the strip curving into it where they meet, with the editor tab row's
+// geometry (the small corner radius, no groove left of the first card, the
+// tab height and text size). The look follows window.density.layout, which
+// applies under the modern UI (workbench.experimental.modernUI). At the
+// default density the cards reach the bottom of the view ("seamless"), where
+// VS Code's floating panel then leaves its own few pixels of padding, outside
+// the webview. At the compact density the cards keep a hairline groove below
+// them and the card on screen carries the tab's blue accent line, along its
+// bottom edge rather than the top, since the strip sits below the chat rather
+// than above it ("line"); the classic tabs, without the modern UI, do the
+// same. The card height follows window.density.editorTabHeight. All three
+// settings are read, never written, at patch time, so a change to any of
+// them re-applies (see Patcher.register) and asks for a webview refresh.
 export type ScardLook = "seamless" | "line";
 export const SCARD_LOOK_KEYS = [
   "window.density.layout",
+  "window.density.editorTabHeight",
   "workbench.experimental.modernUI",
 ];
 function scardLook(): ScardLook {
@@ -7722,19 +7789,33 @@ function scardLook(): ScardLook {
     return "line"; // outside VS Code: the repro scenarios pass a look
   }
 }
+function scardTabH(): number {
+  try {
+    return vscode.workspace
+      .getConfiguration()
+      .get<string>("window.density.editorTabHeight") === "compact"
+      ? SCARD_TAB_H_COMPACT
+      : SCARD_TAB_H;
+  } catch {
+    return SCARD_TAB_H;
+  }
+}
 
 // The strip's stylesheet: the connected tab row's background across the
-// sidebar's width, cards with a leading state circle (a hollow ring in the
-// card's own grey, solid in its text color for the session on screen, solid
-// clay for one waiting on you), the card on screen in the chat's background
-// with its corners and shoulders and the look's line, and the input box's
-// lowered gap. The corners take VS Code's connected tab radius
-// (cornerRadius.medium plus a stroke) and the shoulders the same curve, drawn
-// as masked squares in the chat's background just outside the card's top
-// corners, so they paint only where the strip meets the chat.
-function scardCss(chat: string, look: ScardLook): string {
+// sidebar's width, scrolling sideways with no scrollbar of its own, cards
+// with a leading state circle (a hollow ring in the card's own grey, solid in
+// its text color for the session on screen, solid clay for one waiting on
+// you), the card on screen in the chat's background with its corners and
+// shoulders and the look's line, and the input box's lowered gap. The corners
+// take VS Code's small radius (cornerRadius.small) and the shoulders the same
+// curve, drawn as masked squares in the chat's background just outside the
+// card's top corners, so they paint only where the strip meets the chat; the
+// first card sits flush with the strip's left edge, without either. The text
+// takes the editor tab's size (fontSize.body1).
+function scardCss(chat: string, look: ScardLook, tabH: number): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
+  const groove = look === "line" ? 1 : 0;
   const shoulder = (at: string) =>
     `radial-gradient(circle at ${at},transparent calc(var(--ccup-card-r) - .5px),#000 var(--ccup-card-r))`;
   const line =
@@ -7742,10 +7823,11 @@ function scardCss(chat: string, look: ScardLook): string {
       ? `;background-image:linear-gradient(${tab("activeBorderTop", "var(--vscode-focusBorder)")},${tab("activeBorderTop", "var(--vscode-focusBorder)")});background-repeat:no-repeat;background-position:50% 100%;background-size:calc(100% - 2 * var(--ccup-card-r)) 1px`
       : "";
   return (
-    `.ccup-cards{--ccup-card-r:calc(var(--vscode-cornerRadius-medium,6px) + 1px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;width:100%;height:${SCARD_H + SCARD_FOOT}px;margin:0;padding:0 var(--ccup-card-r) ${SCARD_FOOT}px;overflow:hidden;background:var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
+    `.ccup-cards{--ccup-card-r:var(--vscode-cornerRadius-small,4px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;width:100%;height:${tabH + groove}px;margin:0;padding:0 var(--ccup-card-r) ${groove}px 0;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
+    ".ccup-cards::-webkit-scrollbar{display:none}" +
     ".ccup-cards[hidden]{display:none}" +
-    `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:1 1 0;min-width:0;max-width:max-content;height:${SCARD_H}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--vscode-cornerRadius-small,4px);background:transparent;color:${tab("inactiveForeground", "var(--app-secondary-foreground)")};font:12px/${SCARD_H}px var(--vscode-font-family);text-align:left;cursor:pointer;outline:none}` +
-    ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+    `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 auto;height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${tab("inactiveForeground", "var(--app-secondary-foreground)")};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +
+    ".ccup-card-label{white-space:nowrap}" +
     ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
     ".ccup-card[data-active] .ccup-card-dot{background:currentColor}" +
     `.ccup-card[data-pending] .ccup-card-dot{border-color:${clay};background:${clay}}` +
@@ -7754,6 +7836,8 @@ function scardCss(chat: string, look: ScardLook): string {
     ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
     `.ccup-card[data-active]::before{right:100%;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
     `.ccup-card[data-active]::after{left:100%;-webkit-mask:${shoulder("100% 100%")};mask:${shoulder("100% 100%")}}` +
+    ".ccup-card[data-active]:first-child{border-bottom-left-radius:0}" +
+    ".ccup-card[data-active]:first-child::before{display:none}" +
     ".ccup-card:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
     `[data-ccup-cards] .inputContainer_${chat}{bottom:${SCARD_GAP}px}` +
     HOVER_TIP_CSS
@@ -7849,20 +7933,32 @@ const sessionCardsSite = (() => {
     return last.site;
   };
 })();
-let scardBuilt: { native: string; look: ScardLook; out: string | null }[] = [];
-function sessionCardsBuild(native: string, look: ScardLook): string | null {
-  const hit = scardBuilt.find((b) => b.native === native && b.look === look);
+let scardBuilt: {
+  native: string;
+  look: ScardLook;
+  tabH: number;
+  out: string | null;
+}[] = [];
+function sessionCardsBuild(
+  native: string,
+  look: ScardLook,
+  tabH: number,
+): string | null {
+  const hit = scardBuilt.find(
+    (b) => b.native === native && b.look === look && b.tabH === tabH,
+  );
   if (hit) return hit.out;
   const site = sessionCardsSite(native);
   let out: string | null = null;
   if (site) {
     const cfg: ScardCfg = {
       body: site.body,
-      css: scardCss(site.chat, look),
+      css: scardCss(site.chat, look, tabH),
       store: SCARD_STORE,
       cap: SCARD_STORE_CAP,
       max: SCARD_MAX,
-      minW: SCARD_MIN_W,
+      longest: SCARD_TITLE_LONGEST,
+      shortest: SCARD_TITLE_SHORTEST,
     };
     const edit: Edit = {
       pos: site.pos,
@@ -7873,7 +7969,7 @@ function sessionCardsBuild(native: string, look: ScardLook): string | null {
     const o = applyEdits(native, [edit]);
     if (unitsReparse(o, [edit], [[site.unit, isClass]])) out = o;
   }
-  scardBuilt = [{ native, look, out }, ...scardBuilt].slice(0, 2);
+  scardBuilt = [{ native, look, tabH, out }, ...scardBuilt].slice(0, 2);
   return out;
 }
 const scardStrip = (c: string): string => c.replace(SCARD_FRAG_RE, "");
@@ -7887,7 +7983,7 @@ function sessionCardsPresent(c: string): boolean {
 // nothing to remove.
 function sessionCardsCurrentOn(c: string): boolean | undefined {
   const native = scardStrip(c);
-  const want = sessionCardsBuild(native, scardLook());
+  const want = sessionCardsBuild(native, scardLook(), scardTabH());
   if (native !== c) return want === null || want === c;
   return want === null ? undefined : false;
 }
@@ -7895,17 +7991,18 @@ function sessionCardsSet(c: string, on: boolean): string {
   const native = scardStrip(c);
   if (!on) return native;
   // sites gone: leave the file as it is
-  return sessionCardsBuild(native, scardLook()) ?? c;
+  return sessionCardsBuild(native, scardLook(), scardTabH()) ?? c;
 }
 
-// The webview bundle with the strip in for a look, or null when a site is
-// gone. scripts/repro's session-cards.mjs serves this, so it runs exactly
-// what an apply writes and doubles as the drift canary.
+// The webview bundle with the strip in for a look and card height, or null
+// when a site is gone. scripts/repro's session-cards.mjs serves this, so it
+// runs exactly what an apply writes and doubles as the drift canary.
 export function sessionCardsWebview(
   js: string,
   look: ScardLook = "line",
+  tabH: number = SCARD_TAB_H,
 ): string | null {
-  return sessionCardsBuild(scardStrip(js), look);
+  return sessionCardsBuild(scardStrip(js), look, tabH);
 }
 
 // ---------------------------------------------------------------------------

@@ -159,9 +159,10 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   A session you have not opened in the sidebar since turning the setting on, nor sent to in an editor tab since, takes its place from its last activity instead.
   A click opens the session as the Session history list does, and one open in an editor tab gets that tab focused.
   Each card's circle is a hollow ring while idle, solid for the session on screen, and clay while a permission or question prompt waits or a finished turn is still unseen, and the hover tip says which.
-  As many cards show as fit at a minimum width, and each one shows as much of its title as it can: a short title keeps its whole width, and the longer ones share the rest.
-  The strip runs along the sidebar's bottom edge, and the card of the session on screen joins the chat above it, as an editor tab joins its editor.
-  When `window.density.layout` is compact, or without VS Code's modern UI, that card also carries a blue line along its bottom edge.
+  The strip holds every session that is not archived and scrolls sideways like the editor's tabs, the mouse wheel included.
+  A title shows up to 40 characters, and fewer as the sidebar narrows so that more cards stay in view, but never fewer than 15.
+  The strip runs along the sidebar's bottom edge in the editor tab row's size and shape, and the card of the session on screen joins the chat above it, as an editor tab joins its editor.
+  The cards are as tall as `window.density.editorTabHeight` makes editor tabs, and when `window.density.layout` is compact, or without VS Code's modern UI, they keep a hairline below them and the card on screen also carries a blue line along its bottom edge.
 - **Last turn delete reaches the last turn only.**
   With `chatPromptHistoryButton` on, the last entry in the prompt history has a delete button: a first click turns it into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.
   Every turn builds on the ones before it, so removing one from the middle would leave the later turns answering a conversation that no longer holds it.

@@ -174,7 +174,7 @@
         "claudeCodeUiPatch.chatSessionCards": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show your most recent local sessions as cards below the sidebar chat's input box, the one where you last sent a message first. Clicking one opens it as the Session history list does, and a dot marks a session waiting on you: a permission or question prompt, or a finished turn you have not seen. The open session's card follows `#window.density.layout#`."
+          "markdownDescription": "Show your most recent local sessions as cards along the bottom of the sidebar chat, below its input box, the one where you last sent a message first. Clicking one opens it as the Session history list does, and a card's circle turns clay while the session waits on you: a permission or question prompt, or a finished turn you have not seen. The open session's card follows `#window.density.layout#`."
         },
         "claudeCodeUiPatch.chatRawMarkdownButton": {
           "type": "boolean",

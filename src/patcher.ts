@@ -7135,14 +7135,17 @@ export function promptHistWebview(
 }
 
 // ---------------------------------------------------------------------------
-// Session cards (ON, the sidebar chat only): a strip below the input box with
-// one card per recent local session, shaped like the editor's tabs, so that
-// switching sessions takes one click instead of the Session history dropdown.
-// The cards run left to right from the session where you last sent a message,
-// a click does what picking that row in the dropdown does (a session open in
-// an editor tab gets that tab focused, any other one opens here), and a small
-// dot on a card says the session waits on you: a permission or question
-// prompt, or a turn that ended while another session was on screen.
+// Session cards (ON, the sidebar chat only): a strip across the bottom of the
+// sidebar, below the input box, with one card per recent local session,
+// shaped like the modern UI's connected editor tabs turned upside down, so
+// that switching sessions takes one click instead of the Session history
+// dropdown. The cards run left to right from the session where you last sent
+// a message, a click does what picking that row in the dropdown does (a
+// session open in an editor tab gets that tab focused, any other one opens
+// here), and each card leads with a circle where a tab shows its file icon: a
+// hollow ring, solid for the session on screen, and solid clay when the
+// session waits on you (a permission or question prompt, or a turn that
+// ended while another session was on screen).
 //
 // One fragment, /*ccup:scard*/.../*ccup:scardEnd*/, at the end of the webview
 // session manager's constructor (the class with doListSessions, one per
@@ -7217,15 +7220,13 @@ const SCARD_STORE_CAP = 200;
 // title gets before one fewer card shows.
 const SCARD_MAX = 12;
 const SCARD_MIN_W = 96;
-// The status bar's height, and the strip's air: above it to the input box,
-// below it to the view's edge.
+// A card's height (the status bar's), the strip's foot below the cards (its
+// far side, as an editor's tab row keeps a few pixels above its tabs), and
+// the air between the input box and the strip, which spans the sidebar's
+// whole width and sits on its bottom edge.
 const SCARD_H = 22;
+const SCARD_FOOT = 4;
 const SCARD_GAP = 8;
-const SCARD_BOTTOM = 6;
-// The composer's width cap and side inset (.inputContainer_<chat>), mirrored
-// so the cards line up with the input box.
-const SCARD_CAP_W = 680;
-const SCARD_INSET = 16;
 // The members the strip reads off a session, the manager, and the feed.
 const SCARD_SESSION_FIELDS = [
   "claudeChannelIdSignal",
@@ -7256,7 +7257,6 @@ interface ScardCfg {
   cap: number;
   max: number;
   minW: number;
-  inset: number;
 }
 
 // The strip, built around the session manager by its constructor. Compiled
@@ -7438,11 +7438,10 @@ function ccupSessionCardsWeb(
   let raf = 0;
   let host: any = null;
 
-  // Each card's full width (its whole title, and its dot when shown), by
-  // session id, kept while the session stays a candidate, so a resize
-  // measures nothing.
+  // Each card's full width (its whole title), by session id, kept while the
+  // session stays a candidate, so a resize measures nothing.
   const sizes = new Map<string, { k: string; w: number }>();
-  const sizeKey = (r: any): string => `${r.pending ? 1 : 0}|${r.title}`;
+  const sizeKey = (r: any): string => r.title;
 
   const mark = (on: boolean): void => {
     if (host && host.hasAttribute("data-ccup-cards") !== on)
@@ -7468,19 +7467,20 @@ function ccupSessionCardsWeb(
     b.className = "ccup-card";
     b.tabIndex = -1;
     b.dataset.id = id;
-    const label = doc.createElement("span");
-    label.className = "ccup-card-label";
+    // The state circle leads, where an editor tab shows its file icon, and the
+    // title follows (the card's last child).
     const dot = doc.createElement("span");
     dot.className = "ccup-card-dot";
     dot.setAttribute("aria-hidden", "true");
-    b.appendChild(label);
+    const label = doc.createElement("span");
+    label.className = "ccup-card-label";
     b.appendChild(dot);
+    b.appendChild(label);
     cards.set(id, b);
     return b;
   };
   const paint = (b: any, r: any): void => {
-    if (b.firstChild.textContent !== r.title)
-      b.firstChild.textContent = r.title;
+    if (b.lastChild.textContent !== r.title) b.lastChild.textContent = r.title;
     b.toggleAttribute("data-active", r.active);
     b.toggleAttribute("data-pending", r.pending);
     if (r.active) b.setAttribute("aria-current", "true");
@@ -7499,7 +7499,12 @@ function ccupSessionCardsWeb(
       if (bar.hidden === some) bar.hidden = !some;
       mount();
       mark(some);
-      const w = some ? bar.clientWidth - 2 * cfg.inset : 0;
+      const pad = g.getComputedStyle(bar);
+      const w = some
+        ? bar.clientWidth -
+          parseFloat(pad.paddingLeft) -
+          parseFloat(pad.paddingRight)
+        : 0;
       const key = JSON.stringify([
         w,
         rows.map((r) => [r.id, r.title, r.active, r.pending, r.why, r.tab]),
@@ -7508,8 +7513,8 @@ function ccupSessionCardsWeb(
       shown = key;
       const ids = new Set(rows.map((r) => r.id));
       for (const id of sizes.keys()) if (!ids.has(id)) sizes.delete(id);
-      // A card whose title or dot changed is measured in the strip: its
-      // width, less what its label shows, plus the label's whole text.
+      // A card whose title changed is measured in the strip: its width, less
+      // what its label shows, plus the label's whole text.
       const stale =
         w > 0 ? rows.filter((r) => sizes.get(r.id)?.k !== sizeKey(r)) : [];
       for (const r of stale) {
@@ -7519,7 +7524,7 @@ function ccupSessionCardsWeb(
       }
       for (const r of stale) {
         const b = cards.get(r.id);
-        const l = b.firstChild;
+        const l = b.lastChild;
         sizes.set(r.id, {
           k: sizeKey(r),
           w: b.offsetWidth - l.clientWidth + l.scrollWidth,
@@ -7689,17 +7694,19 @@ function ccupSessionCardsWeb(
   }
 }
 
-// How the card of the session on screen stands out, following VS Code's
-// window.density.layout, which applies under its modern UI
-// (workbench.experimental.modernUI). At the default density a modern editor
-// tab shows as a filled one, so the card takes that tab's fill ("fill"); at
-// the compact density the tab carries the blue accent line, which the card
-// draws along its bottom edge instead of the top, since the strip sits below
-// the chat rather than over it ("line"). The classic tabs, without the modern
-// UI, carry the line too. Both settings are read, never written, at patch
-// time, so a change to either re-applies (see Patcher.register) and asks for
-// a webview refresh.
-export type ScardLook = "fill" | "line";
+// How the card of the session on screen stands out. Either way it is cut from
+// the chat's own background, as a connected editor tab of VS Code's modern UI
+// is cut from the editor's: no edge between the card and the chat above it,
+// rounded corners on its far (bottom) side, and the strip curving into it
+// where they meet. The look follows window.density.layout, which applies
+// under the modern UI (workbench.experimental.modernUI): at the default
+// density that is all ("seamless"), and at the compact density the card also
+// carries the tab's blue accent line, along its bottom edge rather than the
+// top, since the strip sits below the chat rather than above it ("line").
+// The classic tabs, without the modern UI, carry the line too. Both settings
+// are read, never written, at patch time, so a change to either re-applies
+// (see Patcher.register) and asks for a webview refresh.
+export type ScardLook = "seamless" | "line";
 export const SCARD_LOOK_KEYS = [
   "window.density.layout",
   "workbench.experimental.modernUI",
@@ -7709,41 +7716,44 @@ function scardLook(): ScardLook {
     const c = vscode.workspace.getConfiguration();
     const modern = c.get<boolean>("workbench.experimental.modernUI") === true;
     return modern && c.get<string>("window.density.layout") !== "compact"
-      ? "fill"
+      ? "seamless"
       : "line";
   } catch {
     return "line"; // outside VS Code: the repro scenarios pass a look
   }
 }
 
-// The strip's stylesheet: tab-like cards in the editor's tab colors, the card
-// on screen marked as the look asks, the dot in Claude Code's own unread
-// color, and the input box's lowered gap.
+// The strip's stylesheet: the connected tab row's background across the
+// sidebar's width, cards with a leading state circle (a hollow ring in the
+// card's own grey, solid in its text color for the session on screen, solid
+// clay for one waiting on you), the card on screen in the chat's background
+// with its corners and shoulders and the look's line, and the input box's
+// lowered gap. The corners take VS Code's connected tab radius
+// (cornerRadius.medium plus a stroke) and the shoulders the same curve, drawn
+// as masked squares in the chat's background just outside the card's top
+// corners, so they paint only where the strip meets the chat.
 function scardCss(chat: string, look: ScardLook): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
-  const modern = (k: string, d: string) =>
-    `var(--vscode-modernEditorTab-${k},${d})`;
-  const hoverBg = tab("hoverBackground", "var(--app-list-hover-background)");
-  const hoverFg = tab("hoverForeground", "var(--app-primary-foreground)");
-  const activeBg = tab("activeBackground", "var(--app-input-background)");
-  const activeFg = tab("activeForeground", "var(--app-primary-foreground)");
-  const hover =
-    look === "fill"
-      ? `background:${modern("hoverBackground", hoverBg)};color:${modern("hoverForeground", hoverFg)}`
-      : `background:${hoverBg};color:${hoverFg}`;
-  const active =
-    look === "fill"
-      ? `background:${modern("activeBackground", activeBg)};color:${modern("activeForeground", activeFg)}`
-      : `background:${activeBg};color:${activeFg};box-shadow:inset 0 -1px 0 ${tab("activeBorderTop", "var(--vscode-focusBorder)")}`;
+  const clay = "var(--app-claude-orange,#d97757)";
+  const shoulder = (at: string) =>
+    `radial-gradient(circle at ${at},transparent calc(var(--ccup-card-r) - .5px),#000 var(--ccup-card-r))`;
+  const line =
+    look === "line"
+      ? `;background-image:linear-gradient(${tab("activeBorderTop", "var(--vscode-focusBorder)")},${tab("activeBorderTop", "var(--vscode-focusBorder)")});background-repeat:no-repeat;background-position:50% 100%;background-size:calc(100% - 2 * var(--ccup-card-r)) 1px`
+      : "";
   return (
-    `.ccup-cards{position:relative;display:flex;flex:none;box-sizing:border-box;width:100%;max-width:${SCARD_CAP_W + 2 * SCARD_INSET}px;height:${SCARD_H}px;margin:0 auto ${SCARD_BOTTOM}px;padding:0 ${SCARD_INSET}px;overflow:hidden}` +
+    `.ccup-cards{--ccup-card-r:calc(var(--vscode-cornerRadius-medium,6px) + 1px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;width:100%;height:${SCARD_H + SCARD_FOOT}px;margin:0;padding:0 var(--ccup-card-r) ${SCARD_FOOT}px;overflow:hidden;background:var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
     ".ccup-cards[hidden]{display:none}" +
-    `.ccup-card{display:flex;align-items:center;gap:6px;flex:1 1 0;min-width:0;max-width:max-content;height:${SCARD_H}px;box-sizing:border-box;margin:0;padding:0 10px;border:none;border-right:1px solid ${tab("border", "transparent")};border-radius:0;background:${tab("inactiveBackground", "transparent")};color:${tab("inactiveForeground", "var(--app-secondary-foreground)")};font:12px/${SCARD_H}px var(--vscode-font-family);text-align:left;cursor:pointer;outline:none}` +
+    `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:1 1 0;min-width:0;max-width:max-content;height:${SCARD_H}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--vscode-cornerRadius-small,4px);background:transparent;color:${tab("inactiveForeground", "var(--app-secondary-foreground)")};font:12px/${SCARD_H}px var(--vscode-font-family);text-align:left;cursor:pointer;outline:none}` +
     ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-    ".ccup-card-dot{display:none;flex:none;width:6px;height:6px;border-radius:50%;background:var(--app-status-unread,#d97757)}" +
-    ".ccup-card[data-pending] .ccup-card-dot{display:block}" +
-    `.ccup-card${HOVER}{${hover}}` +
-    `.ccup-card[data-active]{${active};cursor:default}` +
+    ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
+    ".ccup-card[data-active] .ccup-card-dot{background:currentColor}" +
+    `.ccup-card[data-pending] .ccup-card-dot{border-color:${clay};background:${clay}}` +
+    `.ccup-card:not([data-active])${HOVER}{background:var(--app-ghost-button-hover-background);color:${tab("hoverForeground", "var(--app-primary-foreground)")}}` +
+    `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);color:${tab("activeForeground", "var(--app-primary-foreground)")};cursor:default${line}}` +
+    ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
+    `.ccup-card[data-active]::before{right:100%;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
+    `.ccup-card[data-active]::after{left:100%;-webkit-mask:${shoulder("100% 100%")};mask:${shoulder("100% 100%")}}` +
     ".ccup-card:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
     `[data-ccup-cards] .inputContainer_${chat}{bottom:${SCARD_GAP}px}` +
     HOVER_TIP_CSS
@@ -7853,7 +7863,6 @@ function sessionCardsBuild(native: string, look: ScardLook): string | null {
       cap: SCARD_STORE_CAP,
       max: SCARD_MAX,
       minW: SCARD_MIN_W,
-      inset: SCARD_INSET,
     };
     const edit: Edit = {
       pos: site.pos,

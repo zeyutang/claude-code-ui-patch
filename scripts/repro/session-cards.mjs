@@ -2,16 +2,22 @@
 // bundle booted as the sidebar against a stub host that lists six local
 // sessions (plus a Web one) and runs a turn for every prompt sent until the
 // scenario ends it. Real clicks and keys drive it, and the checks assert:
-//   mount     the strip is the session body's last child, one status bar
-//             (22px) tall, its cards lined up with the input box, the box
-//             8px above it, and the strip 6px off the view's bottom edge
+//   mount     the strip is the session body's last child, across the view's
+//             whole width on its bottom edge, the input box 8px above it,
+//             its cards one status bar (22px) tall over a 4px foot
 //   order     cards run from the session of your last message: the booted
 //             one by its newest prompt (not by the later activity the list
 //             reports for it), the others by the list's activity time, no
 //             Web session, and a prompt you send moves its session first
-//   active    the session on screen is marked, and never carries a dot
+//   active    the session on screen is marked, and never shows pending
 //   pending   the host's feed: awaiting input in a tab, and Claude Code's
-//             unread mark, each give one dot, its reason in the hover tip
+//             unread mark, each mark the card, its reason in the hover tip
+//   circle    each card leads with a circle: a hollow ring in the card's
+//             grey, solid in its text color for the session on screen, solid
+//             clay for a session waiting on you
+//   seamless  the card on screen is the chat's own background, joined to
+//             the chat above with no edge, its bottom corners rounded and the
+//             strip curving into it at the top, on the screen's pixels
 //   click     a session open in an editor tab asks the host to focus that
 //             tab, any other opens here, the strip staying the same element
 //             and the input box staying put
@@ -29,10 +35,10 @@
 //             short titles whole, the longer ones splitting the rest evenly,
 //             none past the strip's edge, at 420px, 760px and 250px
 //   settle    an idle strip mutates nothing
-//   look      the card on screen follows VS Code's layout density: filled
-//             with the modern tab color at the default density, a blue line
-//             along its bottom edge when compact (both built here, as the
-//             patcher would from window.density.layout)
+//   look      the card on screen follows VS Code's layout density: no line
+//             at the default density, the blue line along its bottom edge
+//             when compact (both built here, as the patcher would from
+//             window.density.layout)
 //   editor    an editor tab (IS_SIDEBAR false) gets no strip
 //   empty     with no session to show the strip stays hidden and the input
 //             box keeps its native 16px
@@ -122,7 +128,7 @@ const page = `<!doctype html><html><head><meta charset="utf-8">
 --vscode-tab-activeForeground:#ffffff;--vscode-tab-inactiveForeground:#9d9d9d;
 --vscode-tab-border:#2b2b2b;--vscode-tab-activeBorderTop:#0078d4;--vscode-tab-hoverBackground:#1f1f1f;
 --vscode-modernEditorTab-activeBackground:#37373d;--vscode-modernEditorTab-activeForeground:#cccccc;
---vscode-modernEditorTab-hoverBackground:#2a2d2e;
+--vscode-modernEditorTab-hoverBackground:#2a2d2e;--vscode-editorGroupHeader-connectedTabsBackground:#2b2b2b;
 color-scheme:dark}
 body{background:var(--vscode-sideBar-background);color:var(--vscode-foreground)}
 </style></head><body class="vscode-dark">
@@ -255,7 +261,7 @@ export async function run(ctx) {
   // stub server hands out the one /__look/<name> last picked.
   const serve = {
     line: P.sessionCardsWebview(native, "line"),
-    fill: P.sessionCardsWebview(native, "fill"),
+    seamless: P.sessionCardsWebview(native, "seamless"),
   };
   let look = "line";
   const cls = (key) =>
@@ -277,7 +283,7 @@ export async function run(ctx) {
   if (
     !check(
       "the patcher builds the strip into this bundle in both looks",
-      !!serve.line && !!serve.fill,
+      !!serve.line && !!serve.seamless,
     )
   )
     return false;
@@ -354,13 +360,13 @@ export async function run(ctx) {
     }
   };
   // The cards as shown: session letter, then * for the one on screen and !
-  // for a dot.
+  // for one whose circle shows it waiting.
   const LETTER = Object.fromEntries(Object.entries(S).map(([k, v]) => [v, k]));
   const strip = async () =>
     (
       await json(
         `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){` +
-          `return[b.dataset.id,b.hasAttribute("data-active"),b.hasAttribute("data-pending")&&getComputedStyle(b.lastChild).display!=="none"]})`,
+          `return[b.dataset.id,b.hasAttribute("data-active"),b.hasAttribute("data-pending")&&getComputedStyle(b.firstChild).backgroundColor==="rgb(217, 119, 87)"]})`,
       )
     )
       .map(([i, a, p]) => `${LETTER[i] ?? "?"}${a ? "*" : ""}${p ? "!" : ""}`)
@@ -387,16 +393,16 @@ export async function run(ctx) {
   const layout = () =>
     json(
       `(function(){var b=${q(BAR)},cs=[].slice.call(b.querySelectorAll(${JSON.stringify(CARD)})),` +
-        `W=b.clientWidth-32,rb=b.getBoundingClientRect();` +
-        `function whole(c){var l=c.firstChild;return c.getBoundingClientRect().width-l.clientWidth+l.scrollWidth}` +
-        `var shown=cs.map(function(c){var l=c.firstChild;` +
+        `ps=getComputedStyle(b),pl=parseFloat(ps.paddingLeft),pr=parseFloat(ps.paddingRight),W=b.clientWidth-pl-pr,rb=b.getBoundingClientRect();` +
+        `function whole(c){var l=c.lastChild;return c.getBoundingClientRect().width-l.clientWidth+l.scrollWidth}` +
+        `var shown=cs.map(function(c){var l=c.lastChild;` +
         `return{w:c.getBoundingClientRect().width,whole:whole(c),cut:l.scrollWidth>l.clientWidth+1}});` +
         `var rows=window.__ccupSessionCards.rows,nx=rows[cs.length],nw=null;` +
-        `if(nx){var t=cs[0].cloneNode(true);t.firstChild.textContent=nx.title;` +
+        `if(nx){var t=cs[0].cloneNode(true);t.lastChild.textContent=nx.title;` +
         `t.toggleAttribute("data-pending",nx.pending);t.removeAttribute("data-active");` +
         `b.appendChild(t);nw=whole(t);t.remove()}` +
         `return{W:W,shown:shown,next:nw,` +
-        `over:cs.some(function(c){return c.getBoundingClientRect().right>rb.right-16+0.5})}})()`,
+        `over:cs.some(function(c){return c.getBoundingClientRect().right>rb.right-pr+0.5})}})()`,
     );
   // The rule: the shown cards fit at their whole title or the minimum,
   // whichever is narrower, and one more would not; each gets at least that;
@@ -426,9 +432,9 @@ export async function run(ctx) {
     await ctx.sleep(300);
     const g = await json(
       `(function(){var b=${q(BAR)},f=${q(BOX)} && ${q(BOX)}.querySelector("fieldset"),c=b.querySelectorAll(${JSON.stringify(CARD)});` +
-        `var rb=b.getBoundingClientRect(),rf=f.getBoundingClientRect(),c0=c[0].getBoundingClientRect(),cl=c[c.length-1].getBoundingClientRect();` +
-        `return{last:b.parentNode.matches(${JSON.stringify(BODY)})&&!b.nextSibling,h:rb.height,ch:c0.height,gap:rb.top-rf.bottom,` +
-        `edge:innerHeight-rb.bottom,left:c0.left-rf.left,right:rf.right-cl.right,marked:b.parentNode.hasAttribute("data-ccup-cards"),n:c.length}})()`,
+        `var rb=b.getBoundingClientRect(),rf=f.getBoundingClientRect(),c0=c[0].getBoundingClientRect();` +
+        `return{last:b.parentNode.matches(${JSON.stringify(BODY)})&&!b.nextSibling,h:rb.height,ch:c0.height,top:c0.top-rb.top,gap:rb.top-rf.bottom,` +
+        `edge:innerHeight-rb.bottom,left:rb.left,right:innerWidth-rb.right,marked:b.parentNode.hasAttribute("data-ccup-cards"),n:c.length}})()`,
     );
     check(
       "mount: last child of the session body, marked on it",
@@ -436,15 +442,15 @@ export async function run(ctx) {
       JSON.stringify(g),
     );
     check(
-      "mount: one status bar tall, the input box 8px above, 6px off the bottom",
-      g.h === 22 &&
-        g.ch === 22 &&
-        Math.abs(g.gap - 8) < 0.6 &&
-        Math.abs(g.edge - 6) < 0.6,
+      "mount: across the whole width on the bottom edge, the input box 8px above",
+      Math.abs(g.left) < 0.6 &&
+        Math.abs(g.right) < 0.6 &&
+        Math.abs(g.edge) < 0.6 &&
+        Math.abs(g.gap - 8) < 0.6,
     );
     check(
-      "mount: the cards line up with the input box",
-      Math.abs(g.left) < 0.6 && g.right >= -0.6,
+      "mount: cards one status bar tall at the strip's top, over a 4px foot",
+      g.ch === 22 && Math.abs(g.top) < 0.6 && g.h === 26,
     );
     const L0 = await layout();
     const fill0 = fillOk(L0);
@@ -485,9 +491,82 @@ export async function run(ctx) {
     await ctx.sleep(200);
     const s1 = await strip();
     check(
-      "pending: awaiting input and unread each give one dot, never on the session on screen",
+      "pending: awaiting input and unread each mark the card, never the session on screen",
       s1 === "B! C A* D!",
       s1,
+    );
+    // Circles: C is idle, A on screen, B waiting.
+    const ring = (k) =>
+      json(
+        `(function(){var b=${cardEl(k)},d=b.firstChild,s=getComputedStyle(d),c=getComputedStyle(b);` +
+          `return{w:s.width,bg:s.backgroundColor,edge:s.borderTopColor,ink:c.color,first:d.className}})()`,
+      );
+    const [rc, ra, rb] = [await ring("C"), await ring("A"), await ring("B")];
+    check(
+      "circle: a hollow ring in the card's grey when idle",
+      rc.first === "ccup-card-dot" &&
+        rc.w === "8px" &&
+        rc.bg === "rgba(0, 0, 0, 0)" &&
+        rc.edge === rc.ink &&
+        rc.ink === "rgb(157, 157, 157)",
+      JSON.stringify(rc),
+    );
+    check(
+      "circle: solid in the text color for the session on screen, solid clay when waiting",
+      ra.bg === ra.ink &&
+        ra.ink === "rgb(255, 255, 255)" &&
+        rb.bg === "rgb(217, 119, 87)" &&
+        rb.edge === "rgb(217, 119, 87)",
+      JSON.stringify({ ra, rb }),
+    );
+    // Seamless, on the screen's pixels: around the card on screen (A) and in
+    // the strip beside it.
+    const colorsAt = async (pts) => {
+      const shot = await ctx.cdp("Page.captureScreenshot", { format: "png" });
+      const r = await ctx.cdp("Runtime.evaluate", {
+        awaitPromise: true,
+        returnByValue: true,
+        expression:
+          `new Promise(function(res){var im=new Image();im.onload=function(){var c=document.createElement("canvas");` +
+          `c.width=im.width;c.height=im.height;var g=c.getContext("2d");g.drawImage(im,0,0);var k=im.width/innerWidth;` +
+          `res(${JSON.stringify(pts)}.map(function(p){var d=g.getImageData(Math.floor(p[0]*k),Math.floor(p[1]*k),1,1).data;` +
+          `return "rgb("+d[0]+", "+d[1]+", "+d[2]+")"}))};im.src="data:image/png;base64,${shot.data}"})`,
+      });
+      return r.result.value;
+    };
+    await ctx.cdp("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: 5,
+      y: 5,
+    });
+    await ctx.sleep(150);
+    const a = await box(cardEl("A"));
+    const cIdle = await box(cardEl("C"));
+    const [above, joined, shoulder, beside, cornerOut, cornerIn, foot] =
+      await colorsAt([
+        [a.x + a.w / 2, a.y - 3],
+        [a.x + a.w / 2, a.y + 0.5],
+        [a.x - 1, a.y + 0.5],
+        [a.x - 1, a.y + 6],
+        [a.x + 0.5, a.b - 0.5],
+        [a.x + 7, a.b - 1.5],
+        [cIdle.x + cIdle.w / 2, cIdle.b + 2],
+      ]);
+    const CHAT = "rgb(24, 24, 24)";
+    const STRIP = "rgb(43, 43, 43)";
+    check(
+      "seamless: the card on screen is the chat's background, joined to the chat above",
+      above === CHAT && joined === CHAT,
+      JSON.stringify({ above, joined }),
+    );
+    check(
+      "seamless: the strip curves into it at the top, its bottom corners are rounded",
+      shoulder === CHAT &&
+        beside === STRIP &&
+        cornerOut === STRIP &&
+        cornerIn === CHAT &&
+        foot === STRIP,
+      JSON.stringify({ shoulder, beside, cornerOut, cornerIn, foot }),
     );
     // The tip names the reason, above the card.
     await ctx.cdp("Input.dispatchMouseEvent", {
@@ -766,34 +845,48 @@ export async function run(ctx) {
     );
 
     // Look: the line form (compact density, or no modern UI) draws the tab's
-    // blue accent along the active card's bottom edge over the tab's own
-    // background, and the fill form (default density) colors the card with
-    // the modern tab fill and draws no line.
+    // blue accent along the bottom edge of the card on screen, inset by its
+    // corners, and the seamless form (default density) draws none. Both keep
+    // the card in the chat's background.
     const paint = (k) =>
       json(
-        `(function(){var s=getComputedStyle(${cardEl(k)});return{bg:s.backgroundColor,line:s.boxShadow}})()`,
+        `(function(){var s=getComputedStyle(${cardEl(k)});` +
+          `return{bg:s.backgroundColor,img:s.backgroundImage,size:s.backgroundSize,pos:s.backgroundPosition}})()`,
       );
     const line = await paint("A");
+    const [lineMid, lineCorner] = await (async () => {
+      const b = await box(cardEl("A"));
+      return colorsAt([
+        [b.x + b.w / 2, b.b - 0.5],
+        [b.x + 2, b.b - 0.5],
+      ]);
+    })();
     check(
-      "look: compact puts the blue line along the active card's bottom",
-      line.bg === "rgb(31, 31, 31)" &&
-        line.line === "rgb(0, 120, 212) 0px -1px 0px 0px inset",
-      JSON.stringify(line),
+      "look: compact puts the blue line along the bottom of the card on screen",
+      line.bg === "rgb(24, 24, 24)" &&
+        line.img.includes("rgb(0, 120, 212)") &&
+        lineMid === "rgb(0, 120, 212)" &&
+        lineCorner !== "rgb(0, 120, 212)",
+      JSON.stringify({ line, lineMid, lineCorner }),
     );
-    await fetch(base + "__look/fill");
+    await fetch(base + "__look/seamless");
     await boot();
     await ctx.sleep(400);
-    const fill = await paint("A");
+    const plain = await paint("A");
     const rest = await paint("B");
+    const [plainMid] = await (async () => {
+      const b = await box(cardEl("A"));
+      return colorsAt([[b.x + b.w / 2, b.b - 0.5]]);
+    })();
     check(
-      "look: default fills the active card with the modern tab color, no line",
-      fill.bg === "rgb(55, 55, 61)" &&
-        fill.line === "none" &&
-        rest.bg !== fill.bg &&
-        rest.line === "none",
-      JSON.stringify({ fill, rest }),
+      "look: default keeps the card on screen seamless, with no line",
+      plain.bg === "rgb(24, 24, 24)" &&
+        plain.img === "none" &&
+        plainMid === "rgb(24, 24, 24)" &&
+        rest.bg === "rgba(0, 0, 0, 0)",
+      JSON.stringify({ plain, plainMid, rest }),
     );
-    await ctx.shot("session-cards-fill");
+    await ctx.shot("session-cards-seamless");
     await fetch(base + "__look/line");
 
     // Editor tab: no strip at all.

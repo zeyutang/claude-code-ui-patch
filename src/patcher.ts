@@ -7811,11 +7811,18 @@ function scardTabH(): number {
 // curve, drawn as masked squares in the chat's background just outside the
 // card's top corners, so they paint only where the strip meets the chat; the
 // first card sits flush with the strip's left edge, without either. The text
-// takes the editor tab's size (fontSize.body1).
+// takes the editor tab's size (fontSize.body1). At the default density the
+// webview itself is clipped to VS Code's large radius (cornerRadius.large),
+// so there the strip's ends stay that far in from the sides, which keeps its
+// own corners square.
 function scardCss(chat: string, look: ScardLook, tabH: number): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
   const groove = look === "line" ? 1 : 0;
+  const ends =
+    look === "seamless"
+      ? "width:calc(100% - 2 * var(--vscode-cornerRadius-large,8px));margin:0 var(--vscode-cornerRadius-large,8px)"
+      : "width:100%;margin:0";
   const shoulder = (at: string) =>
     `radial-gradient(circle at ${at},transparent calc(var(--ccup-card-r) - .5px),#000 var(--ccup-card-r))`;
   const line =
@@ -7823,7 +7830,7 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
       ? `;background-image:linear-gradient(${tab("activeBorderTop", "var(--vscode-focusBorder)")},${tab("activeBorderTop", "var(--vscode-focusBorder)")});background-repeat:no-repeat;background-position:50% 100%;background-size:calc(100% - 2 * var(--ccup-card-r)) 1px`
       : "";
   return (
-    `.ccup-cards{--ccup-card-r:var(--vscode-cornerRadius-small,4px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;width:100%;height:${tabH + groove}px;margin:0;padding:0 var(--ccup-card-r) ${groove}px 0;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
+    `.ccup-cards{--ccup-card-r:var(--vscode-cornerRadius-small,4px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;${ends};height:${tabH + groove}px;padding:0 var(--ccup-card-r) ${groove}px 0;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
     ".ccup-cards::-webkit-scrollbar{display:none}" +
     ".ccup-cards[hidden]{display:none}" +
     `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 auto;height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${tab("inactiveForeground", "var(--app-secondary-foreground)")};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +

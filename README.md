@@ -162,6 +162,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   The strip holds every session that is not archived and scrolls sideways like the editor's tabs, the mouse wheel included.
   A title shows up to 40 characters, and fewer as the sidebar narrows so that more cards stay in view, but never fewer than 15.
   The strip runs along the sidebar's bottom edge in the editor tab row's size and shape, and the card of the session on screen joins the chat above it, as an editor tab joins its editor.
+  At the default density its ends stop short of the sidebar's rounded corners, so its own corners stay square.
   The cards are as tall as `window.density.editorTabHeight` makes editor tabs, and when `window.density.layout` is compact, or without VS Code's modern UI, they keep a hairline below them and the card on screen also carries a blue line along its bottom edge.
 - **Last turn delete reaches the last turn only.**
   With `chatPromptHistoryButton` on, the last entry in the prompt history has a delete button: a first click turns it into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.

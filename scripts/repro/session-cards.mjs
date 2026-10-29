@@ -40,11 +40,13 @@
 //             it changes
 //   settle    an idle strip mutates nothing
 //   look      the strip follows VS Code's layout density: at the default
-//             density no groove, the cards on the view's bottom edge and no
-//             line, and when compact the 1px groove and the blue line along
-//             the bottom of the card on screen (both built here, as the
-//             patcher would from window.density.layout); a compact tab height
-//             makes the cards 20px tall
+//             density no groove, the cards on the view's bottom edge, no
+//             line, and the strip's ends 8px in so its corners stay square
+//             under the rounded clip VS Code puts on the webview there
+//             (emulated), and when compact the 1px groove and the blue line
+//             along the bottom of the card on screen (both built here, as
+//             the patcher would from window.density.layout); a compact tab
+//             height makes the cards 20px tall
 //   editor    an editor tab (IS_SIDEBAR false) gets no strip
 //   empty     with no session to show the strip stays hidden and the input
 //             box keeps its native 16px
@@ -1067,6 +1069,41 @@ export async function run(ctx) {
       "look: default has no groove, the cards on the view's bottom edge",
       seat.h === 24 && seat.ch === 24 && Math.abs(seat.edge) < 0.6,
       JSON.stringify(seat),
+    );
+    // There VS Code clips the webview to its 8px radius, so the strip's ends
+    // keep 8px in, over the chat's background, and its corners stay square.
+    // The clip is emulated by a box over the whole view with those corners,
+    // its shadow painting what falls outside them in a color nothing else
+    // uses, and the view's own corner shows that it took.
+    const ends = await json(
+      `(function(){var e=${q(BAR)},b=e.getBoundingClientRect(),s=getComputedStyle(e);` +
+        `return{left:b.left,right:innerWidth-b.right,x:b.x,r:b.right,b:b.bottom,w:innerWidth,h:innerHeight,` +
+        `radius:s.borderBottomLeftRadius+" "+s.borderBottomRightRadius}})()`,
+    );
+    const CLIPPED = "rgb(255, 0, 255)";
+    await ctx.evaluate(
+      `(function(){var d=document.createElement("div");d.id="ccup-clip";` +
+        `d.style.cssText="position:fixed;inset:0;border-radius:8px;box-shadow:0 0 0 64px #f0f;pointer-events:none;z-index:2147483647";` +
+        `document.body.appendChild(d)})()`,
+    );
+    const [viewCorner, endLeft, endRight, pastEnd] = await colorsAt([
+      [ends.w - 0.5, ends.h - 0.5],
+      [ends.x + 0.5, ends.b - 0.5],
+      [ends.r - 0.5, ends.b - 0.5],
+      [ends.r + 4, ends.b - 4],
+    ]);
+    await ctx.shot("session-cards-seamless-clip");
+    await ctx.evaluate(`document.getElementById("ccup-clip").remove()`);
+    check(
+      "look: default keeps the strip's ends 8px in, its corners square under VS Code's rounded clip",
+      Math.abs(ends.left - 8) < 0.6 &&
+        Math.abs(ends.right - 8) < 0.6 &&
+        ends.radius === "0px 0px" &&
+        viewCorner === CLIPPED &&
+        endLeft === CHAT &&
+        endRight === STRIP &&
+        pastEnd === CHAT,
+      JSON.stringify({ ends, viewCorner, endLeft, endRight, pastEnd }),
     );
     await ctx.shot("session-cards-seamless");
     await fetch(base + "__look/line20");

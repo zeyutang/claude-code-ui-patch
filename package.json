@@ -171,6 +171,11 @@
           "default": false,
           "markdownDescription": "Show a button above the chat input box's top-right corner that lists your messages in this conversation, numbered from 1, each in at most two lines with line breaks shown as `\\n`. Clicking one jumps to it like the jump buttons, and hiding one from its hover button leaves a fold that brings it back. It lines up left of `#claudeCodeUiPatch.chatJumpToMessageButtons#` and `#claudeCodeUiPatch.chatScrollToBottomDot#`."
         },
+        "claudeCodeUiPatch.chatSessionCards": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show your most recent local sessions as cards below the sidebar chat's input box, the one where you last sent a message first. Clicking one opens it as the Session history list does, and a dot marks a session waiting on you: a permission or question prompt, or a finished turn you have not seen. The open session's card follows `#window.density.layout#`."
+        },
         "claudeCodeUiPatch.chatRawMarkdownButton": {
           "type": "boolean",
           "default": false,

@@ -106,6 +106,7 @@ const KNOB_ORDER: string[] = [
   "promptHist", // prompt history list
   "rawMd", // raw markdown of a response
   "scrollDot", // scroll-to-bottom dot
+  "sessionCards", // recent session cards in the sidebar
   "permCode",
   "permNoWrap",
   "effortSyncFix",
@@ -7134,6 +7135,771 @@ export function promptHistWebview(
 }
 
 // ---------------------------------------------------------------------------
+// Session cards (ON, the sidebar chat only): a strip below the input box with
+// one card per recent local session, shaped like the editor's tabs, so that
+// switching sessions takes one click instead of the Session history dropdown.
+// The cards run left to right from the session where you last sent a message,
+// a click does what picking that row in the dropdown does (a session open in
+// an editor tab gets that tab focused, any other one opens here), and a small
+// dot on a card says the session waits on you: a permission or question
+// prompt, or a turn that ended while another session was on screen.
+//
+// One fragment, /*ccup:scard*/.../*ccup:scardEnd*/, at the end of the webview
+// session manager's constructor (the class with doListSessions, one per
+// webview), found by structure (src/derive.ts). It calls the compiled
+// ccupSessionCardsWeb with the manager, a config baked at patch time, and the
+// bundle's own signal effect, the callee the constructor wraps its watchers
+// in. The end of the constructor, because last turn delete's bridge takes its
+// head. Every webview loads the bundle, and the function returns at once
+// outside the sidebar chat (window.IS_SIDEBAR, which editor tabs and the
+// session list view leave false).
+//
+// What the strip reads, all of it native state:
+//   list     the manager's sessions: the local ones the list read (Web
+//            sessions live elsewhere and are skipped anyway), less archived,
+//            unreadable, and id-less (blank) ones. A session a surface reports
+//            that the list has not read yet asks for a re-read, at most every
+//            5s, under the "state_sync" entry point the session list view uses
+//            for the same reason
+//   order    the time of your last message in the session: for a session this
+//            view holds, the newest prompt among its messages and queued sends
+//            (createdAt, the transcript's own timestamp, so a reload keeps
+//            it), and for one held by an editor tab, the moment the host
+//            reports it leaving idle, the turn your message starts there. The
+//            times persist in the webview's localStorage, so a session that
+//            leaves this view keeps its place; one seen in neither way sorts by
+//            Claude Code's own activity time, which is at least as late
+//            as its last prompt
+//   pending  for a session this view holds, its own pending permission and
+//            question requests, and a turn that ended while another session was
+//            shown here, until you open it; for any other one, the state the
+//            host relays from the surface showing it (waiting_input, or a
+//            terminal or window holding it waiting); and for every session,
+//            Claude Code's unread mark. The session on screen never shows one
+// As many cards show as fit with each at its whole title or SCARD_MIN_W,
+// whichever is narrower, so short titles leave room for more. They then share
+// the strip so that each shows as much of its title as it can: every card
+// grows from nothing toward its whole title (flex 1 1 0 under a max-content
+// cap), so a short title takes only its own width and the longer ones split
+// the rest evenly. Each card's whole width is measured once per title and
+// dot, so a resize only recounts. Each is a button with its title in a hover
+// tip and its state in the tip and the accessible name, the strip is a
+// toolbar (one tab stop, arrow keys between cards), and a press keeps focus
+// where it was, as the jump buttons do.
+//
+// The strip lives in the session body (sessionBody_<hash>), the flex column
+// holding the chat, which a session switch keeps: the chat inside it remounts
+// per session, and a strip inside the chat's floating input container would
+// leave and rejoin the layout on every card click. A body MutationObserver
+// keeps it the session body's last child (React appends a remounted chat after
+// it), in the same task as the mutation, so no frame shows it out of place.
+// While it shows, the input container sits SCARD_GAP from the strip instead
+// of its native 16px from the view's edge, keyed on an attribute of the
+// session body, which React never touches.
+//
+// Required: the manager (doListSessions, focusTabShowing, listSessions,
+// activeSession, sessions, comms) with a block constructor and a single effect
+// callee there, the session class (every member read above), a class carrying
+// the host's session feed (sessionStates, openSessionIds, unreadSessionKeys,
+// liveElsewhereSessions), and the session body and chat input container class
+// map entries. If any is gone the point reports missing and the bundle stays
+// native.
+// ---------------------------------------------------------------------------
+const SCARD_MARKER = "/*ccup:scard*/";
+const SCARD_END = "/*ccup:scardEnd*/";
+const SCARD_FRAG_RE = /\/\*ccup:scard\*\/[\s\S]*?\/\*ccup:scardEnd\*\//g;
+const SCARD_FILE = "webview/index.js";
+// The localStorage item holding last message times, and how many sessions it
+// keeps (most recent first).
+const SCARD_STORE = "ccup-session-cards";
+const SCARD_STORE_CAP = 200;
+// The most cards the strip shows, and the narrowest a card with a longer
+// title gets before one fewer card shows.
+const SCARD_MAX = 12;
+const SCARD_MIN_W = 96;
+// The status bar's height, and the strip's air: above it to the input box,
+// below it to the view's edge.
+const SCARD_H = 22;
+const SCARD_GAP = 8;
+const SCARD_BOTTOM = 6;
+// The composer's width cap and side inset (.inputContainer_<chat>), mirrored
+// so the cards line up with the input box.
+const SCARD_CAP_W = 680;
+const SCARD_INSET = 16;
+// The members the strip reads off a session, the manager, and the feed.
+const SCARD_SESSION_FIELDS = [
+  "claudeChannelIdSignal",
+  "sessionId",
+  "summary",
+  "isRemote",
+  "archived",
+  "unreadable",
+  "messages",
+  "heldPrompts",
+  "busy",
+  "backgroundTaskIds",
+  "permissionRequests",
+  "userDialogRequests",
+  "lastModifiedTime",
+];
+const SCARD_FEED_FIELDS = [
+  "sessionStates",
+  "openSessionIds",
+  "unreadSessionKeys",
+  "liveElsewhereSessions",
+];
+
+interface ScardCfg {
+  body: string; // the session body's class
+  css: string;
+  store: string;
+  cap: number;
+  max: number;
+  minW: number;
+  inset: number;
+}
+
+// The strip, built around the session manager by its constructor. Compiled
+// into the webview bundle by toString, so it may use only its parameters and
+// the page's globals. Everything it runs inside `effect` stays in a try, and
+// writes no signal, since an effect runs inside whatever native write set it
+// off.
+function ccupSessionCardsWeb(
+  mgr: any,
+  cfg: ScardCfg,
+  effect: (fn: () => void) => unknown,
+): void {
+  const g = globalThis as Record<string, any>;
+  if (g.IS_SIDEBAR !== true || g.IS_SESSION_LIST_ONLY === true) return;
+  if (g.__ccupSessionCards) return;
+  const doc = g.document;
+  const api: { rows: any[] } = { rows: [] };
+  g.__ccupSessionCards = api;
+
+  // Last message times by session id, kept across reloads.
+  let sent: Record<string, number> = {};
+  try {
+    const o = JSON.parse(g.localStorage.getItem(cfg.store) || "{}");
+    if (o && typeof o.sent === "object" && o.sent) sent = o.sent;
+  } catch {
+    // no storage: times start over
+  }
+  let saveT = 0;
+  const save = (): void => {
+    if (saveT) return;
+    saveT = g.setTimeout(() => {
+      saveT = 0;
+      try {
+        const ids = Object.keys(sent);
+        if (ids.length > cfg.cap) {
+          ids.sort((a, b) => sent[b] - sent[a]);
+          for (const id of ids.slice(cfg.cap)) delete sent[id];
+        }
+        g.localStorage.setItem(cfg.store, JSON.stringify({ sent }));
+      } catch {
+        // storage full or gone: the times live on in memory
+      }
+    }, 1000);
+  };
+  const note = (id: string, t: unknown): void => {
+    if (typeof t === "number" && t > 0 && !(sent[id] >= t)) {
+      sent[id] = t;
+      save();
+    }
+  };
+
+  // A message you sent: no tool result alone, no subagent's, no meta row, no
+  // notice a task or a peer delivered.
+  const isPrompt = (m: any): boolean =>
+    m?.type === "user" &&
+    !m.parentToolUseId &&
+    !m.isSynthetic &&
+    !m.notAPrompt &&
+    (!m.origin || m.origin.kind === "human") &&
+    Array.isArray(m.content) &&
+    m.content.some((b: any) => b?.content && b.content.type !== "tool_result");
+  // A held session's newest prompt, sent or queued, per messages array.
+  const last = new WeakMap<object, { msgs: any; held: any; t?: number }>();
+  const promptAt = (s: any): number | undefined => {
+    const msgs = s.messages.value;
+    const held = s.heldPrompts.value;
+    const hit = last.get(s);
+    if (hit && hit.msgs === msgs && hit.held === held) return hit.t;
+    let t: number | undefined;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (isPrompt(msgs[i]) && typeof msgs[i].createdAt === "number") {
+        t = msgs[i].createdAt;
+        break;
+      }
+    }
+    for (const h of held) {
+      const c = h?.message?.createdAt;
+      if (typeof c === "number" && !(t !== undefined && t >= c)) t = c;
+    }
+    last.set(s, { msgs, held, t });
+    return t;
+  };
+
+  // Turns that ended in a held session while another one was on screen, and
+  // the host-reported state of every other session, for its sends.
+  const worked = new WeakMap<object, boolean>();
+  const done = new WeakSet<object>();
+  const seen = new Map<string, string>();
+  // Ids the list was already asked to read, so a session it never lists (a
+  // Web session a tab shows) asks once.
+  const asked = new Set<string>();
+  let relistAt = 0;
+
+  const compute = (): any[] => {
+    const active = mgr.activeSession.value;
+    const feed = mgr.comms;
+    const unread = new Set<string>(feed.unreadSessionKeys.value || []);
+    const tabs = new Set<string>(feed.openSessionIds.value || []);
+    const away = new Map<string, any>();
+    for (const x of feed.liveElsewhereSessions.value || [])
+      if (x?.sessionId) away.set(x.sessionId, x);
+    const states = new Map<string, any>();
+    for (const x of feed.sessionStates.value || [])
+      if (x?.sessionId) states.set(x.sessionId, x);
+    const rows: any[] = [];
+    const known = new Set<string>();
+    for (const s of mgr.sessions.value) {
+      const id = s.sessionId.value;
+      if (id) known.add(id);
+      if (!id || s.isRemote.value || s.archived.value || s.unreadable.value)
+        continue;
+      let waiting = false;
+      let ended = false;
+      // Held here: it has a channel. The signal, since the session's own
+      // claudeChannelId getter peeks, which an effect would not follow.
+      if (s.claudeChannelIdSignal.value !== undefined) {
+        waiting =
+          s.permissionRequests.value.length > 0 ||
+          s.userDialogRequests.value.length > 0;
+        const work = s.busy.value || s.backgroundTaskIds.value.size > 0;
+        if (work || s === active) done.delete(s);
+        else if (worked.get(s)) done.add(s);
+        worked.set(s, work);
+        ended = done.has(s);
+        note(id, promptAt(s));
+      } else {
+        const now = states.get(id)?.state;
+        if (seen.get(id) === "idle" && now && now !== "idle")
+          note(id, Date.now());
+        if (now) seen.set(id, now);
+        waiting =
+          now === "waiting_input" ||
+          (!tabs.has(id) && away.get(id)?.activity === "waiting");
+      }
+      const isNew = ended || unread.has(id);
+      rows.push({
+        s,
+        id,
+        title: s.summary.value || "Untitled",
+        active: s === active,
+        pending: s !== active && (waiting || isNew),
+        why: waiting ? "awaiting input" : isNew ? "turn finished" : "",
+        tab: tabs.has(id),
+        at: sent[id] || s.lastModifiedTime.value || 0,
+        mod: s.lastModifiedTime.value || 0,
+      });
+    }
+    const fresh = [...states.keys()].filter(
+      (id) => !known.has(id) && !asked.has(id),
+    );
+    const loaded = mgr.localSessionsLoaded?.value !== false;
+    if (loaded && fresh.length && Date.now() - relistAt > 5000) {
+      for (const id of fresh) asked.add(id);
+      relistAt = Date.now();
+      g.setTimeout(() => {
+        try {
+          void Promise.resolve(mgr.listSessions("state_sync")).catch(() => {});
+        } catch {
+          // the next report asks again
+        }
+      }, 0);
+    }
+    rows.sort((a, b) => b.at - a.at || b.mod - a.mod || (a.id < b.id ? -1 : 1));
+    return rows.slice(0, cfg.max);
+  };
+
+  // The strip and its cards, keyed by session id so a re-render keeps each
+  // card's element (and its hover and focus).
+  const sheet = doc.createElement("style");
+  sheet.textContent = cfg.css;
+  const bar = doc.createElement("div");
+  bar.className = "ccup-cards";
+  bar.setAttribute("role", "toolbar");
+  bar.setAttribute("aria-label", "Recent sessions");
+  bar.hidden = true;
+  const cards = new Map<string, any>();
+  let rows: any[] = [];
+  let shown = "";
+  let raf = 0;
+  let host: any = null;
+
+  // Each card's full width (its whole title, and its dot when shown), by
+  // session id, kept while the session stays a candidate, so a resize
+  // measures nothing.
+  const sizes = new Map<string, { k: string; w: number }>();
+  const sizeKey = (r: any): string => `${r.pending ? 1 : 0}|${r.title}`;
+
+  const mark = (on: boolean): void => {
+    if (host && host.hasAttribute("data-ccup-cards") !== on)
+      host.toggleAttribute("data-ccup-cards", on);
+  };
+  // Last in the session body, wherever that is now.
+  const mount = (): void => {
+    if (host === bar.parentNode && host?.isConnected && !bar.nextSibling)
+      return;
+    const t = doc.querySelector("." + cfg.body);
+    if (!t) return;
+    if (!sheet.isConnected) doc.head.appendChild(sheet);
+    if (host && host !== t) host.removeAttribute("data-ccup-cards");
+    host = t;
+    t.appendChild(bar);
+    mark(!bar.hidden);
+  };
+  const cardFor = (id: string): any => {
+    let b = cards.get(id);
+    if (b) return b;
+    b = doc.createElement("button");
+    b.type = "button";
+    b.className = "ccup-card";
+    b.tabIndex = -1;
+    b.dataset.id = id;
+    const label = doc.createElement("span");
+    label.className = "ccup-card-label";
+    const dot = doc.createElement("span");
+    dot.className = "ccup-card-dot";
+    dot.setAttribute("aria-hidden", "true");
+    b.appendChild(label);
+    b.appendChild(dot);
+    cards.set(id, b);
+    return b;
+  };
+  const paint = (b: any, r: any): void => {
+    if (b.firstChild.textContent !== r.title)
+      b.firstChild.textContent = r.title;
+    b.toggleAttribute("data-active", r.active);
+    b.toggleAttribute("data-pending", r.pending);
+    if (r.active) b.setAttribute("aria-current", "true");
+    else b.removeAttribute("aria-current");
+    const tip =
+      r.title +
+      (r.why ? ` ${String.fromCharCode(8212)} ${r.why}` : "") +
+      (r.tab && !r.active ? " (open in a tab)" : "");
+    b.dataset.tip = tip;
+    b.setAttribute("aria-label", tip);
+  };
+  const render = (): void => {
+    raf = 0;
+    try {
+      const some = rows.length > 0;
+      if (bar.hidden === some) bar.hidden = !some;
+      mount();
+      mark(some);
+      const w = some ? bar.clientWidth - 2 * cfg.inset : 0;
+      const key = JSON.stringify([
+        w,
+        rows.map((r) => [r.id, r.title, r.active, r.pending, r.why, r.tab]),
+      ]);
+      if (key === shown) return;
+      shown = key;
+      const ids = new Set(rows.map((r) => r.id));
+      for (const id of sizes.keys()) if (!ids.has(id)) sizes.delete(id);
+      // A card whose title or dot changed is measured in the strip: its
+      // width, less what its label shows, plus the label's whole text.
+      const stale =
+        w > 0 ? rows.filter((r) => sizes.get(r.id)?.k !== sizeKey(r)) : [];
+      for (const r of stale) {
+        const b = cardFor(r.id);
+        paint(b, r);
+        if (b.parentNode !== bar) bar.appendChild(b);
+      }
+      for (const r of stale) {
+        const b = cards.get(r.id);
+        const l = b.firstChild;
+        sizes.set(r.id, {
+          k: sizeKey(r),
+          w: b.offsetWidth - l.clientWidth + l.scrollWidth,
+        });
+      }
+      // As many as fit with each at its whole title or the minimum, whichever
+      // is narrower; the stylesheet then grows them toward their whole titles.
+      let n = 0;
+      for (let room = w; n < rows.length; n++) {
+        if (w <= 0) {
+          n = rows.length;
+          break;
+        }
+        const need = Math.min(sizes.get(rows[n].id)?.w ?? cfg.minW, cfg.minW);
+        if (n > 0 && need > room) break;
+        room -= need;
+      }
+      const show = rows.slice(0, n);
+      const keep = new Set(show.map((r) => r.id));
+      for (const [id, b] of cards) {
+        if (keep.has(id)) continue;
+        b.remove();
+        cards.delete(id);
+      }
+      let stop: any = null;
+      show.forEach((r, i) => {
+        const b = cardFor(r.id);
+        paint(b, r);
+        if (bar.children[i] !== b) bar.insertBefore(b, bar.children[i] ?? null);
+        if (r.active || (!stop && i === 0)) stop = b;
+      });
+      // One tab stop: the focused card, else the session on screen, else the
+      // first.
+      const f = doc.activeElement;
+      if (f && f.parentNode === bar) stop = f;
+      for (const b of cards.values()) b.tabIndex = b === stop ? 0 : -1;
+    } catch {
+      // a render never breaks the chat
+    }
+  };
+  const schedule = (): void => {
+    if (!raf) raf = g.requestAnimationFrame(render);
+  };
+
+  // What picking the session in the Session history dropdown does.
+  const open = (id: string): void => {
+    const r = rows.find((x) => x.id === id);
+    if (!r || r.active) return;
+    try {
+      if (mgr.focusTabShowing(r.s, { includeSidebarChat: true })) return;
+      mgr.activeSession.value = r.s;
+    } catch {
+      // the session stays where it was
+    }
+  };
+
+  // The hover tip above a card (a title tooltip is unreliable in a webview),
+  // styled by the patch's shared tip rule.
+  let tip: any = null;
+  let tipT = 0;
+  const hideTip = (): void => {
+    if (tipT) g.clearTimeout(tipT);
+    tipT = 0;
+    if (tip) tip.style.display = "none";
+  };
+  const showTip = (b: any): void => {
+    if (!tip) {
+      tip = doc.createElement("div");
+      tip.className = "ccup-hover-tip";
+      doc.body.appendChild(tip);
+    }
+    tip.textContent = b.dataset.tip || "";
+    tip.style.display = "block";
+    const r = b.getBoundingClientRect();
+    const w = tip.offsetWidth;
+    const vw = doc.documentElement.clientWidth || 0;
+    tip.style.left = `${Math.max(4, Math.min(r.left, vw - w - 4))}px`;
+    tip.style.top = `${r.top - tip.offsetHeight - 6}px`;
+  };
+  const cardAt = (t: any): any => {
+    const b = t?.closest?.(".ccup-card");
+    return b && b.parentNode === bar ? b : null;
+  };
+
+  bar.addEventListener("mousedown", (e: any) => {
+    hideTip();
+    if (e.button === 0) e.preventDefault();
+  });
+  bar.addEventListener("click", (e: any) => {
+    const b = cardAt(e.target);
+    if (b) open(b.dataset.id);
+  });
+  bar.addEventListener("keydown", (e: any) => {
+    if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+    const all = Array.from(bar.children) as any[];
+    const i = all.indexOf(doc.activeElement);
+    if (i < 0) return;
+    // Opened here rather than by the button's own activation, so no handler
+    // further up (the app's root listeners) can take the key first.
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.repeat) open(all[i].dataset.id);
+      return;
+    }
+    const j =
+      e.key === "ArrowRight"
+        ? Math.min(all.length - 1, i + 1)
+        : e.key === "ArrowLeft"
+          ? Math.max(0, i - 1)
+          : e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? all.length - 1
+              : -1;
+    if (j < 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    all[i].tabIndex = -1;
+    all[j].tabIndex = 0;
+    all[j].focus();
+  });
+  bar.addEventListener("mouseover", (e: any) => {
+    const b = cardAt(e.target);
+    if (!b) return;
+    if (tipT) g.clearTimeout(tipT);
+    tipT = 0;
+    // From one card to the next, the tip follows at once.
+    if (tip && tip.style.display === "block") {
+      showTip(b);
+      return;
+    }
+    tipT = g.setTimeout(() => {
+      tipT = 0;
+      try {
+        if (b.isConnected && b.matches(":hover")) showTip(b);
+      } catch {
+        // no tip
+      }
+    }, 250);
+  });
+  bar.addEventListener("mouseout", (e: any) => {
+    if (!cardAt(e.relatedTarget)) hideTip();
+  });
+
+  effect(() => {
+    try {
+      rows = compute();
+    } catch {
+      rows = [];
+    }
+    api.rows = rows;
+    schedule();
+  });
+  try {
+    new g.MutationObserver(mount).observe(doc.body, {
+      childList: true,
+      subtree: true,
+    });
+    // A new width may fit another card, or one fewer (render skips a width
+    // it has already laid out).
+    new g.ResizeObserver(() => {
+      if (!bar.hidden) schedule();
+    }).observe(bar);
+  } catch {
+    // no observers: the strip mounts on each render alone
+  }
+}
+
+// How the card of the session on screen stands out, following VS Code's
+// window.density.layout, which applies under its modern UI
+// (workbench.experimental.modernUI). At the default density a modern editor
+// tab shows as a filled one, so the card takes that tab's fill ("fill"); at
+// the compact density the tab carries the blue accent line, which the card
+// draws along its bottom edge instead of the top, since the strip sits below
+// the chat rather than over it ("line"). The classic tabs, without the modern
+// UI, carry the line too. Both settings are read, never written, at patch
+// time, so a change to either re-applies (see Patcher.register) and asks for
+// a webview refresh.
+export type ScardLook = "fill" | "line";
+export const SCARD_LOOK_KEYS = [
+  "window.density.layout",
+  "workbench.experimental.modernUI",
+];
+function scardLook(): ScardLook {
+  try {
+    const c = vscode.workspace.getConfiguration();
+    const modern = c.get<boolean>("workbench.experimental.modernUI") === true;
+    return modern && c.get<string>("window.density.layout") !== "compact"
+      ? "fill"
+      : "line";
+  } catch {
+    return "line"; // outside VS Code: the repro scenarios pass a look
+  }
+}
+
+// The strip's stylesheet: tab-like cards in the editor's tab colors, the card
+// on screen marked as the look asks, the dot in Claude Code's own unread
+// color, and the input box's lowered gap.
+function scardCss(chat: string, look: ScardLook): string {
+  const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
+  const modern = (k: string, d: string) =>
+    `var(--vscode-modernEditorTab-${k},${d})`;
+  const hoverBg = tab("hoverBackground", "var(--app-list-hover-background)");
+  const hoverFg = tab("hoverForeground", "var(--app-primary-foreground)");
+  const activeBg = tab("activeBackground", "var(--app-input-background)");
+  const activeFg = tab("activeForeground", "var(--app-primary-foreground)");
+  const hover =
+    look === "fill"
+      ? `background:${modern("hoverBackground", hoverBg)};color:${modern("hoverForeground", hoverFg)}`
+      : `background:${hoverBg};color:${hoverFg}`;
+  const active =
+    look === "fill"
+      ? `background:${modern("activeBackground", activeBg)};color:${modern("activeForeground", activeFg)}`
+      : `background:${activeBg};color:${activeFg};box-shadow:inset 0 -1px 0 ${tab("activeBorderTop", "var(--vscode-focusBorder)")}`;
+  return (
+    `.ccup-cards{position:relative;display:flex;flex:none;box-sizing:border-box;width:100%;max-width:${SCARD_CAP_W + 2 * SCARD_INSET}px;height:${SCARD_H}px;margin:0 auto ${SCARD_BOTTOM}px;padding:0 ${SCARD_INSET}px;overflow:hidden}` +
+    ".ccup-cards[hidden]{display:none}" +
+    `.ccup-card{display:flex;align-items:center;gap:6px;flex:1 1 0;min-width:0;max-width:max-content;height:${SCARD_H}px;box-sizing:border-box;margin:0;padding:0 10px;border:none;border-right:1px solid ${tab("border", "transparent")};border-radius:0;background:${tab("inactiveBackground", "transparent")};color:${tab("inactiveForeground", "var(--app-secondary-foreground)")};font:12px/${SCARD_H}px var(--vscode-font-family);text-align:left;cursor:pointer;outline:none}` +
+    ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+    ".ccup-card-dot{display:none;flex:none;width:6px;height:6px;border-radius:50%;background:var(--app-status-unread,#d97757)}" +
+    ".ccup-card[data-pending] .ccup-card-dot{display:block}" +
+    `.ccup-card${HOVER}{${hover}}` +
+    `.ccup-card[data-active]{${active};cursor:default}` +
+    ".ccup-card:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
+    `[data-ccup-cards] .inputContainer_${chat}{bottom:${SCARD_GAP}px}` +
+    HOVER_TIP_CSS
+  );
+}
+
+// The webview's site and what its insertion reads, or null.
+interface ScardSite {
+  unit: N;
+  pos: number;
+  effect: string;
+  chat: string;
+  body: string;
+}
+function sessionCardsFind(c: string): ScardSite | null {
+  const chat = c.match(JUMP_MSG_CHAT_HASH_RE)?.[1];
+  const body = c.match(/sessionBody:"(sessionBody_[-\w]+)"/)?.[1];
+  if (!chat || !body || !c.includes(`inputContainer:"inputContainer_${chat}"`))
+    return null;
+
+  // The session manager, one per webview.
+  const mgrs = unitsWith(
+    c,
+    "doListSessions(",
+    "class ",
+    isClass,
+    STAY_CLASS_REACH,
+  ).filter(
+    (k) =>
+      ["doListSessions", "focusTabShowing", "listSessions"].every((m) =>
+        sdelMethod(k, m),
+      ) && ["activeSession", "sessions", "comms"].every((f) => sdelField(k, f)),
+  );
+  if (mgrs.length !== 1 || mgrs[0].superClass) return null;
+  const mgr = mgrs[0];
+  const ctor = (mgr.body.body as N[]).find(
+    (m) => m.type === "MethodDefinition" && m.kind === "constructor",
+  );
+  if (!ctor || ctor.value.body.type !== "BlockStatement") return null;
+
+  // The effect: the one callee the constructor's own statements hand a bare
+  // arrow to, more than once, bound outside the class.
+  const calls = new Map<string, N[]>();
+  for (const st of ctor.value.body.body as N[]) {
+    if (st.type !== "ExpressionStatement") continue;
+    const ex = st.expression;
+    for (const e of ex.type === "SequenceExpression" ? ex.expressions : [ex]) {
+      const name = e.type === "CallExpression" ? idName(e.callee) : null;
+      const arg = e.arguments?.[0];
+      if (
+        name &&
+        e.arguments.length === 1 &&
+        arg.type === "ArrowFunctionExpression" &&
+        arg.params.length === 0
+      )
+        calls.set(name, [...(calls.get(name) ?? []), e]);
+    }
+  }
+  const names = [...calls].filter(([, a]) => a.length >= 2);
+  if (names.length !== 1) return null;
+  const [effect, uses] = names[0];
+  if (bindingSite(uses[0], effect, mgr) !== null) return null;
+
+  // The session class, and a class carrying the host's session feed.
+  const sessions = unitsWith(
+    c,
+    "loadFromServer(",
+    "class ",
+    isClass,
+    TRW_CLASS_REACH,
+  ).filter((k) => SCARD_SESSION_FIELDS.every((f) => sdelField(k, f)));
+  if (sessions.length !== 1) return null;
+  const feeds = unitsWith(
+    c,
+    "unreadSessionKeys=",
+    "class ",
+    isClass,
+    TRW_CLASS_REACH,
+  ).filter((k) => SCARD_FEED_FIELDS.every((f) => sdelField(k, f)));
+  if (!feeds.length) return null;
+
+  return { unit: mgr, pos: ctor.value.body.end - 1, effect, chat, body };
+}
+
+// The native bundle with the fragment in for a look, or null when a site is
+// missing or the edit would not parse. The sites are looked up once per
+// bundle, and the two most recent builds are kept.
+const sessionCardsSite = (() => {
+  let last: { native: string; site: ScardSite | null } | undefined;
+  return (native: string): ScardSite | null => {
+    if (last?.native !== native)
+      last = { native, site: sessionCardsFind(native) };
+    return last.site;
+  };
+})();
+let scardBuilt: { native: string; look: ScardLook; out: string | null }[] = [];
+function sessionCardsBuild(native: string, look: ScardLook): string | null {
+  const hit = scardBuilt.find((b) => b.native === native && b.look === look);
+  if (hit) return hit.out;
+  const site = sessionCardsSite(native);
+  let out: string | null = null;
+  if (site) {
+    const cfg: ScardCfg = {
+      body: site.body,
+      css: scardCss(site.chat, look),
+      store: SCARD_STORE,
+      cap: SCARD_STORE_CAP,
+      max: SCARD_MAX,
+      minW: SCARD_MIN_W,
+      inset: SCARD_INSET,
+    };
+    const edit: Edit = {
+      pos: site.pos,
+      text:
+        `${SCARD_MARKER};(${ccupSessionCardsWeb.toString()})` +
+        `(this,${JSON.stringify(cfg)},${site.effect});${SCARD_END}`,
+    };
+    const o = applyEdits(native, [edit]);
+    if (unitsReparse(o, [edit], [[site.unit, isClass]])) out = o;
+  }
+  scardBuilt = [{ native, look, out }, ...scardBuilt].slice(0, 2);
+  return out;
+}
+const scardStrip = (c: string): string => c.replace(SCARD_FRAG_RE, "");
+
+function sessionCardsPresent(c: string): boolean {
+  return c.includes(SCARD_MARKER) || sessionCardsSite(scardStrip(c)) !== null;
+}
+// true = ON (the fragment as this build writes it for the current look, or one
+// left with no site to rebuild it from, so it stays removable), false = OFF or
+// stale (a look that changed since included), undefined = sites gone and
+// nothing to remove.
+function sessionCardsCurrentOn(c: string): boolean | undefined {
+  const native = scardStrip(c);
+  const want = sessionCardsBuild(native, scardLook());
+  if (native !== c) return want === null || want === c;
+  return want === null ? undefined : false;
+}
+function sessionCardsSet(c: string, on: boolean): string {
+  const native = scardStrip(c);
+  if (!on) return native;
+  // sites gone: leave the file as it is
+  return sessionCardsBuild(native, scardLook()) ?? c;
+}
+
+// The webview bundle with the strip in for a look, or null when a site is
+// gone. scripts/repro's session-cards.mjs serves this, so it runs exactly
+// what an apply writes and doubles as the drift canary.
+export function sessionCardsWebview(
+  js: string,
+  look: ScardLook = "line",
+): string | null {
+  return sessionCardsBuild(scardStrip(js), look);
+}
+
+// ---------------------------------------------------------------------------
 // In-chat find bar (ON): a working Cmd/Ctrl+F for the chat webview. The native
 // webview find widget (the chat editor tab sets enableFindWidget) can only
 // HIGHLIGHT: typing starts a fresh Chromium find-in-page session each
@@ -10228,6 +10994,17 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnSet: promptHistSet,
   },
   {
+    id: "sessionCards",
+    section: "Behavior",
+    label: "Chat sidebar: cards of recent sessions below the input box",
+    key: "chatSessionCards",
+    defaultOn: false,
+    file: SCARD_FILE,
+    fnPresent: sessionCardsPresent,
+    fnCurrentOn: sessionCardsCurrentOn,
+    fnSet: sessionCardsSet,
+  },
+  {
     id: "rawMd",
     section: "Behavior",
     label: "Chat panel or tab: show an agent response as raw markdown",
@@ -12739,6 +13516,10 @@ export class Patcher {
     // claudeCode.useCtrlEnterToSend through the commentCtrlEnter fold, so a
     // change there must re-run the apply pass too.
     patchKeys.push("claudeCode.useCtrlEnterToSend");
+    // The session cards bake how the card on screen stands out from VS Code's
+    // own layout density (see ScardLook), so a density or modern UI change
+    // re-applies too.
+    patchKeys.push(...SCARD_LOOK_KEYS);
     // chat.fontSize is no longer a knob, but the chatHistoryFontSize knob shows it
     // while inheriting, so a native change should refresh (not re-patch) the view.
     // The editor sizes feed what the patch knobs show at 0 (see NativeEnv).

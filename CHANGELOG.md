@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- New `chatSessionCards` setting: below the sidebar chat's input box, a strip of cards for your most recent local sessions, the one where you last sent a message first.
+  A click opens that session as the Session history list does, and a dot marks a session waiting on you: a permission or question prompt, or a finished turn you have not seen.
+  The card of the session on screen follows `window.density.layout`: filled at the default density, with a blue line along its bottom when compact.
+
 ## 1.6.3
 
 - On Claude Code 2.1.307 and later, a long message of yours opened with "Show more" shows its last lines and its "Show less" button again, which had been cut off below the message's edge.

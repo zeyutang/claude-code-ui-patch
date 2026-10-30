@@ -165,9 +165,12 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   A session the sidebar has not opened, or one that has gone on in a tab or another window since, counts from its newest message instead.
   The circle turns clay while a permission or question prompt waits or a finished turn is still unseen.
   The strip holds every session that is not archived and scrolls sideways like the editor's tabs, the mouse wheel included.
-  A title shows up to 40 characters, and fewer as the sidebar narrows so that more cards stay in view, but never fewer than 15.
+  A New session button stays at its left end, and a button at its right end hides the secondary side bar (where Claude Code puts the chat).
+  That button's arrow points to the side of the window the secondary side bar is on.
+  Between the buttons the strip shows only whole cards, sharing the width equally, with as few cards as keep each at most 300 pixels wide.
+  A title too long for its card ends in an ellipsis.
   Hovering a card shows its full title.
-  The strip runs along the sidebar's bottom edge in the editor tab row's size and shape, and the card of the session on screen joins the chat above it, as an editor tab joins its editor.
+  The strip runs along the sidebar's bottom edge in the editor tab row's size and shape, and the card of the session on screen joins the chat above it, as an editor tab joins its editor, with its title in the input box's text color.
   At the default density its ends stop short of the sidebar's rounded corners, so its own corners stay square.
   The cards are as tall as `window.density.editorTabHeight` makes editor tabs, and when `window.density.layout` is compact, or without VS Code's modern UI, they keep a hairline below them and the card on screen also carries a blue line along its bottom edge.
 - **Last turn delete reaches the last turn only.**

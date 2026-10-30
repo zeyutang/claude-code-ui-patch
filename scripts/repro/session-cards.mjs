@@ -6,12 +6,21 @@
 //   mount     the strip is the session body's last child, across the view's
 //             whole width on its bottom edge, the input box 8px above it,
 //             its cards an editor tab (24px) tall in its 13px text over a 1px
-//             groove, the first one flush with the strip's left edge
+//             groove, the New session button square at its left end and the
+//             hide button at its right, the cards scrolling between them
 //   order     cards run from the session of your last message: the booted
 //             one by its newest prompt (not by the later activity the list
 //             reports for it), the others by the list's activity time, no
 //             Web session, and a prompt you send moves its session first
-//   active    the session on screen is marked, and never shows pending
+//   active    the session on screen is marked, never shows pending, and its
+//             text takes the input box's color
+//   buttons   both are the strip's background until hovered, each with its
+//             own tip; New session presses the header's own button (by click
+//             or key, once each) and wears its icon, or with no header
+//             creates the session itself; the hide button asks the host to
+//             hide the secondary side bar, a host without that request gets
+//             the reload notice, and its arrow points to the bar's edge of
+//             the window, either side
 //   pending   the host's feed: awaiting input in a tab, and Claude Code's
 //             unread mark, each mark the card, its reason in the label read
 //             out to assistive tech
@@ -25,22 +34,26 @@
 //             the expiry
 //   seamless  the card on screen is the chat's own background, joined to
 //             the chat above with no edge, its bottom corners rounded and the
-//             strip curving into it at the top, on the screen's pixels
+//             strip curving into it at the top, on the screen's pixels, a
+//             button it meets drawing the curve the scroller cuts off
 //   click     a session open in an editor tab asks the host to focus that
 //             tab, any other opens here, the strip staying the same element
 //             and the input box staying put
 //   held      a turn that ends in a session this view holds while another
 //             is on screen gives it a dot until you open it, and so does a
 //             permission request arriving there
-//   keys      the strip is one tab stop, arrows move between cards, and
-//             Enter opens one
+//   keys      the strip is one tab stop, arrows move between its buttons
+//             and cards (Home and End reaching the buttons), and Enter opens
+//             a card
 //   press     a press keeps focus where it was
 //   relist    a session the feed reports that the list has not read asks
 //             for one re-read, and its card then shows
 //   reload    the time of a sent prompt survives a reload
-//   titles    every title is cut at one cap of 15 to 40 characters with an
-//             ellipsis, the cap the longest that keeps in view as many cards
-//             as fit at 15, at 420px, 760px and 250px
+//   shares    at rest only whole cards show, one more for every 300px of the
+//             space between the buttons, each an equal share of it, the next
+//             card starting at the edge, at every width from 900px to 250px
+//   titles    each label carries its whole title, the browser cutting a long
+//             one with an ellipsis
 //   scroll    the strip holds every non-archived session, scrolls sideways
 //             under the wheel, and brings the card on screen into view when
 //             it changes
@@ -52,7 +65,8 @@
 //             (emulated), and when compact the 1px groove and the blue line
 //             along the bottom of the card on screen (both built here, as
 //             the patcher would from window.density.layout); a compact tab
-//             height makes the cards 20px tall
+//             height makes the cards and buttons 20px tall; the first card
+//             keeps its rounded corner beside the New session button
 //   editor    an editor tab (IS_SIDEBAR false) gets no strip
 //   empty     with no session to show the strip stays hidden and the input
 //             box keeps its native 16px
@@ -182,8 +196,9 @@ const deliver = (message) => window.dispatchEvent(
 window.__push = (request) =>
   deliver({ type: "request", channelId: "", requestId: "p" + Math.random(), request });
 const io = (channelId, message) => deliver({ type: "io_message", channelId, message, done: false });
-// What the page posted, each session's channel, and each running turn.
-window.__sent = []; window.__chan = {}; window.__lives = {};
+// What the page posted, each session's channel, each running turn, and the
+// requests the host answers as unknown.
+window.__sent = []; window.__chan = {}; window.__lives = {}; window.__unknown = [];
 const LIVE = "Working on it.";
 const live = (msg) => {
   const ch = msg.channelId, m = msg.message, sid = Object.keys(window.__chan).find((s) => window.__chan[s] === ch);
@@ -224,9 +239,12 @@ window.acquireVsCodeApi = () => ({
     if (msg && msg.type === "io_message" && msg.message && msg.message.type === "user") live(msg);
     if (!msg || msg.type !== "request") return;
     const r = msg.request;
-    window.__sent.push({ type: "request:" + r.type, sessionId: r.sessionId, entryPoint: r.entryPoint });
+    window.__sent.push({ type: "request:" + r.type, sessionId: r.sessionId, entryPoint: r.entryPoint,
+      message: r.message });
     let resp = {};
-    switch (r.type) {
+    // A request a host still running its pre-patch code would not know.
+    if (window.__unknown.includes(r.type)) resp = { type: "error", error: "Unknown request type." };
+    else switch (r.type) {
       case "init":
         resp = { type: "init_response", state: { sweptStaleChannels: false,
           authStatus: { authMethod: "claude_ai" }, claudeSettings: { effective: {}, errors: [] },
@@ -271,19 +289,28 @@ const TYPES = {
 };
 
 const BAR = ".ccup-cards";
+const LIST = ".ccup-cards-scroll";
 const CARD = ".ccup-card";
+const NEW = ".ccup-cards-new";
+const HIDE = ".ccup-cards-hide";
+// The header's own New session button.
+const HEAD_NEW = 'button[aria-label="New session"]:not(.ccup-cards-btn)';
 const INPUT = '[aria-label="Message input"]';
+const HIDE_TIP = "Hide Secondary Side Bar";
+const RELOAD = "Reload the window to start using the side bar hide button.";
 
 export async function run(ctx) {
   const dir = liveBundleDir();
   const P = loadPatcher();
   const native = readFileSync(join(dir, "index.js"), "utf8");
-  // Both looks, as the patcher builds them for each layout density; the
-  // stub server hands out the one /__look/<name> last picked.
+  // Both looks, as the patcher builds them for each layout density, and the
+  // hide button for a secondary side bar on the left; the stub server hands
+  // out the one /__look/<name> last picked.
   const serve = {
     line: P.sessionCardsWebview(native, "line"),
     seamless: P.sessionCardsWebview(native, "seamless"),
     line20: P.sessionCardsWebview(native, "line", 20),
+    lineLeft: P.sessionCardsWebview(native, "line", 24, "left"),
   };
   let look = "line";
   const cls = (key) =>
@@ -304,8 +331,8 @@ export async function run(ctx) {
   };
   if (
     !check(
-      "the patcher builds the strip into this bundle in both looks",
-      !!serve.line && !!serve.seamless && !!serve.line20,
+      "the patcher builds the strip into this bundle for every look and side",
+      Object.values(serve).every(Boolean),
     )
   )
     return false;
@@ -373,7 +400,7 @@ export async function run(ctx) {
   // A card into the strip's view, as you would scroll to it, then a click.
   const showCard = (k) =>
     ctx.evaluate(
-      `(function(){var b=${q(BAR)},e=${cardEl(k)};if(!b||!e)return;var a=e.offsetLeft-8,z=e.offsetLeft+e.offsetWidth+8;` +
+      `(function(){var b=${q(LIST)},e=${cardEl(k)};if(!b||!e)return;var a=e.offsetLeft-8,z=e.offsetLeft+e.offsetWidth+8;` +
         `if(a<b.scrollLeft)b.scrollLeft=Math.max(0,a);else if(z>b.scrollLeft+b.clientWidth)b.scrollLeft=z-b.clientWidth})()`,
     );
   const clickCard = async (k) => {
@@ -427,70 +454,40 @@ export async function run(ctx) {
       `!!${q(INPUT)}&&!!window.__ccupSessionCards&&document.querySelectorAll(${JSON.stringify(CARD)}).length>=4`,
     );
   };
-  // The strip as laid out: its content width, whether it scrolls, the label
+  // The cards' scroller as laid out: its width, whether it scrolls, the label
   // font and the card chrome around a label (padding, circle, gap), and each
   // card's width, whole title and label text.
   const layout = () =>
     json(
-      `(function(){var b=${q(BAR)},cs=[].slice.call(b.querySelectorAll(${JSON.stringify(CARD)})),` +
-        `ps=getComputedStyle(b),W=b.clientWidth-parseFloat(ps.paddingLeft)-parseFloat(ps.paddingRight);` +
+      `(function(){var b=${q(LIST)},cs=[].slice.call(b.querySelectorAll(${JSON.stringify(CARD)})),` +
+        `W=b.getBoundingClientRect().width;` +
         `var byId={};window.__ccupSessionCards.rows.forEach(function(r){byId[r.id]=r.title});` +
         `var l0=cs[0].lastChild,s=getComputedStyle(l0);` +
-        `return{W:W,scroll:b.scrollWidth>b.clientWidth+1,size:s.fontSize,` +
+        `var br=b.getBoundingClientRect();` +
+        `return{W:W,vis:W,sl:b.scrollLeft,scroll:b.scrollWidth>b.clientWidth+1,size:s.fontSize,` +
         `font:s.fontStyle+" "+s.fontWeight+" "+s.fontSize+" "+s.fontFamily,` +
         `chrome:cs[0].getBoundingClientRect().width-l0.getBoundingClientRect().width,` +
-        `cards:cs.map(function(c){return{w:c.getBoundingClientRect().width,title:byId[c.dataset.id],text:c.lastChild.textContent}})}})()`,
+        `cards:cs.map(function(c){var r=c.getBoundingClientRect(),p=parseFloat(getComputedStyle(c.lastChild).paddingRight);return{w:r.width-p,pad:p,` +
+        `l:r.left-br.left+b.scrollLeft,r:r.right-br.left+b.scrollLeft,title:byId[c.dataset.id],text:c.lastChild.textContent,` +
+        `cut:c.lastChild.scrollWidth>c.lastChild.clientWidth+0.5,te:getComputedStyle(c.lastChild).textOverflow}})}})()`,
     );
-  // Widths of texts in a font, on a canvas in the page.
-  const measure = (font, texts) =>
-    json(
-      `(function(){var p=document.createElement("canvas").getContext("2d");p.font=${JSON.stringify(font)};` +
-        `return ${JSON.stringify(texts)}.map(function(t){return p.measureText(t).width})})()`,
-    );
-  const ELLIPSIS = String.fromCharCode(8230);
-  const cutAt = (t, n) => {
-    const a = Array.from(t);
-    return a.length <= n ? t : a.slice(0, n).join("").trimEnd() + ELLIPSIS;
-  };
-  // The rule: one cap N of 15 to 40 characters cuts every title; K cards fit
-  // in view at the 15-character cap (one at least), and N is the longest cap
-  // at which the first K still fit and no card is wider than the strip.
-  const titlesOk = async (L) => {
-    let N = null;
-    for (let n = 40; n >= 15 && N === null; n--)
-      if (L.cards.every((x) => x.text === cutAt(x.title, n))) N = n;
-    const at = async (n) =>
-      (
-        await measure(
-          L.font,
-          L.cards.map((x) => cutAt(x.title, n)),
-        )
-      ).map((w) => w + L.chrome);
-    const w15 = await at(15);
-    let K = 0;
-    for (let room = L.W; K < w15.length; K++) {
-      if (K > 0 && w15[K] > room + 0.5) break;
-      room -= w15[K];
-    }
-    K = Math.max(1, K);
-    const ok = async (n) => {
-      const ws = await at(n);
-      return (
-        ws.slice(0, K).reduce((x, y) => x + y, 0) <= L.W + 0.5 &&
-        Math.max(...ws) <= L.W + 0.5
-      );
-    };
-    const fits = N !== null && (await ok(N));
-    const longest = N !== null && (N === 40 || !(await ok(N + 1)));
-    const widest = Math.max(...L.cards.map((x) => x.w));
-    return {
-      N,
-      K,
-      fits: fits && widest <= L.W + 0.5,
-      longest,
-      n: L.cards.length,
-      scroll: L.scroll,
-    };
+  // The share rule: K whole cards in view, one more for every 300px of the
+  // space between the buttons, each an equal share of it; at any scroll the
+  // cards rest on a card boundary and the card after the last whole one
+  // starts at the edge. Every label carries its whole title, the browser
+  // cutting it.
+  const CARD_MAX = 300;
+  const sharesOk = (L) => {
+    const K = Math.max(1, Math.ceil(L.vis / CARD_MAX));
+    const per = L.vis / K;
+    const first = Math.round(L.sl / per);
+    const next = L.cards[first + K];
+    const ok =
+      L.cards.every((c) => Math.abs(c.r - c.l - per) < 0.6) &&
+      Math.abs(L.sl - first * per) < 0.6 &&
+      (!next || Math.abs(next.l - (L.sl + L.vis)) < 0.6) &&
+      L.cards.every((c) => c.text === c.title);
+    return { ok, K, per: +per.toFixed(2), first, n: L.cards.length };
   };
 
   try {
@@ -500,8 +497,11 @@ export async function run(ctx) {
     const g = await json(
       `(function(){var b=${q(BAR)},f=${q(BOX)} && ${q(BOX)}.querySelector("fieldset"),c=b.querySelectorAll(${JSON.stringify(CARD)});` +
         `var rb=b.getBoundingClientRect(),rf=f.getBoundingClientRect(),c0=c[0].getBoundingClientRect();` +
+        `var L=${q(LIST)},rl=L.getBoundingClientRect(),n=${q(NEW)}.getBoundingClientRect(),h=${q(HIDE)}.getBoundingClientRect();` +
         `return{last:b.parentNode.matches(${JSON.stringify(BODY)})&&!b.nextSibling,h:rb.height,ch:c0.height,top:c0.top-rb.top,gap:rb.top-rf.bottom,` +
-        `edge:innerHeight-rb.bottom,left:rb.left,right:innerWidth-rb.right,first:c0.left-rb.left,` +
+        `edge:innerHeight-rb.bottom,left:rb.left,right:innerWidth-rb.right,first:c0.left-rl.left+L.scrollLeft,` +
+        `nl:n.left-rb.left,nw:n.width,nh:n.height,ntop:n.top-rb.top,hr:rb.right-h.right,hw:h.width,hh:h.height,` +
+        `between:Math.abs(rl.left-n.right)<0.6&&Math.abs(h.left-rl.right)<0.6&&L.parentNode===b,` +
         `size:getComputedStyle(c[0].lastChild).fontSize,marked:b.parentNode.hasAttribute("data-ccup-cards"),n:c.length}})()`,
     );
     check(
@@ -521,21 +521,31 @@ export async function run(ctx) {
       g.ch === 24 && Math.abs(g.top) < 0.6 && g.h === 25 && g.size === "13px",
     );
     check(
-      "mount: the first card flush with the strip's left edge",
-      Math.abs(g.first) < 0.6,
+      "mount: New session square at the strip's left end, the hide button at its right, the cards scrolling between from the first",
+      Math.abs(g.nl) < 0.6 &&
+        Math.abs(g.hr) < 0.6 &&
+        g.nw === 24 &&
+        g.nh === 24 &&
+        g.hw === 24 &&
+        g.hh === 24 &&
+        Math.abs(g.ntop) < 0.6 &&
+        g.between &&
+        Math.abs(g.first) < 0.6,
+      JSON.stringify(g),
     );
     const L0 = await layout();
-    const t0 = await titlesOk(L0);
+    const sh0 = sharesOk(L0);
     check(
-      "titles: at 420px, one cap of 15 to 40 characters, the longest that keeps as many in view as fit at 15",
-      t0.N !== null && t0.fits && t0.longest,
-      JSON.stringify({ ...t0, texts: L0.cards.map((x) => x.text) }),
+      "shares: at 420px two whole cards in view, each half the strip, the next starting at its edge",
+      sh0.ok && sh0.K === 2,
+      JSON.stringify(sh0),
     );
     check(
-      "titles: a title past the cap ends in an ellipsis, a short one whole",
-      L0.cards.some((x) => x.text.endsWith(ELLIPSIS)) &&
-        L0.cards.some((x) => x.text === x.title),
-      JSON.stringify(L0.cards.map((x) => x.text)),
+      "titles: each label carries its whole title, the browser cutting a long one with an ellipsis",
+      L0.cards.every((x) => x.text === x.title && x.te === "ellipsis") &&
+        L0.cards.some((x) => x.cut) &&
+        L0.cards.some((x) => !x.cut),
+      JSON.stringify(L0.cards.map((x) => [x.text, x.cut])),
     );
 
     // Order: A by its prompt 150 minutes ago, the rest by activity; no Web.
@@ -610,13 +620,20 @@ export async function run(ctx) {
         rc.ink === "rgb(157, 157, 157)",
       JSON.stringify(rc),
     );
+    // The input box's text color, which the stub sets apart from both the
+    // other cards' grey and the editor tab's white.
+    const composer = await ctx.evaluate(
+      `(function(){var d=document.createElement("span");d.style.color="var(--app-input-foreground)";` +
+        `document.body.appendChild(d);var c=getComputedStyle(d).color;d.remove();return c})()`,
+    );
     check(
-      "circle: the session on screen in the cards' own grey, its text no brighter than theirs, a ring while cold",
+      "active: the session on screen in the input box's text color, a ring in it while cold",
       ra.bg === "rgba(0, 0, 0, 0)" &&
         ra.edge === ra.ink &&
-        ra.ink === rc.ink &&
-        ra.ink === "rgb(157, 157, 157)",
-      JSON.stringify(ra),
+        ra.ink === composer &&
+        ra.ink === "rgb(204, 204, 204)" &&
+        ra.ink !== rc.ink,
+      JSON.stringify({ ra, composer }),
     );
     check(
       "circle: clay while waiting on you, filled while warm and a ring once cold",
@@ -649,16 +666,30 @@ export async function run(ctx) {
     await ctx.sleep(150);
     const a = await box(cardEl("A"));
     const cIdle = await box(cardEl("C"));
-    const [above, joined, shoulder, beside, cornerOut, cornerIn, foot] =
-      await colorsAt([
-        [a.x + a.w / 2, a.y - 3],
-        [a.x + a.w / 2, a.y + 0.5],
-        [a.x - 1, a.y + 0.5],
-        [a.x - 1, a.y + 3.5],
-        [a.x + 0.5, a.b - 0.5],
-        [a.x + 4, a.b - 1.5],
-        [cIdle.x + cIdle.w / 2, cIdle.b + 0.5],
-      ]);
+    // A, brought into view at boot, ends at the hide button, whose corner
+    // carries the right shoulder the scroller cuts off.
+    const hb = await box(q(HIDE));
+    const [
+      above,
+      joined,
+      shoulder,
+      beside,
+      cornerOut,
+      cornerIn,
+      foot,
+      borrowed,
+      borrowedIn,
+    ] = await colorsAt([
+      [a.x + a.w / 2, a.y - 3],
+      [a.x + a.w / 2, a.y + 0.5],
+      [a.x - 1, a.y + 0.5],
+      [a.x - 1, a.y + 3.5],
+      [a.x + 0.5, a.b - 0.5],
+      [a.x + 4, a.b - 1.5],
+      [cIdle.x + cIdle.w / 2, cIdle.b + 0.5],
+      [hb.x + 0.5, hb.y + 0.5],
+      [hb.x + 0.5, hb.y + 3.5],
+    ]);
     const CHAT = "rgb(24, 24, 24)";
     const STRIP = "rgb(43, 43, 43)";
     check(
@@ -675,8 +706,15 @@ export async function run(ctx) {
         foot === STRIP,
       JSON.stringify({ shoulder, beside, cornerOut, cornerIn, foot }),
     );
+    check(
+      "seamless: where it meets the hide button, the button draws the shoulder the scroller cuts off",
+      Math.abs(a.r - hb.x) < 0.6 && borrowed === CHAT && borrowedIn === STRIP,
+      JSON.stringify({ ar: a.r, hx: hb.x, borrowed, borrowedIn }),
+    );
     // The tip is the full title, above the card, though the card's own label
     // cuts it; the label read out to assistive tech names the reason too.
+    await showCard("B");
+    await ctx.sleep(50);
     await ctx.cdp("Input.dispatchMouseEvent", {
       type: "mouseMoved",
       ...center(await box(cardEl("B"))),
@@ -691,16 +729,16 @@ export async function run(ctx) {
     );
     const bBox = await box(cardEl("B"));
     const bLabel = await json(
-      `(function(){var b=${cardEl("B")};return{text:b.lastChild.textContent,aria:b.getAttribute("aria-label")}})()`,
+      `(function(){var b=${cardEl("B")},l=b.lastChild;return{text:l.textContent,cut:l.scrollWidth>l.clientWidth+0.5,aria:b.getAttribute("aria-label")}})()`,
     );
     check(
       "tip: the full title alone, above the card, where the card's label cuts it",
       tip === TITLES.B &&
-        bLabel.text !== TITLES.B &&
-        bLabel.text.endsWith(ELLIPSIS) &&
+        bLabel.text === TITLES.B &&
+        bLabel.cut &&
         !!tipBox &&
         tipBox.b <= bBox.y,
-      JSON.stringify({ tip, label: bLabel.text }),
+      JSON.stringify({ tip, label: bLabel.text, cut: bLabel.cut }),
     );
     check(
       "pending: the label read out to assistive tech still names the reason",
@@ -725,6 +763,166 @@ export async function run(ctx) {
         `openSessionIds:["${S.B}","${S.C}"],unreadSessionKeys:["${S.D}"]})`,
     );
     await ctx.sleep(100);
+
+    // Buttons: the strip's own background until hovered, each with its tip.
+    const away = async () => {
+      await ctx.cdp("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: 5,
+        y: 5,
+      });
+      await ctx.sleep(150);
+    };
+    const shownTip = () =>
+      until(
+        `(function(){var t=[].find.call(document.querySelectorAll(".ccup-hover-tip"),function(e){return e.style.display==="block"});` +
+          `return t&&t.textContent})()`,
+        1500,
+      );
+    const nb = await box(q(NEW));
+    const hb1 = await box(q(HIDE));
+    const [newRest, hideRest] = await colorsAt([
+      [nb.x + 1.5, nb.y + nb.h / 2],
+      [hb1.r - 1.5, hb1.y + hb1.h / 2],
+    ]);
+    const hover = async (b) => {
+      await ctx.cdp("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        ...center(b),
+      });
+      const t = await shownTip();
+      const [px] = await colorsAt([[b.x + 1.5, b.y + b.h / 2]]);
+      await away();
+      return { t, px };
+    };
+    const newHover = await hover(nb);
+    const hideHover = await hover(hb1);
+    check(
+      "buttons: the strip's background until hovered, each with its own tip",
+      newRest === STRIP &&
+        hideRest === STRIP &&
+        newHover.px !== STRIP &&
+        hideHover.px !== STRIP &&
+        newHover.t === "New session" &&
+        hideHover.t === HIDE_TIP,
+      JSON.stringify({ newRest, hideRest, newHover, hideHover }),
+    );
+    // The hide button's arrow points right, to the edge a secondary side bar
+    // on the right sits on (VS Code's default): above the arrowhead only its
+    // bar shows, near the button's right side.
+    const arrowAt = async () => {
+      const b = await box(q(HIDE));
+      const [l, r] = await colorsAt([
+        [b.x + 6.5, b.y + 8],
+        [b.x + 17.5, b.y + 8],
+      ]);
+      return { l: l !== STRIP, r: r !== STRIP };
+    };
+    const arrowR = await arrowAt();
+    check(
+      "hide: the arrow points to the right edge, its bar there",
+      arrowR.r && !arrowR.l,
+      JSON.stringify(arrowR),
+    );
+
+    // New session with no header button to press (renamed away here): the
+    // strip creates the session itself, as the header's fallback does.
+    const onScreen = () =>
+      json(
+        `({title:${q(TITLE)}&&${q(TITLE)}.textContent,card:window.__ccupSessionCards.rows.some(function(r){return r.active})})`,
+      );
+    await ctx.evaluate(
+      `window.__heads=0;document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest(${JSON.stringify(HEAD_NEW)});if(b)window.__heads++},true)`,
+    );
+    const icon = await json(
+      `(function(){var a=${q(NEW)}.querySelector("path"),b=${q(HEAD_NEW)};b=b&&b.querySelector("path");` +
+        `return{head:!!b,own:!!a&&!!b&&a.getAttribute("d")===b.getAttribute("d")}})()`,
+    );
+    check(
+      "new: the button wears the header's own New session icon",
+      icon.head && icon.own,
+      JSON.stringify(icon),
+    );
+    await ctx.evaluate(
+      `window.__head=${q(HEAD_NEW)};window.__head.setAttribute("aria-label","Renamed")`,
+    );
+    await click(center(await box(q(NEW))));
+    await ctx.sleep(400);
+    const lone = await onScreen();
+    await ctx.evaluate(
+      `window.__head.setAttribute("aria-label","New session")`,
+    );
+    check(
+      "new: with no header button the strip creates the session itself",
+      lone.title !== TITLES.A &&
+        !lone.card &&
+        (await ctx.evaluate("window.__heads")) === 0,
+      JSON.stringify(lone),
+    );
+    const backToA = async () => {
+      await clickCard("A");
+      await until(
+        `${q(TITLE)}&&${q(TITLE)}.textContent===${JSON.stringify(TITLES.A)}`,
+      );
+      await ctx.sleep(200);
+    };
+    await backToA();
+    // With the header's button, a click presses it, and so does Enter on the
+    // focused button, once each.
+    await click(center(await box(q(NEW))));
+    await ctx.sleep(400);
+    const viaHead = await onScreen();
+    const heads1 = await ctx.evaluate("window.__heads");
+    await backToA();
+    await ctx.evaluate(`${q(NEW)}.focus()`);
+    await key("Enter", "Enter", 13);
+    await ctx.sleep(400);
+    const heads2 = await ctx.evaluate("window.__heads");
+    check(
+      "new: a click and Enter each press the header's own New session once",
+      heads1 === 1 &&
+        heads2 === 2 &&
+        viaHead.title !== TITLES.A &&
+        !viaHead.card,
+      JSON.stringify({ heads1, heads2, viaHead }),
+    );
+    await backToA();
+
+    // Hide: the host is asked to hide the secondary side bar, and a host
+    // that answers the request as unknown gets the reload notice (here from
+    // the keyboard).
+    const hides = async (go) => {
+      const m0 = (await sent()).length;
+      await go();
+      await ctx.sleep(300);
+      const after = (await sent()).slice(m0);
+      return {
+        asked: after.filter((m) => m.type === "request:ccup_close_sidebar")
+          .length,
+        notes: after
+          .filter((m) => m.type === "request:show_notification")
+          .map((m) => m.message),
+      };
+    };
+    const hide1 = await hides(async () => click(center(await box(q(HIDE)))));
+    await ctx.evaluate(`window.__unknown.push("ccup_close_sidebar")`);
+    const hide2 = await hides(async () => {
+      await ctx.evaluate(`${q(HIDE)}.focus()`);
+      await key("Enter", "Enter", 13);
+    });
+    await ctx.evaluate(`window.__unknown.length=0`);
+    check(
+      "hide: a click asks the host to hide the secondary side bar",
+      hide1.asked === 1 && hide1.notes.length === 0,
+      JSON.stringify(hide1),
+    );
+    check(
+      "hide: a host without the request gets the reload notice, Enter pressing the button once",
+      hide2.asked === 1 &&
+        hide2.notes.length === 1 &&
+        hide2.notes[0] === RELOAD,
+      JSON.stringify(hide2),
+    );
 
     // A press keeps focus: the input box keeps it through a click on the
     // card of the session on screen, which does nothing else.
@@ -810,15 +1008,15 @@ export async function run(ctx) {
     // box stays put. A keeps running in the background.
     const bar0 = await ctx.evaluate(`window.__bar0=${q(BAR)},true`);
     const top0 = (await box(`${q(BOX)}.querySelector("fieldset")`)).y;
-    // E sits past the strip's right edge here: the wheel over the strip, a
+    // E sits past the cards' right edge here: the wheel over the strip, a
     // vertical one as a mouse sends, scrolls it sideways into view.
     const pastEdge = () =>
       json(
-        `(function(){var b=${q(BAR)}.getBoundingClientRect(),e=${cardEl("E")}.getBoundingClientRect();return e.right>b.right+0.5})()`,
+        `(function(){var b=${q(LIST)}.getBoundingClientRect(),e=${cardEl("E")}.getBoundingClientRect();return e.right>b.right+0.5})()`,
       );
-    const sc0 = await ctx.evaluate(`${q(BAR)}.scrollLeft`);
+    const sc0 = await ctx.evaluate(`${q(LIST)}.scrollLeft`);
     const hidden0 = await pastEdge();
-    const bb = await box(q(BAR));
+    const bb = await box(q(LIST));
     for (let i = 0; i < 20 && (await pastEdge()); i++) {
       await ctx.cdp("Input.dispatchMouseEvent", {
         type: "mouseWheel",
@@ -829,14 +1027,20 @@ export async function run(ctx) {
       });
       await ctx.sleep(60);
     }
-    const sc1 = await ctx.evaluate(`${q(BAR)}.scrollLeft`);
+    // Once the wheel stops, the strip glides on to the next card boundary.
+    await ctx.sleep(700);
+    const sc1 = await ctx.evaluate(`${q(LIST)}.scrollLeft`);
+    const per1 = await ctx.evaluate(
+      `parseFloat(${q(LIST)}.style.getPropertyValue("--ccup-card-w"))`,
+    );
+    const aligned = Math.abs(sc1 - Math.round(sc1 / per1) * per1) < 1;
     const chatTop = await ctx.evaluate(
       `document.querySelector(".${cls("messagesContainer")}").scrollTop`,
     );
     check(
-      "scroll: the wheel over the strip scrolls it sideways to a card past its edge",
-      hidden0 && sc1 > sc0 && !(await pastEdge()) && chatTop === 0,
-      JSON.stringify({ hidden0, sc0, sc1, chatTop }),
+      "scroll: the wheel over the strip scrolls it sideways to a card past its edge, coming to rest on a card boundary",
+      hidden0 && sc1 > sc0 && aligned && !(await pastEdge()) && chatTop === 0,
+      JSON.stringify({ hidden0, sc0, sc1, per1, aligned, chatTop }),
     );
     const top1 = (await box(`${q(BOX)}.querySelector("fieldset")`)).y;
     mark = (await sent()).length;
@@ -911,31 +1115,46 @@ export async function run(ctx) {
       `${s7} / ${why}`,
     );
 
-    // Keys: one tab stop; arrows move; Enter opens.
+    // Keys: one tab stop; arrows move, Home and End reaching the buttons;
+    // Enter opens.
+    const ITEMS = JSON.stringify(`${CARD},${NEW},${HIDE}`);
     const stops = await ctx.evaluate(
-      `[].filter.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){return b.tabIndex===0}).length`,
+      `[].filter.call(document.querySelectorAll(${ITEMS}),function(b){return b.tabIndex===0}).length`,
     );
     await ctx.evaluate(
-      `[].find.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){return b.tabIndex===0}).focus()`,
+      `[].find.call(document.querySelectorAll(${ITEMS}),function(b){return b.tabIndex===0}).focus()`,
     );
-    const f0 = await ctx.evaluate(`document.activeElement.dataset.id`);
+    const focused = () =>
+      ctx.evaluate(
+        `(function(){var e=document.activeElement;return e.dataset.id||(e.matches(${JSON.stringify(NEW)})?"new":e.matches(${JSON.stringify(HIDE)})?"hide":"?")})()`,
+      );
+    const f0 = await focused();
     await key("ArrowLeft", "ArrowLeft", 37);
-    const f1 = await ctx.evaluate(`document.activeElement.dataset.id`);
+    const f1 = await focused();
     await key("End", "End", 35);
-    const f2 = await ctx.evaluate(`document.activeElement.dataset.id`);
+    const f2 = await focused();
+    await key("ArrowLeft", "ArrowLeft", 37);
+    const f3 = await focused();
     await key("Home", "Home", 36);
-    const f3 = await ctx.evaluate(`document.activeElement.dataset.id`);
+    const f4 = await focused();
+    await key("ArrowRight", "ArrowRight", 39);
+    const f5 = await focused();
     const order = await json(
       `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){return b.dataset.id})`,
     );
     check(
-      "keys: one tab stop, on the session on screen, and arrows move",
+      "keys: one tab stop, on the session on screen, arrows move, Home and End reach the buttons",
       stops === 1 &&
         f0 === S.E &&
         f1 === order[Math.max(0, order.indexOf(S.E) - 1)] &&
-        f2 === order[order.length - 1] &&
-        f3 === order[0],
-      JSON.stringify({ stops, f: [f0, f1, f2, f3].map((i) => LETTER[i]) }),
+        f2 === "hide" &&
+        f3 === order[order.length - 1] &&
+        f4 === "new" &&
+        f5 === order[0],
+      JSON.stringify({
+        stops,
+        f: [f0, f1, f2, f3, f4, f5].map((i) => LETTER[i] ?? i),
+      }),
     );
     await key("Enter", "Enter", 13);
     const keyed = await until(
@@ -987,24 +1206,31 @@ export async function run(ctx) {
       await ctx.evaluate("window.__muts"),
     );
 
-    // Titles at other widths: a wide sidebar (seven sessions by now), then a
-    // narrow one.
-    for (const width of [760, 250]) {
+    // Widths from a wide sidebar down to a narrow one (seven sessions by now):
+    // the title rule holds at each, and so does the edge rule, both its peek
+    // and its sliver turning up along the way. It ends at 250px, where the
+    // scroll checks below run.
+    const steps = {};
+    const bad = [];
+    for (let width = 900; width >= 250; width -= 10) {
       await ctx.cdp("Emulation.setDeviceMetricsOverride", {
         width,
         height: 700,
         deviceScaleFactor: 2,
         mobile: false,
       });
-      await ctx.sleep(400);
-      const L = await layout();
-      const t = await titlesOk(L);
-      check(
-        `titles: at ${width}px, one cap of 15 to 40 characters, the longest that keeps as many in view as fit at 15`,
-        t.N !== null && t.fits && t.longest,
-        JSON.stringify({ ...t, texts: L.cards.map((x) => x.text) }),
-      );
+      await ctx.sleep(120);
+      await ctx.evaluate(`${q(LIST)}.scrollLeft=0`);
+      await ctx.sleep(60);
+      const sh = sharesOk(await layout());
+      steps[sh.K] = (steps[sh.K] || 0) + 1;
+      if (!sh.ok) bad.push({ width, ...sh });
     }
+    check(
+      "shares: at every width from 900px to 250px whole cards only, one more for every 300px, the next at the edge",
+      !bad.length && Object.keys(steps).length >= 3,
+      JSON.stringify({ steps, bad: bad.slice(0, 4) }),
+    );
     // Every non-archived session is a card, the archived one never, and the
     // card on screen comes into view when it changes.
     const all = await strip();
@@ -1013,27 +1239,29 @@ export async function run(ctx) {
       all.split(" ").length === 7 &&
         !all.includes("Z") &&
         !all.includes("W") &&
-        (await ctx.evaluate(`${q(BAR)}.scrollWidth>${q(BAR)}.clientWidth`)),
+        (await ctx.evaluate(`${q(LIST)}.scrollWidth>${q(LIST)}.clientWidth`)),
       all,
     );
     const lastId = await ctx.evaluate(
       `[].slice.call(document.querySelectorAll(${JSON.stringify(CARD)})).pop().dataset.id`,
     );
-    await ctx.evaluate(`${q(BAR)}.scrollLeft=0`);
+    await ctx.evaluate(`${q(LIST)}.scrollLeft=0`);
     await ctx.evaluate(
-      `(function(){var t=[].slice.call(document.querySelectorAll(${JSON.stringify(CARD)})).find(function(b){return b.tabIndex===0});t.focus()})()`,
+      `(function(){var t=[].slice.call(document.querySelectorAll(${ITEMS})).find(function(b){return b.tabIndex===0});t.focus()})()`,
     );
+    // End reaches the hide button, the last card just before it.
     await key("End", "End", 35);
+    await key("ArrowLeft", "ArrowLeft", 37);
     await key("Enter", "Enter", 13);
     await until(
-      `!!${q(BAR)}.querySelector('[data-id="${lastId}"][data-active]')`,
+      `!!${q(LIST)}.querySelector('[data-id="${lastId}"][data-active]')`,
       3000,
     );
-    await ctx.evaluate(`${q(BAR)}.scrollLeft=0`);
+    await ctx.evaluate(`${q(LIST)}.scrollLeft=0`);
     await ctx.sleep(100);
     const inView = async () =>
       json(
-        `(function(){var b=${q(BAR)}.getBoundingClientRect(),e=${q(BAR)}.querySelector('[data-active]').getBoundingClientRect();return e.left>=b.left-0.5&&e.right<=b.right+0.5})()`,
+        `(function(){var b=${q(LIST)}.getBoundingClientRect(),e=${q(LIST)}.querySelector('[data-active]').getBoundingClientRect();return e.left>=b.left-0.5&&e.right<=b.right+0.5})()`,
       );
     const before = await inView();
     // A new render (the next feed report) brings it back only if it moved or
@@ -1044,18 +1272,20 @@ export async function run(ctx) {
     await ctx.sleep(200);
     const stays = !(await inView());
     // Opening another card from the far end brings the new one into view.
-    await ctx.evaluate(`${q(BAR)}.scrollLeft=${q(BAR)}.scrollWidth`);
+    await ctx.evaluate(`${q(LIST)}.scrollLeft=${q(LIST)}.scrollWidth`);
     await ctx.sleep(100);
     const firstId = await ctx.evaluate(
       `document.querySelector(${JSON.stringify(CARD)}).dataset.id`,
     );
     await ctx.evaluate(
-      `(function(){var t=[].slice.call(document.querySelectorAll(${JSON.stringify(CARD)})).find(function(b){return b.tabIndex===0});t.focus()})()`,
+      `(function(){var t=[].slice.call(document.querySelectorAll(${ITEMS})).find(function(b){return b.tabIndex===0});t.focus()})()`,
     );
+    // Home reaches the New session button, the first card just after it.
     await key("Home", "Home", 36);
+    await key("ArrowRight", "ArrowRight", 39);
     await key("Enter", "Enter", 13);
     await until(
-      `!!${q(BAR)}.querySelector('[data-id="${firstId}"][data-active]')`,
+      `!!${q(LIST)}.querySelector('[data-id="${firstId}"][data-active]')`,
       3000,
     );
     await ctx.sleep(200);
@@ -1126,16 +1356,33 @@ export async function run(ctx) {
         lineCorner !== "rgb(0, 120, 212)",
       JSON.stringify({ line, lineMid, lineCorner }),
     );
-    // A, first since the send, sits flush left: no shoulder and a square
-    // bottom-left corner.
+    // A, first since the send, sits right after the New session button: its
+    // bottom-left corner stays rounded, and the button's corner carries the
+    // left shoulder the scroller cuts off.
     const lead = await json(
-      `(function(){var b=${cardEl("A")};return{first:b===b.parentNode.firstElementChild,` +
-        `before:getComputedStyle(b,"::before").display,corner:getComputedStyle(b).borderBottomLeftRadius}})()`,
+      `(function(){var b=${cardEl("A")},n=${q(NEW)};return{first:b===b.parentNode.firstElementChild,` +
+        `corner:getComputedStyle(b).borderBottomLeftRadius,lent:n.hasAttribute("data-shoulder"),` +
+        `flush:Math.abs(b.getBoundingClientRect().left-n.getBoundingClientRect().right)<0.6}})()`,
     );
+    const [leadShoulder, leadIn, leadCorner] = await (async () => {
+      const n = await box(q(NEW));
+      const b = await box(cardEl("A"));
+      return colorsAt([
+        [n.r - 0.5, n.y + 0.5],
+        [n.r - 1, n.y + 3.5],
+        [b.x + 0.5, b.b - 0.5],
+      ]);
+    })();
     check(
-      "look: no groove left of the first card",
-      lead.first && lead.before === "none" && lead.corner === "0px",
-      JSON.stringify(lead),
+      "look: the first card keeps its rounded corner beside New session, the button drawing its shoulder",
+      lead.first &&
+        lead.flush &&
+        lead.corner === "4px" &&
+        lead.lent &&
+        leadShoulder === CHAT &&
+        leadIn === STRIP &&
+        leadCorner === STRIP,
+      JSON.stringify({ lead, leadShoulder, leadIn, leadCorner }),
     );
     await fetch(base + "__look/seamless");
     await boot();
@@ -1192,7 +1439,7 @@ export async function run(ctx) {
         Math.abs(ends.right - 8) < 0.6 &&
         ends.radius === "0px 0px" &&
         viewCorner === CLIPPED &&
-        endLeft === CHAT &&
+        endLeft === STRIP &&
         endRight === STRIP &&
         pastEnd === CHAT,
       JSON.stringify({ ends, viewCorner, endLeft, endRight, pastEnd }),
@@ -1202,12 +1449,30 @@ export async function run(ctx) {
     await boot();
     await ctx.sleep(400);
     const short = await json(
-      `(function(){var b=${q(BAR)}.getBoundingClientRect(),c=${cardEl("A")}.getBoundingClientRect();return{h:b.height,ch:c.height}})()`,
+      `(function(){var b=${q(BAR)}.getBoundingClientRect(),c=${cardEl("A")}.getBoundingClientRect(),` +
+        `n=${q(NEW)}.getBoundingClientRect(),h=${q(HIDE)}.getBoundingClientRect();` +
+        `return{h:b.height,ch:c.height,n:[n.width,n.height],x:[h.width,h.height]}})()`,
     );
     check(
-      "look: a compact editor tab height makes the cards 20px tall",
-      short.ch === 20 && short.h === 21,
+      "look: a compact editor tab height makes the cards and buttons 20px tall",
+      short.ch === 20 &&
+        short.h === 21 &&
+        short.n.join() === "20,20" &&
+        short.x.join() === "20,20",
       JSON.stringify(short),
+    );
+    // A secondary side bar on the left (the primary moved right): the arrow
+    // points left, its bar near the button's left side, with the same tip.
+    await fetch(base + "__look/lineLeft");
+    await boot();
+    await ctx.sleep(400);
+    await away();
+    const arrowL = await arrowAt();
+    const tipL = await ctx.evaluate(`${q(HIDE)}.dataset.tip`);
+    check(
+      "hide: on the left the arrow points to the left edge, with the same tip",
+      arrowL.l && !arrowL.r && tipL === HIDE_TIP,
+      JSON.stringify({ arrowL, tipL }),
     );
     await fetch(base + "__look/line");
 

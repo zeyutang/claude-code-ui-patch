@@ -7713,15 +7713,19 @@ export function promptHistWebview(
 //            Claude Code's unread mark. The session on screen never shows one
 // The strip holds every such session and scrolls sideways like the editor's
 // tab row, the wheel included, bringing the card on screen into view when
-// it changes or moves. A title shows up to SCARD_TITLE_LONGEST characters and
-// then an ellipsis, and that cap steps down as the strip narrows, never below
-// SCARD_TITLE_SHORTEST: as many cards are kept in view as fit at the shortest
-// cap, and then the longest cap that still fits them all is used, for every
-// card. Widths come from the label's own font on a canvas, kept per text, so
-// a resize measures nothing new. Each card is a button with its whole title
-// in a hover tip and its state in the tip and the accessible name, the strip
-// is a toolbar (one tab stop, arrow keys between cards), and a press keeps
-// focus where it was, as the jump buttons do.
+// it changes or moves. Two buttons stay put at its ends: New session at the
+// left, which presses the header's own (so a new conversation opens in a tab
+// when openNewInTab says so), with the header's icon once it shows, and at
+// the right one that hides the secondary side bar, its arrow pointing to the
+// window edge that bar sits on (opposite workbench.sideBar.location),
+// through the host (see sidebarHide). The cards scroll in the space between.
+// At rest that space shows whole cards only, as many as its width allows at
+// SCARD_CARD_MAX each (one more for every SCARD_CARD_MAX pixels), every card
+// an equal share of it with its title cut to fit by an ellipsis; revealing a
+// card and the wheel both come to rest on card boundaries. Each card is a
+// button with its whole title in a hover tip and its state in the accessible
+// name, the strip is a toolbar (one tab stop, arrow keys between its
+// buttons), and a press keeps focus where it was, as the jump buttons do.
 //
 // The strip lives in the session body (sessionBody_<hash>), the flex column
 // holding the chat, which a session switch keeps: the chat inside it remounts
@@ -7734,12 +7738,12 @@ export function promptHistWebview(
 // session body, which React never touches.
 //
 // Required: the manager (doListSessions, focusTabShowing, listSessions,
-// activeSession, sessions, comms) with a block constructor and a single effect
-// callee there, the session class (every member read above), a class carrying
-// the host's session feed (sessionStates, openSessionIds, unreadSessionKeys,
-// liveElsewhereSessions), and the session body and chat input container class
-// map entries. If any is gone the point reports missing and the bundle stays
-// native.
+// createSession, getConnection, activeSession, sessions, comms) with a block
+// constructor and a single effect callee there, the session class (every
+// member read above), a class carrying the host's session feed
+// (sessionStates, openSessionIds, unreadSessionKeys, liveElsewhereSessions),
+// and the session body and chat input container class map entries. If any
+// is gone the point reports missing and the bundle stays native.
 // ---------------------------------------------------------------------------
 const SCARD_MARKER = "/*ccup:scard*/";
 const SCARD_END = "/*ccup:scardEnd*/";
@@ -7749,11 +7753,12 @@ const SCARD_FILE = "webview/index.js";
 // keeps (most recent first).
 const SCARD_STORE = "ccup-session-cards";
 const SCARD_STORE_CAP = 200;
-// The most cards the strip holds (it scrolls), and the longest and shortest
-// a title gets before its ellipsis, in characters.
+// The most cards the strip holds (it scrolls), and the widest a card gets:
+// the space between the strip's buttons shows one more whole card for every
+// SCARD_CARD_MAX pixels of its width, so a card is 150 to 300px wide, about
+// 18 to 42 title characters at 13px past its 32px of padding and circle.
 const SCARD_MAX = 100;
-const SCARD_TITLE_LONGEST = 40;
-const SCARD_TITLE_SHORTEST = 15;
+const SCARD_CARD_MAX = 300;
 // A card's height, an editor tab's: window.density.editorTabHeight's default
 // and compact. The strip spans the sidebar's whole width and sits on its
 // bottom edge, SCARD_GAP below the input box.
@@ -7790,8 +7795,10 @@ interface ScardCfg {
   store: string;
   cap: number;
   max: number;
-  longest: number; // title characters before the ellipsis, at most
-  shortest: number; // and at least, however narrow the strip
+  cardMax: number; // the widest a card gets, in px
+  side: ScardSide; // the secondary side bar's side of the window
+  hideReq: string; // the host request that hides it
+  hideNote: string; // the notice while the host lacks that request
 }
 
 // The strip, built around the session manager by its constructor. Compiled
@@ -8026,8 +8033,9 @@ function ccupSessionCardsWeb(
     return rows.slice(0, cfg.max);
   };
 
-  // The strip and its cards, keyed by session id so a re-render keeps each
-  // card's element (and its hover and focus).
+  // The strip: its two buttons, and between them the scroller with the
+  // cards, keyed by session id so a re-render keeps each card's element (and
+  // its hover and focus).
   const sheet = doc.createElement("style");
   sheet.textContent = cfg.css;
   const bar = doc.createElement("div");
@@ -8035,44 +8043,136 @@ function ccupSessionCardsWeb(
   bar.setAttribute("role", "toolbar");
   bar.setAttribute("aria-label", "Recent sessions");
   bar.hidden = true;
+  const list = doc.createElement("div");
+  list.className = "ccup-cards-scroll";
+  const SVG = "http://www.w3.org/2000/svg";
+  const glyph = (d: string): any => {
+    const s = doc.createElementNS(SVG, "svg");
+    s.setAttribute("viewBox", "0 0 16 16");
+    s.setAttribute("fill", "none");
+    s.setAttribute("stroke", "currentColor");
+    s.setAttribute("stroke-linecap", "round");
+    s.setAttribute("stroke-linejoin", "round");
+    s.setAttribute("aria-hidden", "true");
+    const p = doc.createElementNS(SVG, "path");
+    p.setAttribute("d", d);
+    s.appendChild(p);
+    return s;
+  };
+  const button = (cls: string, label: string, icon: any): any => {
+    const b = doc.createElement("button");
+    b.type = "button";
+    b.className = `ccup-cards-btn ${cls}`;
+    b.tabIndex = -1;
+    b.dataset.tip = label;
+    b.setAttribute("aria-label", label);
+    b.appendChild(icon);
+    return b;
+  };
+  // A plus until the header's own icon shows; an arrow to the bar's edge.
+  const newBtn = button(
+    "ccup-cards-new",
+    "New session",
+    glyph("M8 3.5v9M3.5 8h9"),
+  );
+  const hideBtn = button(
+    "ccup-cards-hide",
+    "Hide Secondary Side Bar",
+    glyph(
+      cfg.side === "left"
+        ? "M13.5 8h-8M8.5 5l-3 3 3 3M2.5 3.5v9"
+        : "M2.5 8h8M7.5 5l3 3-3 3M13.5 3.5v9",
+    ),
+  );
+  bar.appendChild(newBtn);
+  bar.appendChild(list);
+  bar.appendChild(hideBtn);
   const cards = new Map<string, any>();
   let rows: any[] = [];
   let shown = "";
   let raf = 0;
   let host: any = null;
 
-  // A title cut to n characters with an ellipsis, counting code points so no
-  // surrogate pair splits, and the width of a label's text, measured on a
-  // canvas in the label's own font and kept per text.
-  const cut = (t: string, n: number): string => {
-    const cs = Array.from(t);
-    return cs.length <= n
-      ? t
-      : `${cs.slice(0, n).join("").trimEnd()}${String.fromCharCode(8230)}`;
-  };
-  const pen = doc.createElement("canvas").getContext("2d");
-  const widths = new Map<string, number>();
-  const textW = (font: string, s: string): number => {
-    const k = `${font}\n${s}`;
-    let v = widths.get(k);
-    if (v === undefined) {
-      if (widths.size > 4000) widths.clear();
-      pen.font = font;
-      v = pen.measureText(s).width as number;
-      widths.set(k, v);
-    }
-    return v;
-  };
   // The card on screen, and where it sat, when the strip last brought it into
-  // view.
+  // view, a whole card at a time so the strip rests on card boundaries; per
+  // is a card's width.
   let revealed = "";
+  let per = 0;
   const reveal = (b: any): void => {
-    const r = parseFloat(g.getComputedStyle(bar).paddingRight) || 0;
-    const a = b.offsetLeft - r;
-    const z = b.offsetLeft + b.offsetWidth + r;
-    if (a < bar.scrollLeft) bar.scrollLeft = Math.max(0, a);
-    else if (z > bar.scrollLeft + bar.clientWidth)
-      bar.scrollLeft = z - bar.clientWidth;
+    const i = Array.prototype.indexOf.call(list.children, b);
+    if (!per || i < 0) return;
+    const k = Math.max(1, Math.round(list.clientWidth / per));
+    const first = Math.round(list.scrollLeft / per);
+    if (i < first) list.scrollLeft = i * per;
+    else if (i > first + k - 1) list.scrollLeft = (i - k + 1) * per;
+  };
+  // Where the card on screen meets a button, the shoulder it draws outside
+  // itself falls past the scroller's edge, so that button draws it instead.
+  const edges = (): void => {
+    let l = false;
+    let r = false;
+    const a = list.querySelector(":scope > [data-active]");
+    if (a) {
+      const ra = a.getBoundingClientRect();
+      const rl = list.getBoundingClientRect();
+      l = Math.abs(ra.left - rl.left) < 0.5;
+      r = Math.abs(ra.right - rl.right) < 0.5;
+    }
+    if (newBtn.hasAttribute("data-shoulder") !== l)
+      newBtn.toggleAttribute("data-shoulder", l);
+    if (hideBtn.hasAttribute("data-shoulder") !== r)
+      hideBtn.toggleAttribute("data-shoulder", r);
+  };
+
+  // The header's New session button (not this strip's), and its icon for
+  // the strip's own once the header shows it.
+  const header = (): any => {
+    for (const x of doc.querySelectorAll('button[aria-label="New session"]'))
+      if (!bar.contains(x)) return x;
+    return null;
+  };
+  let ownIcon = false;
+  const takeIcon = (): void => {
+    try {
+      const svg = header()?.querySelector("svg");
+      if (!svg) return;
+      const c = svg.cloneNode(true);
+      c.removeAttribute("class");
+      c.removeAttribute("style");
+      newBtn.replaceChildren(c);
+    } catch {
+      // the plus stays
+    }
+    ownIcon = true;
+  };
+  // What the header's button does, else (no header) its fallback.
+  const newSession = (): void => {
+    try {
+      const h = header();
+      if (h) h.click();
+      else void Promise.resolve(mgr.createSession()).catch(() => {});
+    } catch {
+      // no new session
+    }
+  };
+  // The host hides the secondary side bar; one still running its pre-patch
+  // code answers "Unknown request type.", which asks for the reload that
+  // loads the handler.
+  const hideBar = (): void => {
+    Promise.resolve()
+      .then(() => mgr.getConnection())
+      .then((c: any) =>
+        c.sendRequest({ type: cfg.hideReq }).catch((e: any) => {
+          const m = e?.message || String(e);
+          return c.showNotification(
+            m === "Unknown request type."
+              ? cfg.hideNote
+              : `Could not hide the side bar: ${m}`,
+            "warning",
+          );
+        }),
+      )
+      .catch(() => {});
   };
 
   const mark = (on: boolean): void => {
@@ -8134,12 +8234,8 @@ function ccupSessionCardsWeb(
       if (bar.hidden === some) bar.hidden = !some;
       mount();
       mark(some);
-      const pad = g.getComputedStyle(bar);
-      const w = some
-        ? bar.clientWidth -
-          parseFloat(pad.paddingLeft) -
-          parseFloat(pad.paddingRight)
-        : 0;
+      if (some && !ownIcon) takeIcon();
+      const w = some ? list.getBoundingClientRect().width : 0;
       const key = JSON.stringify([
         w,
         rows.map((r) => [
@@ -8166,56 +8262,39 @@ function ccupSessionCardsWeb(
       rows.forEach((r, i) => {
         const b = cardFor(r.id);
         paint(b, r);
-        if (bar.children[i] !== b) bar.insertBefore(b, bar.children[i] ?? null);
+        if (list.children[i] !== b)
+          list.insertBefore(b, list.children[i] ?? null);
         if (r.active || (!stop && i === 0)) stop = b;
       });
-      // The title cap: as many cards as fit in view at the shortest cap, then
-      // the longest cap that still keeps them all in view. A card is its
-      // chrome (padding, circle, gap) plus its label's text.
-      let n = cfg.longest;
-      if (w > 0 && rows.length) {
-        const b0 = cards.get(rows[0].id);
-        const l0 = b0.lastChild;
-        const s = g.getComputedStyle(l0);
-        const font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
-        const chrome =
-          b0.getBoundingClientRect().width - l0.getBoundingClientRect().width;
-        const wide = (r: any, c: number): number =>
-          chrome + textW(font, cut(r.title, c));
-        let k = 0;
-        for (let room = w; k < rows.length; k++) {
-          const need = wide(rows[k], cfg.shortest);
-          if (k > 0 && need > room + 0.5) break;
-          room -= need;
-        }
-        // No card wider than the strip either, which a narrow one keeping a
-        // single card in view would otherwise allow.
-        const first = rows.slice(0, Math.max(1, k));
-        n = cfg.shortest;
-        for (let c = cfg.longest; c > cfg.shortest; c--) {
-          let sum = 0;
-          for (const r of first) sum += wide(r, c);
-          if (sum > w + 0.5 || rows.some((r) => wide(r, c) > w + 0.5)) continue;
-          n = c;
-          break;
-        }
-      }
       for (const r of rows) {
         const l = cards.get(r.id).lastChild;
-        const t = cut(r.title, n);
-        if (l.textContent !== t) l.textContent = t;
+        if (l.textContent !== r.title) l.textContent = r.title;
       }
-      // One tab stop: the focused card, else the session on screen, else the
-      // first.
+      // Whole cards in view, an equal share each of the space between the
+      // buttons, so the next card starts at the edge.
+      if (w > 0) {
+        per = w / Math.max(1, Math.ceil(w / cfg.cardMax));
+        const v = `${per}px`;
+        if (list.style.getPropertyValue("--ccup-card-w") !== v)
+          list.style.setProperty("--ccup-card-w", v);
+      }
+      // One tab stop: the focused button, else the session on screen, else
+      // the first card.
       const f = doc.activeElement;
-      if (f && f.parentNode === bar) stop = f;
-      for (const b of cards.values()) b.tabIndex = b === stop ? 0 : -1;
+      if (f && (f === newBtn || f === hideBtn || f.parentNode === list))
+        stop = f;
+      for (const b of [newBtn, hideBtn, ...cards.values()])
+        b.tabIndex = b === stop ? 0 : -1;
       // The card on screen comes into view when it changes or moves, as the
       // editor reveals its active tab; a scroll of your own stays otherwise.
       const at = rows.findIndex((r) => r.active);
       const now = at < 0 ? "" : `${rows[at].id}:${at}`;
-      if (now && now !== revealed && w > 0) reveal(cards.get(rows[at].id));
-      revealed = now;
+      if (!now) revealed = "";
+      else if (now !== revealed && w > 0) {
+        reveal(cards.get(rows[at].id));
+        revealed = now;
+      }
+      edges();
     } catch {
       // a render never breaks the chat
     }
@@ -8262,9 +8341,17 @@ function ccupSessionCardsWeb(
     tip.style.left = `${Math.max(4, Math.min(r.left, vw - w - 4))}px`;
     tip.style.top = `${r.top - tip.offsetHeight - 6}px`;
   };
-  const cardAt = (t: any): any => {
-    const b = t?.closest?.(".ccup-card");
-    return b && b.parentNode === bar ? b : null;
+  // A card or one of the strip's buttons, else null.
+  const itemAt = (t: any): any => {
+    const b = t?.closest?.("button");
+    return b === newBtn || b === hideBtn || (b && b.parentNode === list)
+      ? b
+      : null;
+  };
+  const press = (b: any): void => {
+    if (b === newBtn) newSession();
+    else if (b === hideBtn) hideBar();
+    else open(b.dataset.id);
   };
 
   bar.addEventListener("mousedown", (e: any) => {
@@ -8272,20 +8359,20 @@ function ccupSessionCardsWeb(
     if (e.button === 0) e.preventDefault();
   });
   bar.addEventListener("click", (e: any) => {
-    const b = cardAt(e.target);
-    if (b) open(b.dataset.id);
+    const b = itemAt(e.target);
+    if (b) press(b);
   });
   bar.addEventListener("keydown", (e: any) => {
     if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
-    const all = Array.from(bar.children) as any[];
+    const all = [newBtn, ...Array.from(list.children), hideBtn] as any[];
     const i = all.indexOf(doc.activeElement);
     if (i < 0) return;
-    // Opened here rather than by the button's own activation, so no handler
+    // Pressed here rather than by the button's own activation, so no handler
     // further up (the app's root listeners) can take the key first.
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       e.stopPropagation();
-      if (!e.repeat) open(all[i].dataset.id);
+      if (!e.repeat) press(all[i]);
       return;
     }
     const j =
@@ -8306,26 +8393,57 @@ function ccupSessionCardsWeb(
     all[j].focus({ preventScroll: true });
     reveal(all[j]);
   });
-  // The wheel scrolls the strip sideways, either axis, as over the editor's
-  // tabs; a strip with nothing to scroll lets it pass.
+  // The wheel over the strip scrolls the cards sideways, either axis, as over
+  // the editor's tabs, and once it stops they glide on to the next card
+  // boundary in the direction it went, so a card scrolled into view stays
+  // whole; with nothing to scroll the wheel passes.
+  let settle = 0;
+  let glide: number | null = null;
+  list.addEventListener("scrollend", () => {
+    glide = null;
+  });
   bar.addEventListener(
     "wheel",
     (e: any) => {
-      if (e.ctrlKey || bar.scrollWidth <= bar.clientWidth) return;
+      if (e.ctrlKey || list.scrollWidth <= list.clientWidth) return;
       const unit =
-        e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? bar.clientWidth : 1;
+        e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? list.clientWidth : 1;
       const d =
         (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * unit;
       if (!d) return;
       e.preventDefault();
       hideTip();
-      bar.scrollLeft += d;
+      // From the boundary a settle is gliding to, if one is, so a wheel tick
+      // landing mid-glide loses no ground.
+      const max = list.scrollWidth - list.clientWidth;
+      const from = glide ?? list.scrollLeft;
+      glide = null;
+      list.scrollLeft = Math.max(0, Math.min(max, from + d));
+      const dir = d > 0 ? 1 : -1;
+      if (settle) g.clearTimeout(settle);
+      settle = g.setTimeout(() => {
+        settle = 0;
+        if (!per) return;
+        const at = list.scrollLeft / per;
+        const to =
+          (dir > 0 ? Math.ceil(at - 0.02) : Math.floor(at + 0.02)) * per;
+        if (Math.abs(to - list.scrollLeft) > 0.5) {
+          glide = Math.max(
+            0,
+            Math.min(list.scrollWidth - list.clientWidth, to),
+          );
+          list.scrollTo({ left: to, behavior: "smooth" });
+        }
+      }, 140);
     },
     { passive: false },
   );
-  bar.addEventListener("scroll", hideTip);
+  list.addEventListener("scroll", () => {
+    hideTip();
+    edges();
+  });
   bar.addEventListener("mouseover", (e: any) => {
-    const b = cardAt(e.target);
+    const b = itemAt(e.target);
     if (!b) return;
     if (tipT) g.clearTimeout(tipT);
     tipT = 0;
@@ -8344,7 +8462,7 @@ function ccupSessionCardsWeb(
     }, 250);
   });
   bar.addEventListener("mouseout", (e: any) => {
-    if (!cardAt(e.relatedTarget)) hideTip();
+    if (!itemAt(e.relatedTarget)) hideTip();
   });
 
   // A warm cache turns cold with nothing to signal it, so the strip wakes at
@@ -8390,7 +8508,7 @@ function ccupSessionCardsWeb(
     // it has already laid out).
     new g.ResizeObserver(() => {
       if (!bar.hidden) schedule();
-    }).observe(bar);
+    }).observe(list);
   } catch {
     // no observers: the strip mounts on each render alone
   }
@@ -8410,14 +8528,17 @@ function ccupSessionCardsWeb(
 // them and the card on screen carries the tab's blue accent line, along its
 // bottom edge rather than the top, since the strip sits below the chat rather
 // than above it ("line"); the classic tabs, without the modern UI, do the
-// same. The card height follows window.density.editorTabHeight. All three
-// settings are read, never written, at patch time, so a change to any of
-// them re-applies (see Patcher.register) and asks for a webview refresh.
+// same. The card height follows window.density.editorTabHeight, and the hide
+// button's arrow workbench.sideBar.location. These settings are read, never
+// written, at patch time, so a change to any of them re-applies (see
+// Patcher.register) and asks for a webview refresh.
 export type ScardLook = "seamless" | "line";
+export type ScardSide = "left" | "right";
 export const SCARD_LOOK_KEYS = [
   "window.density.layout",
   "window.density.editorTabHeight",
   "workbench.experimental.modernUI",
+  "workbench.sideBar.location",
 ];
 function scardLook(): ScardLook {
   try {
@@ -8441,19 +8562,34 @@ function scardTabH(): number {
     return SCARD_TAB_H;
   }
 }
+// The secondary side bar's side of the window, across from the primary one.
+function scardSide(): ScardSide {
+  try {
+    return vscode.workspace
+      .getConfiguration()
+      .get<string>("workbench.sideBar.location") === "right"
+      ? "left"
+      : "right";
+  } catch {
+    return "right";
+  }
+}
 
 // The strip's stylesheet: the connected tab row's background across the
-// sidebar's width, scrolling sideways with no scrollbar of its own, cards
+// sidebar's width, its two buttons square at a card's height (transparent on
+// that background, and its ghost hover color under the pointer), between
+// them the cards scrolling sideways with no scrollbar of their own, cards
 // with a leading state circle (in the card's own color, clay for a session
 // waiting on you, filled while the session's prompt cache is warm and a
 // hollow ring once it is cold), the card on screen in the chat's background
-// with its corners and shoulders and the look's line, its text in the same
-// grey as the others' (the editor tab's white read as distracting), and the
-// input box's lowered gap. The corners take VS Code's small radius
-// (cornerRadius.small) and the shoulders the same curve, drawn as masked
-// squares in the chat's background just outside the card's top corners, so
-// they paint only where the strip meets the chat; the first card sits flush
-// with the strip's left edge, without either. The text takes the editor tab's
+// with its corners and shoulders and the look's line, its text in the input
+// box's color (the editor tab's white read as distracting, and the others'
+// grey would not set it apart), and the input box's lowered gap. The corners
+// take VS Code's small radius (cornerRadius.small) and the shoulders the same
+// curve, drawn as masked squares in the chat's background just outside the
+// card's top corners, so they paint only where the strip meets the chat; the
+// scroller cuts off a shoulder past its edge, so a button the card on screen
+// meets draws that one in its own corner. The text takes the editor tab's
 // size (fontSize.body1). At the default density the webview itself is
 // clipped to VS Code's large radius (cornerRadius.large), so there the
 // strip's ends stay that far in from the sides, which keeps its own corners
@@ -8461,6 +8597,8 @@ function scardTabH(): number {
 function scardCss(chat: string, look: ScardLook, tabH: number): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
+  const grey = tab("inactiveForeground", "var(--app-secondary-foreground)");
+  const hover = `background:var(--app-ghost-button-hover-background);color:${tab("hoverForeground", "var(--app-primary-foreground)")}`;
   const groove = look === "line" ? 1 : 0;
   const ends =
     look === "seamless"
@@ -8473,23 +8611,28 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
       ? `;background-image:linear-gradient(${tab("activeBorderTop", "var(--vscode-focusBorder)")},${tab("activeBorderTop", "var(--vscode-focusBorder)")});background-repeat:no-repeat;background-position:50% 100%;background-size:calc(100% - 2 * var(--ccup-card-r)) 1px`
       : "";
   return (
-    `.ccup-cards{--ccup-card-r:var(--vscode-cornerRadius-small,4px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;${ends};height:${tabH + groove}px;padding:0 var(--ccup-card-r) ${groove}px 0;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
-    ".ccup-cards::-webkit-scrollbar{display:none}" +
+    `.ccup-cards{--ccup-card-r:var(--vscode-cornerRadius-small,4px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;${ends};height:${tabH + groove}px;padding:0 0 ${groove}px;background:var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
     ".ccup-cards[hidden]{display:none}" +
-    `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 auto;height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${tab("inactiveForeground", "var(--app-secondary-foreground)")};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +
-    ".ccup-card-label{white-space:nowrap}" +
+    `.ccup-cards-scroll{position:relative;display:flex;flex:1 1 auto;min-width:0;height:${tabH}px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none}` +
+    ".ccup-cards-scroll::-webkit-scrollbar{display:none}" +
+    `.ccup-cards-btn{position:relative;display:flex;align-items:center;justify-content:center;flex:none;width:${tabH}px;height:${tabH}px;box-sizing:border-box;margin:0;padding:0;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};cursor:pointer;outline:none}` +
+    ".ccup-cards-btn svg{display:block;width:16px;height:16px;pointer-events:none}" +
+    `.ccup-cards-btn${HOVER}{${hover}}` +
+    ".ccup-cards-btn[data-shoulder]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
+    `.ccup-cards-new[data-shoulder]::after{right:0;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
+    `.ccup-cards-hide[data-shoulder]::after{left:0;-webkit-mask:${shoulder("100% 100%")};mask:${shoulder("100% 100%")}}` +
+    `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 var(--ccup-card-w,auto);width:var(--ccup-card-w,auto);height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +
+    ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
     ".ccup-card[data-warm] .ccup-card-dot{background:currentColor}" +
     `.ccup-card[data-pending] .ccup-card-dot{border-color:${clay}}` +
     `.ccup-card[data-pending][data-warm] .ccup-card-dot{background:${clay}}` +
-    `.ccup-card:not([data-active])${HOVER}{background:var(--app-ghost-button-hover-background);color:${tab("hoverForeground", "var(--app-primary-foreground)")}}` +
-    `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);cursor:default${line}}` +
+    `.ccup-card:not([data-active])${HOVER}{${hover}}` +
+    `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);color:var(--app-input-foreground,${grey});cursor:default${line}}` +
     ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
     `.ccup-card[data-active]::before{right:100%;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
     `.ccup-card[data-active]::after{left:100%;-webkit-mask:${shoulder("100% 100%")};mask:${shoulder("100% 100%")}}` +
-    ".ccup-card[data-active]:first-child{border-bottom-left-radius:0}" +
-    ".ccup-card[data-active]:first-child::before{display:none}" +
-    ".ccup-card:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
+    ".ccup-card:focus-visible,.ccup-cards-btn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
     `[data-ccup-cards] .inputContainer_${chat}{bottom:${SCARD_GAP}px}` +
     HOVER_TIP_CSS
   );
@@ -8518,9 +8661,14 @@ function sessionCardsFind(c: string): ScardSite | null {
     STAY_CLASS_REACH,
   ).filter(
     (k) =>
-      ["doListSessions", "focusTabShowing", "listSessions"].every((m) =>
-        sdelMethod(k, m),
-      ) && ["activeSession", "sessions", "comms"].every((f) => sdelField(k, f)),
+      [
+        "doListSessions",
+        "focusTabShowing",
+        "listSessions",
+        "createSession",
+        "getConnection",
+      ].every((m) => sdelMethod(k, m)) &&
+      ["activeSession", "sessions", "comms"].every((f) => sdelField(k, f)),
   );
   if (mgrs.length !== 1 || mgrs[0].superClass) return null;
   const mgr = mgrs[0];
@@ -8588,15 +8736,21 @@ let scardBuilt: {
   native: string;
   look: ScardLook;
   tabH: number;
+  side: ScardSide;
   out: string | null;
 }[] = [];
 function sessionCardsBuild(
   native: string,
   look: ScardLook,
   tabH: number,
+  side: ScardSide,
 ): string | null {
   const hit = scardBuilt.find(
-    (b) => b.native === native && b.look === look && b.tabH === tabH,
+    (b) =>
+      b.native === native &&
+      b.look === look &&
+      b.tabH === tabH &&
+      b.side === side,
   );
   if (hit) return hit.out;
   const site = sessionCardsSite(native);
@@ -8608,8 +8762,10 @@ function sessionCardsBuild(
       store: SCARD_STORE,
       cap: SCARD_STORE_CAP,
       max: SCARD_MAX,
-      longest: SCARD_TITLE_LONGEST,
-      shortest: SCARD_TITLE_SHORTEST,
+      cardMax: SCARD_CARD_MAX,
+      side,
+      hideReq: SHIDE_REQ,
+      hideNote: SHIDE_RELOAD_NOTE,
     };
     const edit: Edit = {
       pos: site.pos,
@@ -8620,7 +8776,7 @@ function sessionCardsBuild(
     const o = applyEdits(native, [edit]);
     if (unitsReparse(o, [edit], [[site.unit, isClass]])) out = o;
   }
-  scardBuilt = [{ native, look, tabH, out }, ...scardBuilt].slice(0, 2);
+  scardBuilt = [{ native, look, tabH, side, out }, ...scardBuilt].slice(0, 2);
   return out;
 }
 const scardStrip = (c: string): string => c.replace(SCARD_FRAG_RE, "");
@@ -8634,7 +8790,7 @@ function sessionCardsPresent(c: string): boolean {
 // nothing to remove.
 function sessionCardsCurrentOn(c: string): boolean | undefined {
   const native = scardStrip(c);
-  const want = sessionCardsBuild(native, scardLook(), scardTabH());
+  const want = sessionCardsBuild(native, scardLook(), scardTabH(), scardSide());
   if (native !== c) return want === null || want === c;
   return want === null ? undefined : false;
 }
@@ -8642,18 +8798,113 @@ function sessionCardsSet(c: string, on: boolean): string {
   const native = scardStrip(c);
   if (!on) return native;
   // sites gone: leave the file as it is
-  return sessionCardsBuild(native, scardLook(), scardTabH()) ?? c;
+  return sessionCardsBuild(native, scardLook(), scardTabH(), scardSide()) ?? c;
 }
 
-// The webview bundle with the strip in for a look and card height, or null
-// when a site is gone. scripts/repro's session-cards.mjs serves this, so it
-// runs exactly what an apply writes and doubles as the drift canary.
+// The webview bundle with the strip in for a look, card height, and side bar
+// side, or null when a site is gone. scripts/repro's session-cards.mjs serves
+// this, so it runs exactly what an apply writes and doubles as the drift
+// canary.
 export function sessionCardsWebview(
   js: string,
   look: ScardLook = "line",
   tabH: number = SCARD_TAB_H,
+  side: ScardSide = "right",
 ): string | null {
-  return sessionCardsBuild(scardStrip(js), look, tabH);
+  return sessionCardsBuild(scardStrip(js), look, tabH, side);
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar hide request (always on, the session cards' host half): the cards'
+// right-hand button hides the secondary side bar, which only the host can do,
+// and Claude Code's host runs no command a webview names. One fragment,
+// /*ccup:sidebarHide*/.../*ccup:sidebarHideEnd*/, adds a ccup_close_sidebar
+// case to the comms base class's request switch, running VS Code's own
+// workbench.action.closeAuxiliaryBar. It answers nothing else, so with the
+// cards off it is inert.
+//
+// It sits right before the switch's default clause, which natively falls out
+// to "Unknown request type.": a case after an empty default would catch every
+// unknown request by fallthrough, and one before it can be fallen into from
+// the case above, so the case checks the type itself before acting. Found by
+// structure: an async processRequest(<env>) whose first statement switches on
+// <env>.request.type, with an init case and a default.
+// ---------------------------------------------------------------------------
+const SHIDE_MARKER = "/*ccup:sidebarHide*/";
+const SHIDE_END = "/*ccup:sidebarHideEnd*/";
+const SHIDE_FRAG_RE =
+  /\/\*ccup:sidebarHide\*\/[\s\S]*?\/\*ccup:sidebarHideEnd\*\//g;
+const SHIDE_FILE = "extension.js";
+// The request the cards' button sends, and the notice it shows while the
+// host has not loaded this case yet.
+const SHIDE_REQ = "ccup_close_sidebar";
+const SHIDE_RELOAD_NOTE =
+  "Reload the window to start using the side bar hide button.";
+// How far ahead of a processRequest its class may start (the comms base
+// class alone spans about 145KB).
+const SHIDE_REACH = 400000;
+
+function sidebarHideFind(c: string): { unit: N; edit: Edit } | null {
+  const sites: { unit: N; edit: Edit }[] = [];
+  for (const k of unitsWith(
+    c,
+    "processRequest(",
+    "class ",
+    isClass,
+    SHIDE_REACH,
+  )) {
+    for (const m of k.body.body as N[]) {
+      if (
+        m.type !== "MethodDefinition" ||
+        m.computed ||
+        idName(m.key) !== "processRequest" ||
+        !m.value.async
+      )
+        continue;
+      const env = idName(m.value.params[0]);
+      const sw = m.value.body.body[0];
+      if (
+        !env ||
+        sw?.type !== "SwitchStatement" ||
+        memberProp(sw.discriminant) !== "type" ||
+        !isMember(sw.discriminant.object, env, "request")
+      )
+        continue;
+      const cases: N[] = sw.cases;
+      const dflt = cases.find((x) => x.test === null);
+      if (!dflt || !cases.some((x) => isStr(x.test, "init"))) continue;
+      sites.push({
+        unit: k,
+        edit: {
+          pos: dflt.start,
+          text:
+            `${SHIDE_MARKER}case"${SHIDE_REQ}":if(${env}.request.type==="${SHIDE_REQ}"){` +
+            `try{await require("vscode").commands.executeCommand("workbench.action.closeAuxiliaryBar")}catch(ccupE){}` +
+            `return{type:"${SHIDE_REQ}_response"}}${SHIDE_END}`,
+        },
+      });
+    }
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The native host bundle with the fragment in, or null when the site is
+// missing or the edit would not parse.
+const sidebarHideBuild = sdelMemo((native) => {
+  const site = sidebarHideFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, [site.edit]);
+  return unitsReparse(out, [site.edit], [[site.unit, isClass]]) ? out : null;
+});
+
+function sidebarHidePatch(native: string): string | null {
+  return sidebarHideBuild(native);
+}
+
+// The host bundle, patched or not, as an apply writes this point into it, or
+// null when its site is gone.
+export function sidebarHideHost(host: string): string | null {
+  return sidebarHideBuild(host.replace(SHIDE_FRAG_RE, ""));
 }
 
 // ---------------------------------------------------------------------------
@@ -12163,6 +12414,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
   },
   {
     kind: "inline",
+    id: "sidebarHide",
+    label: "sidebar hide request",
+    file: SHIDE_FILE,
+    frags: SHIDE_FRAG_RE,
+    patch: sidebarHidePatch,
+  },
+  {
+    kind: "inline",
     id: "inputSeed",
     label: "session open landing",
     file: ISEED_FILE,
@@ -14302,7 +14561,8 @@ export class Patcher {
     // change there must re-run the apply pass too.
     patchKeys.push("claudeCode.useCtrlEnterToSend");
     // The session cards bake how the card on screen stands out from VS Code's
-    // own layout density (see ScardLook), so a density or modern UI change
+    // own layout density (see ScardLook), and which way the hide button's
+    // arrow points from the side bar's location, so a change to any of those
     // re-applies too.
     patchKeys.push(...SCARD_LOOK_KEYS);
     // chat.fontSize is no longer a knob, but the chatHistoryFontSize knob shows it

@@ -508,6 +508,34 @@ export async function run(ctx) {
     // search: the counts.
     await query("zeta");
     await countIs("search: plain text ignores case", "1 of 9");
+    // The matches paint while the bar is open (their highlight rules apply
+    // only under body.ccup-find-open, so a closed bar costs no style work):
+    // the active one in the find color and another in the match color, each
+    // blended over the chat's background (#181818, the stub sets no find
+    // tokens, so the rules' fallbacks paint).
+    const hl = await ev(`(() => {
+      const b = (r) => { const q = document.createRange(); q.setStart(r.startContainer, r.startOffset); q.setEnd(r.endContainer, r.endOffset); const x = q.getBoundingClientRect(); return { l: x.left, t: x.top, w: x.width, h: x.height }; };
+      const seen = (x) => x.w > 0 && x.t >= 0 && x.t + x.h <= innerHeight;
+      const act = [...(CSS.highlights.get("ccup-find-active") || [])].map(b).find(seen) || null;
+      const other = [...(CSS.highlights.get("ccup-find") || [])].map(b)
+        .find((x) => seen(x) && (!act || Math.abs(x.t - act.t) > 1 || Math.abs(x.l - act.l) > 1)) || null;
+      return { act, other };
+    })()`);
+    const actInk = hl.act ? await inkOf(hl.act, "rgb(194, 123, 29)") : { n: 0 };
+    const otherInk = hl.other
+      ? await inkOf(hl.other, "rgb(93, 46, 16)")
+      : { n: 0 };
+    // Without the class the same match paints nothing: the rules are scoped.
+    await ev('document.body.classList.remove("ccup-find-open")');
+    const offInk = hl.act
+      ? await inkOf(hl.act, "rgb(194, 123, 29)")
+      : { n: -1 };
+    await ev('document.body.classList.add("ccup-find-open")');
+    check(
+      "search: the active match paints in the find color and another in the match color, only while the bar is open",
+      actInk.n >= 20 && otherInk.n >= 20 && offInk.n === 0,
+      J({ act: actInk.n, other: otherInk.n, closed: offInk.n }),
+    );
     // Three steps on, to zetas, so the flip below shows it keeps the place.
     for (let i = 0; i < 3; i++) {
       await ev(

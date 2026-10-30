@@ -6,6 +6,8 @@
   A click opens that session as the Session history list does.
   Each card's circle is filled while the session's prompt cache is still warm, and turns clay while the session waits on you: a permission or question prompt, or a finished turn you have not seen.
   The card of the session on screen joins the chat above it, and also carries a blue line along its bottom when `window.density.layout` is compact.
+- Switching sessions no longer keeps the previous session's transcript in memory, which had made a window that switched often grow slower until it was reloaded.
+- Switching to a long session is faster: the find bar's match colors and the selection colors no longer add work to every redraw of the chat.
 
 ## 1.6.3
 

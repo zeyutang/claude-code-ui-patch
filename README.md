@@ -101,6 +101,7 @@ Always applied                         # no setting; installing this patch is th
    ├── untitled session stays          # opening the history keeps you on an Untitled session
    ├── editor selection colors         # selected text in the editor's selection colors
    ├── input box redraw                # selecting chat text no longer redraws the input box
+   ├── diff card release               # a session you switch away from no longer stays in memory
    ├── inline math spans               # fix for math rendering
    ├── last turn delete                # prompt history's last entry: delete that turn
    └── bookmark notes                  # Bookmarks pane rows: annotate a bookmark with your own note

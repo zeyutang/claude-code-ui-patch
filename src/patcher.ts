@@ -1466,11 +1466,17 @@ function permNoWrapSet(c: string, on: boolean): string {
 // window.find), and unmarks on focus. A selection inside a contenteditable
 // is marked on the editable's parent, so the editor never meets a foreign
 // attribute in its own DOM, and no observer in the bundle watches the
-// attribute (they filter on class and style). The mark goes on that subtree
-// rather than on <html> because a ::selection rule reaching every element
-// makes Blink compute a highlight style for each: a full recalc costs about
-// twice as much (12ms to 23ms on a 34k-element page), which an <html>
-// attribute would pay on every focus change.
+// attribute (they filter on class and style).
+// The rules match only the root and the inactive mark, and reach every other
+// element through highlight inheritance (Chromium 150 hands a ::selection's
+// background and colors down to descendants that match no rule of their own):
+// a ::selection rule matching every element made Blink resolve a highlight
+// style for each element on every style recalc, about 45ms more on a long
+// transcript's session switch. An element with a rule of its own (an image,
+// the composer's editable) keeps it, which is why high contrast names the
+// editable again: its own colors would otherwise beat the foreground it
+// inherits. The mark goes on the selection's subtree rather than on <html>, so
+// a focus change re-resolves that subtree's highlights alone.
 // An always-on fix rather than a knob: the native highlight is the browser's,
 // tied to no theme, so there is no native behavior worth keeping as an option.
 // No anchor: both halves read only what VS Code provides, so every build takes
@@ -1493,18 +1499,21 @@ function selectionCssBuild(css: string): string {
   const v = "--ccup-selection";
   const hc = "var(--vscode-editor-selectionForeground,currentcolor)";
   const mirror = css.match(SELECTION_MIRROR_RE);
-  const composer =
+  const editable =
     mirror && selectionEditableRe(mirror[1]).test(css)
-      ? `.messageInput_${mirror[1]}::selection{color:${mirror[2]};-webkit-text-fill-color:${mirror[2]}}`
+      ? `.messageInput_${mirror[1]}`
       : "";
+  const composer = editable
+    ? `${editable}::selection{color:${mirror![2]};-webkit-text-fill-color:${mirror![2]}}`
+    : "";
   return (
     SELECTION_CSS_MARKER +
     `:root{${v}:var(--vscode-editor-selectionBackground,Highlight)}` +
     `[${SELECTION_INACTIVE_ATTR}]{${v}:var(--vscode-editor-inactiveSelectionBackground,Highlight)}` +
-    `::selection{background-color:var(${v})}` +
+    `:root::selection,[${SELECTION_INACTIVE_ATTR}]::selection{background-color:var(${v})}` +
     `img::selection{background-color:color-mix(in srgb,var(${v}) 50%,transparent)}` +
     composer +
-    `.vscode-high-contrast ::selection{color:${hc};-webkit-text-fill-color:${hc}}`
+    `.vscode-high-contrast::selection${editable ? `,.vscode-high-contrast ${editable}::selection` : ""}{color:${hc};-webkit-text-fill-color:${hc}}`
   );
 }
 
@@ -4452,6 +4461,115 @@ function mentionRedrawPatch(native: string): string | null {
 // canary.
 export function mentionRedrawWebview(web: string): string | null {
   return mentionRedrawBuild(web.replace(MREDRAW_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
+// Diff editor release (always on): every diff card mounts a Monaco diff
+// editor, and the editor service bundled into the webview registers each one
+// in its `_diffEditors` table (addDiffEditor) but has no removeDiffEditor, and
+// the editor never fires its onDidDispose either, so the table keeps every
+// diff editor the webview ever made. Each holds its own DOM and, through its
+// ancestors, the whole transcript it was mounted in, so every session switch
+// left the previous transcript alive: on 2.1.312 a round trip between two long
+// sessions kept about 6,400 more nodes and 5 MB more heap after a GC, 98% of it
+// through this table. The cards' own cleanup already disposes the editor.
+//
+// One fragment, /*ccup:diffEdFree*/.../*ccup:diffEdFreeEnd*/, at the end of
+// addDiffEditor registers a disposable on the editor that, when the editor is
+// disposed, deletes its entry and fires the service's onDiffEditorRemove, as
+// Monaco's own removeDiffEditor does upstream. Any error leaves the editor
+// registered, as natively.
+//
+// Found by structure (src/derive.ts): the class method addDiffEditor(<p>)
+// whose body sets this._diffEditors[<p>.getId()] to <p>.
+// ---------------------------------------------------------------------------
+const DEFREE_MARKER = "/*ccup:diffEdFree*/";
+const DEFREE_END = "/*ccup:diffEdFreeEnd*/";
+const DEFREE_FRAG_RE =
+  /\/\*ccup:diffEdFree\*\/[\s\S]*?\/\*ccup:diffEdFreeEnd\*\//g;
+const DEFREE_FILE = "webview/index.js";
+// How far ahead of the method its class may start (about 1,100 chars on
+// 2.1.285 to 2.1.312).
+const DEFREE_REACH = 20000;
+
+// The release the fragment adds, with <p> the method's parameter.
+function diffEdFreeHook(p: string): string {
+  return (
+    `;try{var ccupSvc=this,ccupKey=${p}.getId();${p}._register({dispose:function(){` +
+    `try{if(ccupSvc._diffEditors[ccupKey]===${p}){delete ccupSvc._diffEditors[ccupKey];` +
+    `if(ccupSvc._onDiffEditorRemove)ccupSvc._onDiffEditorRemove.fire(${p})}}catch(e){}}})}catch(e){}`
+  );
+}
+
+function diffEdFreeFind(c: string): { unit: N; edit: Edit } | null {
+  const sites: { unit: N; edit: Edit }[] = [];
+  for (const k of unitsWith(
+    c,
+    "addDiffEditor(",
+    "class",
+    isClass,
+    DEFREE_REACH,
+  )) {
+    for (const m of k.body.body as N[]) {
+      if (
+        m.type !== "MethodDefinition" ||
+        m.kind !== "method" ||
+        m.static ||
+        m.computed ||
+        idName(m.key) !== "addDiffEditor"
+      )
+        continue;
+      const f = m.value;
+      const p = f.params.length === 1 ? idName(f.params[0]) : null;
+      if (!p || f.body.type !== "BlockStatement") continue;
+      let sets = false;
+      walkOwn(f, (n) => {
+        if (sets) return false;
+        const t = n.type === "AssignmentExpression" ? n.left : null;
+        if (
+          n.operator === "=" &&
+          idName(n.right) === p &&
+          t?.type === "MemberExpression" &&
+          t.computed &&
+          memberProp(t.object) === "_diffEditors" &&
+          t.object.object?.type === "ThisExpression" &&
+          t.property.type === "CallExpression" &&
+          t.property.arguments.length === 0 &&
+          memberProp(t.property.callee) === "getId" &&
+          idName(t.property.callee.object) === p
+        )
+          sets = true;
+      });
+      if (!sets) continue;
+      sites.push({
+        unit: k,
+        edit: {
+          pos: f.body.end - 1,
+          text: `${DEFREE_MARKER}${diffEdFreeHook(p)}${DEFREE_END}`,
+        },
+      });
+    }
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The native webview bundle with the fragment in, or null when the site is
+// missing or the edit would not parse.
+const diffEdFreeBuild = sdelMemo((native) => {
+  const site = diffEdFreeFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, [site.edit]);
+  return unitsReparse(out, [site.edit], [[site.unit, isClass]]) ? out : null;
+});
+
+function diffEdFreePatch(native: string): string | null {
+  return diffEdFreeBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its site is gone (for the scratch leak harness and the repro).
+export function diffEdFreeWebview(web: string): string | null {
+  return diffEdFreeBuild(web.replace(DEFREE_FRAG_RE, ""));
 }
 
 // ---------------------------------------------------------------------------
@@ -9842,9 +9960,9 @@ function ccupFindBarWebview(): void {
       if (!isOpen()) {
         lastFocus = doc.activeElement;
         bar.setAttribute("data-open", "");
-        // Mirrored onto <body> for the button toggles' dim lift, which needs an
-        // "is the bar open" test that costs nothing between transitions (see
-        // dimCss). Harmless when those toggles are off: nothing reads the class.
+        // Mirrored onto <body> for the match highlights' rules (findBarCssBuild)
+        // and the button toggles' dim lift, both needing an "is the bar open"
+        // test that costs nothing between transitions (see dimCss).
         doc.body.classList.add("ccup-find-open");
         dirty = true; // nothing watched the transcript while closed
         watch();
@@ -10098,7 +10216,11 @@ function findBarSet(c: string, on: boolean): string {
 }
 
 // The appended stylesheet line: the two highlight pseudo-styles on the editor
-// findMatch theme tokens (the same yellow/orange the native find paints), and
+// findMatch theme tokens (the same yellow/orange the native find paints),
+// scoped to the open bar (body.ccup-find-open) since a rule for a highlight
+// pseudo that every element meets makes Blink resolve that highlight's style
+// for each element it restyles, which cost about 95ms more on a long
+// transcript's session switch with the bar closed, and
 // the bar itself on the editorWidget/input tokens with the chat's own --app-*
 // variables as first choice, so it reads native in either surface and theme.
 // The option toggles take the inputOption tokens and the editor's codicons,
@@ -10121,8 +10243,8 @@ function findBarCssBuild(css: string): string | undefined {
       '.ccup-find-opt[data-opt=r]::before{content:".*"}';
   return (
     FINDBAR_CSS_MARKER +
-    "::highlight(ccup-find){background-color:var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.33))}" +
-    "::highlight(ccup-find-active){background-color:var(--vscode-editor-findMatchBackground,rgba(237,148,30,.8));color:var(--vscode-editor-foreground,inherit)}" +
+    "body.ccup-find-open ::highlight(ccup-find){background-color:var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.33))}" +
+    "body.ccup-find-open ::highlight(ccup-find-active){background-color:var(--vscode-editor-findMatchBackground,rgba(237,148,30,.8));color:var(--vscode-editor-foreground,inherit)}" +
     ".ccup-find-bar{position:fixed;top:8px;right:16px;z-index:1200;display:none;align-items:center;gap:4px;max-width:calc(100vw - 20px);padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--app-input-border,#454545));border-radius:6px;background:var(--vscode-editorWidget-background,var(--app-input-background,#252526));color:var(--vscode-editorWidget-foreground,var(--app-primary-foreground,#cccccc));box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36));font-size:12px}" +
     ".ccup-find-bar[data-open]{display:flex}" +
     ".ccup-find-bar .ccup-find-field{flex:1 1 auto;display:flex;align-items:center;min-width:132px;min-height:24px;box-sizing:border-box;padding-right:2px;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));border-radius:4px;background:var(--app-input-background,var(--vscode-input-background,#3c3c3c))}" +
@@ -11629,6 +11751,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: MREDRAW_FILE,
     frags: MREDRAW_FRAG_RE,
     patch: mentionRedrawPatch,
+  },
+  {
+    kind: "inline",
+    id: "diffEdFree",
+    label: "diff card release",
+    file: DEFREE_FILE,
+    frags: DEFREE_FRAG_RE,
+    patch: diffEdFreePatch,
   },
   {
     kind: "inline",

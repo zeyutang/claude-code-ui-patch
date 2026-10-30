@@ -7243,6 +7243,7 @@ const SCARD_SESSION_FIELDS = [
   "permissionRequests",
   "userDialogRequests",
   "lastModifiedTime",
+  "promptCacheRecord",
 ];
 const SCARD_FEED_FIELDS = [
   "sessionStates",
@@ -7352,6 +7353,51 @@ function ccupSessionCardsWeb(
   const asked = new Set<string>();
   let relistAt = 0;
 
+  // The prompt cache, as Claude Code's footer clock reads it: warm while the
+  // last request that read or wrote it is younger than its TTL. The session
+  // on screen, and any other held here, carries that record live, and its
+  // card reads it as the clock does. Another session counts from its newest
+  // sign of a request instead: the record this view last loaded, while the
+  // transcript has not grown since, else its newest message or the last time
+  // the host saw it working, at the record's TTL or else the newest one any
+  // record here used.
+  const TTL: Record<string, number> = { "5m": 300000, "1h": 3600000 };
+  const recSeen = new WeakMap<object, number>();
+  const ranAt = new Map<string, number>();
+  const wasRunning = new Set<string>();
+  const judge = (at: number, span: number, clock: number): any => {
+    const until = Math.min(clock + span, at + span);
+    return { warm: until > clock, until, at };
+  };
+  const fromRecord = (rec: any, clock: number): any =>
+    rec.compactedAt !== undefined
+      ? { warm: false, compacted: true }
+      : typeof rec.anchorAt === "number" && TTL[rec.ttl]
+        ? judge(rec.anchorAt, TTL[rec.ttl], clock)
+        : null;
+  const cacheOf = (
+    s: any,
+    id: string,
+    live: boolean,
+    clock: number,
+    ttl: number | undefined,
+  ): any => {
+    const rec = s.promptCacheRecord.value;
+    const newest = s.lastModifiedTime.value || 0;
+    if (rec && !recSeen.has(rec)) recSeen.set(rec, newest);
+    if (live) return rec ? fromRecord(rec, clock) : null;
+    const ran = ranAt.get(id) || 0;
+    if (
+      rec &&
+      !(newest > (recSeen.get(rec) as number)) &&
+      !(ran > (rec.anchorAt || 0))
+    )
+      return fromRecord(rec, clock);
+    const span = (rec && TTL[rec.ttl]) || ttl;
+    const at = Math.max(newest, ran);
+    return span && at > 0 ? judge(at, span, clock) : null;
+  };
+
   const compute = (): any[] => {
     const active = mgr.activeSession.value;
     const feed = mgr.comms;
@@ -7363,6 +7409,18 @@ function ccupSessionCardsWeb(
     const states = new Map<string, any>();
     for (const x of feed.sessionStates.value || [])
       if (x?.sessionId) states.set(x.sessionId, x);
+    // The TTL the newest record here used, for a session with none of its
+    // own.
+    const clock = Date.now();
+    let ttl: number | undefined;
+    let ttlAt = -Infinity;
+    for (const s of mgr.sessions.value) {
+      const rec = s.promptCacheRecord.value;
+      if (rec && TTL[rec.ttl] && rec.anchorAt > ttlAt) {
+        ttl = TTL[rec.ttl];
+        ttlAt = rec.anchorAt;
+      }
+    }
     const rows: any[] = [];
     const known = new Set<string>();
     for (const s of mgr.sessions.value) {
@@ -7374,7 +7432,8 @@ function ccupSessionCardsWeb(
       let ended = false;
       // Held here: it has a channel. The signal, since the session's own
       // claudeChannelId getter peeks, which an effect would not follow.
-      if (s.claudeChannelIdSignal.value !== undefined) {
+      const held = s.claudeChannelIdSignal.value !== undefined;
+      if (held) {
         waiting =
           s.permissionRequests.value.length > 0 ||
           s.userDialogRequests.value.length > 0;
@@ -7392,8 +7451,16 @@ function ccupSessionCardsWeb(
         waiting =
           now === "waiting_input" ||
           (!tabs.has(id) && away.get(id)?.activity === "waiting");
+        // Running there, or just stopped (to wait on you, or done): a request
+        // went out about now. A wait alone dates from the request before it.
+        const running =
+          now === "running" || away.get(id)?.activity === "running";
+        if (running || wasRunning.has(id)) ranAt.set(id, clock);
+        if (running) wasRunning.add(id);
+        else wasRunning.delete(id);
       }
       const isNew = ended || unread.has(id);
+      const cache = cacheOf(s, id, held || s === active, clock, ttl);
       rows.push({
         s,
         id,
@@ -7401,6 +7468,8 @@ function ccupSessionCardsWeb(
         active: s === active,
         pending: s !== active && (waiting || isNew),
         why: waiting ? "awaiting input" : isNew ? "turn finished" : "",
+        warm: !!cache?.warm,
+        cache,
         tab: tabs.has(id),
         at: sent[id] || s.lastModifiedTime.value || 0,
         mod: s.lastModifiedTime.value || 0,
@@ -7513,6 +7582,7 @@ function ccupSessionCardsWeb(
   const paint = (b: any, r: any): void => {
     b.toggleAttribute("data-active", r.active);
     b.toggleAttribute("data-pending", r.pending);
+    b.toggleAttribute("data-warm", r.warm);
     if (r.active) b.setAttribute("aria-current", "true");
     else b.removeAttribute("aria-current");
     const tip =
@@ -7537,7 +7607,15 @@ function ccupSessionCardsWeb(
         : 0;
       const key = JSON.stringify([
         w,
-        rows.map((r) => [r.id, r.title, r.active, r.pending, r.why, r.tab]),
+        rows.map((r) => [
+          r.id,
+          r.title,
+          r.active,
+          r.pending,
+          r.why,
+          r.warm,
+          r.tab,
+        ]),
       ]);
       if (key === shown) return;
       shown = key;
@@ -7632,13 +7710,34 @@ function ccupSessionCardsWeb(
     tipT = 0;
     if (tip) tip.style.display = "none";
   };
+  // Its second line is the cache, worded as the footer clock's own tip, with
+  // the minutes counted when it shows.
+  const idleText = (ms: number): string => {
+    const m = Math.max(0, Math.floor(ms / 60000));
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
+  };
+  const tipText = (b: any): string => {
+    const t = b.dataset.tip || "";
+    const c = rows.find((r) => r.id === b.dataset.id)?.cache;
+    if (!c) return t;
+    const now = Date.now();
+    const line = c.compacted
+      ? "Prompt cache does not cover the compacted conversation"
+      : c.until > now
+        ? `Prompt cache warm, about ${Math.ceil((c.until - now) / 60000)} min left`
+        : `Prompt cache likely expired (idle ${idleText(now - c.at)})`;
+    return `${t}\n${line}`;
+  };
   const showTip = (b: any): void => {
     if (!tip) {
       tip = doc.createElement("div");
       tip.className = "ccup-hover-tip";
+      tip.style.whiteSpace = "pre";
       doc.body.appendChild(tip);
     }
-    tip.textContent = b.dataset.tip || "";
+    tip.textContent = tipText(b);
     tip.style.display = "block";
     const r = b.getBoundingClientRect();
     const w = tip.offsetWidth;
@@ -7731,6 +7830,30 @@ function ccupSessionCardsWeb(
     if (!cardAt(e.relatedTarget)) hideTip();
   });
 
+  // A warm cache turns cold with nothing to signal it, so the strip wakes at
+  // the next expiry to repaint.
+  let wake = 0;
+  const arm = (): void => {
+    if (wake) g.clearTimeout(wake);
+    wake = 0;
+    let next = Infinity;
+    for (const r of rows)
+      if (r.warm && r.cache.until < next) next = r.cache.until;
+    if (next < Infinity)
+      wake = g.setTimeout(refresh, Math.max(1000, next - Date.now() + 250));
+  };
+  const refresh = (): void => {
+    wake = 0;
+    try {
+      rows = compute();
+    } catch {
+      rows = [];
+    }
+    api.rows = rows;
+    schedule();
+    arm();
+  };
+
   effect(() => {
     try {
       rows = compute();
@@ -7739,6 +7862,7 @@ function ccupSessionCardsWeb(
     }
     api.rows = rows;
     schedule();
+    arm();
   });
   try {
     new g.MutationObserver(mount).observe(doc.body, {
@@ -7803,18 +7927,18 @@ function scardTabH(): number {
 
 // The strip's stylesheet: the connected tab row's background across the
 // sidebar's width, scrolling sideways with no scrollbar of its own, cards
-// with a leading state circle (a hollow ring in the card's own grey, solid in
-// its text color for the session on screen, solid clay for one waiting on
-// you), the card on screen in the chat's background with its corners and
-// shoulders and the look's line, and the input box's lowered gap. The corners
-// take VS Code's small radius (cornerRadius.small) and the shoulders the same
-// curve, drawn as masked squares in the chat's background just outside the
-// card's top corners, so they paint only where the strip meets the chat; the
-// first card sits flush with the strip's left edge, without either. The text
-// takes the editor tab's size (fontSize.body1). At the default density the
-// webview itself is clipped to VS Code's large radius (cornerRadius.large),
-// so there the strip's ends stay that far in from the sides, which keeps its
-// own corners square.
+// with a leading state circle (in the card's own color, clay for a session
+// waiting on you, filled while the session's prompt cache is warm and a
+// hollow ring once it is cold), the card on screen in the chat's background
+// with its corners and shoulders and the look's line, and the input box's
+// lowered gap. The corners take VS Code's small radius (cornerRadius.small)
+// and the shoulders the same curve, drawn as masked squares in the chat's
+// background just outside the card's top corners, so they paint only where
+// the strip meets the chat; the first card sits flush with the strip's left
+// edge, without either. The text takes the editor tab's size
+// (fontSize.body1). At the default density the webview itself is clipped to
+// VS Code's large radius (cornerRadius.large), so there the strip's ends stay
+// that far in from the sides, which keeps its own corners square.
 function scardCss(chat: string, look: ScardLook, tabH: number): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
@@ -7836,8 +7960,9 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
     `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 auto;height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${tab("inactiveForeground", "var(--app-secondary-foreground)")};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +
     ".ccup-card-label{white-space:nowrap}" +
     ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
-    ".ccup-card[data-active] .ccup-card-dot{background:currentColor}" +
-    `.ccup-card[data-pending] .ccup-card-dot{border-color:${clay};background:${clay}}` +
+    ".ccup-card[data-warm] .ccup-card-dot{background:currentColor}" +
+    `.ccup-card[data-pending] .ccup-card-dot{border-color:${clay}}` +
+    `.ccup-card[data-pending][data-warm] .ccup-card-dot{background:${clay}}` +
     `.ccup-card:not([data-active])${HOVER}{background:var(--app-ghost-button-hover-background);color:${tab("hoverForeground", "var(--app-primary-foreground)")}}` +
     `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);color:${tab("activeForeground", "var(--app-primary-foreground)")};cursor:default${line}}` +
     ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +

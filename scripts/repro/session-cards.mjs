@@ -14,9 +14,13 @@
 //   active    the session on screen is marked, and never shows pending
 //   pending   the host's feed: awaiting input in a tab, and Claude Code's
 //             unread mark, each mark the card, its reason in the hover tip
-//   circle    each card leads with a circle: a hollow ring in the card's
-//             grey, solid in its text color for the session on screen, solid
-//             clay for a session waiting on you
+//   circle    each card leads with a circle in the card's color, clay for a
+//             session waiting on you, filled while its prompt cache is warm
+//             and a ring once cold
+//   warm      the session on screen reads its own record, as the footer
+//             clock does, a held one its live record, the rest their newest
+//             message at that record's TTL; the tip counts the minutes, and
+//             a card empties on its own at the expiry
 //   seamless  the card on screen is the chat's own background, joined to
 //             the chat above with no edge, its bottom corners rounded and the
 //             strip curving into it at the top, on the screen's pixels
@@ -120,7 +124,7 @@ const TITLES = {
   W: "A Web session",
 };
 // Minutes ago: the list's activity time, and each transcript's last prompt.
-const ACTIVITY = { A: 10, B: 60, C: 120, D: 180, E: 240, F: 360, G: 1, Z: 5 };
+const ACTIVITY = { A: 10, B: 30, C: 120, D: 180, E: 240, F: 360, G: 1, Z: 5 };
 const PROMPT = { A: 150, B: 70, C: 130, D: 190, E: 250, F: 370, G: 2, Z: 6 };
 
 const page = `<!doctype html><html><head><meta charset="utf-8">
@@ -158,6 +162,10 @@ const entry = (k) => ({ id: S[k], summary: TITLES[k], customTitle: TITLES[k],
   lastModified: ago(ACTIVITY[k]), lastActivity: ago(ACTIVITY[k]), archived: k === "Z",
   fileSize: 4096, gitBranch: "develop", isCurrentWorkspace: true });
 window.__listed = ["A", "B", "C", "D", "E", "F", "Z"];
+// A reply's usage: it read the conversation's cache and wrote to it, at
+// the one-hour TTL.
+const CACHED = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 100,
+  cache_creation_input_tokens: 10, cache_creation: { ephemeral_1h_input_tokens: 10, ephemeral_5m_input_tokens: 0 } };
 const msgs = (sid) => { const k = KEY[sid]; if (!k) return []; return [
   { type: "user", uuid: "a" + sid.slice(1), session_id: sid, parent_tool_use_id: null,
     timestamp: new Date(ago(PROMPT[k])).toISOString(), origin: { kind: "human" },
@@ -166,7 +174,7 @@ const msgs = (sid) => { const k = KEY[sid]; if (!k) return []; return [
     timestamp: new Date(ago(ACTIVITY[k])).toISOString(),
     message: { id: "msg_" + k, type: "message", role: "assistant", model: "claude-fable-5",
       content: [{ type: "text", text: "A reply in " + TITLES[k] + "." }], stop_reason: "end_turn",
-      usage: { input_tokens: 1, output_tokens: 1 } } } ]; };
+      usage: CACHED } } ]; };
 const deliver = (message) => window.dispatchEvent(
   new MessageEvent("message", { data: { type: "from-extension", message } }));
 window.__push = (request) =>
@@ -194,7 +202,7 @@ window.__finish = (sid) => {
   delete window.__lives[ch];
   io(ch, { type: "assistant", uuid: "c" + L.uuid.slice(1), session_id: sid, parent_tool_use_id: null,
     message: { id: "msg_live", type: "message", role: "assistant", model: "claude-fable-5",
-      content: [{ type: "text", text: LIVE }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } });
+      content: [{ type: "text", text: LIVE }], stop_reason: "end_turn", usage: CACHED } });
   io(ch, { type: "result", subtype: "success", is_error: false, duration_ms: 10, duration_api_ms: 10,
     num_turns: 1, result: LIVE, session_id: sid, total_cost_usd: 0,
     usage: { input_tokens: 1, output_tokens: 1 }, uuid: "d" + L.uuid.slice(1) });
@@ -388,10 +396,21 @@ export async function run(ctx) {
     (
       await json(
         `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){` +
-          `return[b.dataset.id,b.hasAttribute("data-active"),b.hasAttribute("data-pending")&&getComputedStyle(b.firstChild).backgroundColor==="rgb(217, 119, 87)"]})`,
+          `return[b.dataset.id,b.hasAttribute("data-active"),b.hasAttribute("data-pending")&&getComputedStyle(b.firstChild).borderTopColor==="rgb(217, 119, 87)"]})`,
       )
     )
       .map(([i, a, p]) => `${LETTER[i] ?? "?"}${a ? "*" : ""}${p ? "!" : ""}`)
+      .join(" ");
+  // Each card's letter, + while its circle is filled (a warm prompt cache),
+  // - while it is a ring.
+  const warmth = async () =>
+    (
+      await json(
+        `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){` +
+          `return[b.dataset.id,getComputedStyle(b.firstChild).backgroundColor!=="rgba(0, 0, 0, 0)"]})`,
+      )
+    )
+      .map(([i, w]) => `${LETTER[i] ?? "?"}${w ? "+" : "-"}`)
       .join(" ");
   const shownTitle = () => ctx.evaluate(`${q(TITLE)}?.textContent ?? null`);
   const sent = () => json("window.__sent");
@@ -534,6 +553,26 @@ export async function run(ctx) {
       wide.map((i) => LETTER[i]).join(" "),
     );
 
+    // Warmth at boot: A, on screen, reads its own record as the footer clock
+    // does (its cache last used by the prompt 150 minutes ago, so cold),
+    // and the rest count from their newest message at that record's TTL
+    // (one hour): B, half an hour ago, warm.
+    const w0 = await warmth();
+    const rw = await json(
+      `(function(){var b=${cardEl("B")},d=b.firstChild,s=getComputedStyle(d),c=getComputedStyle(b);` +
+        `return{bg:s.backgroundColor,edge:s.borderTopColor,ink:c.color}})()`,
+    );
+    check(
+      "warm: the session on screen by its own record, the rest by their newest message",
+      w0 === "B+ C- A- D- E- F-",
+      w0,
+    );
+    check(
+      "circle: filled in the card's own grey while its prompt cache is warm",
+      rw.bg === rw.ink && rw.edge === rw.ink && rw.ink === "rgb(157, 157, 157)",
+      JSON.stringify(rw),
+    );
+
     // Pending from the host's feed: B awaits input in a tab, D and A unread.
     await ctx.evaluate(
       `window.__push({type:"session_states_update",sessions:[{sessionId:"${S.A}",state:"idle",title:"x"},` +
@@ -547,15 +586,21 @@ export async function run(ctx) {
       s1 === "B! C A* D! E F",
       s1,
     );
-    // Circles: C is idle, A on screen, B waiting.
+    // Circles: C idle and cold, A on screen and cold, B waiting and warm, D
+    // waiting and cold.
     const ring = (k) =>
       json(
         `(function(){var b=${cardEl(k)},d=b.firstChild,s=getComputedStyle(d),c=getComputedStyle(b);` +
           `return{w:s.width,bg:s.backgroundColor,edge:s.borderTopColor,ink:c.color,first:d.className}})()`,
       );
-    const [rc, ra, rb] = [await ring("C"), await ring("A"), await ring("B")];
+    const [rc, ra, rb, rd] = [
+      await ring("C"),
+      await ring("A"),
+      await ring("B"),
+      await ring("D"),
+    ];
     check(
-      "circle: a hollow ring in the card's grey when idle",
+      "circle: a hollow ring in the card's grey once its prompt cache is cold",
       rc.first === "ccup-card-dot" &&
         rc.w === "8px" &&
         rc.bg === "rgba(0, 0, 0, 0)" &&
@@ -564,12 +609,19 @@ export async function run(ctx) {
       JSON.stringify(rc),
     );
     check(
-      "circle: solid in the text color for the session on screen, solid clay when waiting",
-      ra.bg === ra.ink &&
-        ra.ink === "rgb(255, 255, 255)" &&
-        rb.bg === "rgb(217, 119, 87)" &&
-        rb.edge === "rgb(217, 119, 87)",
-      JSON.stringify({ ra, rb }),
+      "circle: in the text color for the session on screen, a ring while cold",
+      ra.bg === "rgba(0, 0, 0, 0)" &&
+        ra.edge === ra.ink &&
+        ra.ink === "rgb(255, 255, 255)",
+      JSON.stringify(ra),
+    );
+    check(
+      "circle: clay while waiting on you, filled while warm and a ring once cold",
+      rb.bg === "rgb(217, 119, 87)" &&
+        rb.edge === "rgb(217, 119, 87)" &&
+        rd.bg === "rgba(0, 0, 0, 0)" &&
+        rd.edge === "rgb(217, 119, 87)",
+      JSON.stringify({ rb, rd }),
     );
     // Seamless, on the screen's pixels: around the card on screen (A) and in
     // the strip beside it.
@@ -634,12 +686,18 @@ export async function run(ctx) {
       `[].find.call(document.querySelectorAll(".ccup-hover-tip"),function(e){return e.style.display==="block"})`,
     );
     const bBox = await box(cardEl("B"));
+    const [tipWhy, tipCache] = String(tip).split("\n");
     check(
       "pending: the hover tip says why, above the card",
-      tip === `${TITLES.B} — awaiting input (open in a tab)` &&
+      tipWhy === `${TITLES.B} — awaiting input (open in a tab)` &&
         !!tipBox &&
         tipBox.b <= bBox.y,
       tip,
+    );
+    check(
+      "warm: the tip's second line counts the cache's minutes, as the footer clock's tip words it",
+      /^Prompt cache warm, about (29|30) min left$/.test(tipCache ?? ""),
+      tipCache,
     );
     await ctx.cdp("Input.dispatchMouseEvent", {
       type: "mouseMoved",
@@ -806,10 +864,16 @@ export async function run(ctx) {
     await ctx.evaluate(`window.__finish(${JSON.stringify(S.A)})`);
     await ctx.sleep(300);
     const s5 = await strip();
+    const w5 = await warmth();
     check(
       "held: a turn ending in the background gives its session a dot",
       !s4.includes("A!") && s5.includes("A!"),
       `${s4} -> ${s5}`,
+    );
+    check(
+      "warm: a turn that used the cache fills a held session's circle, by its live record",
+      w5.includes("A+"),
+      w5,
     );
     await clickCard("A");
     await until(
@@ -998,6 +1062,26 @@ export async function run(ctx) {
       deviceScaleFactor: 2,
       mobile: false,
     });
+
+    // Expiry: D (never opened here, so it carries no record) has its newest
+    // message moved to four seconds inside the TTL, so its card fills, then
+    // empties on its own when the cache would expire.
+    const filled = `getComputedStyle(${cardEl("D")}.firstChild).backgroundColor!=="rgba(0, 0, 0, 0)"`;
+    await ctx.evaluate(
+      `ACTIVITY.D=60-4/60-(Date.now()-NOW)/60e3;window.__push({type:"session_store_changed"})`,
+    );
+    const warmD = await until(filled, 3000);
+    const rowD = await json(
+      `(function(){var r=window.__ccupSessionCards.rows.find(function(x){return x.id===${JSON.stringify(S.D)}});` +
+        `return r&&{mod:Date.now()-r.mod,rec:!!r.s.promptCacheRecord.value,cache:r.cache&&{warm:r.cache.warm,left:r.cache.until-Date.now()}}})()`,
+    );
+    await ctx.sleep(5500);
+    const coldD = await ctx.evaluate(`!(${filled})`);
+    check(
+      "warm: a card empties on its own when its cache expires",
+      !!warmD && coldD,
+      JSON.stringify({ warmD, coldD, rowD }),
+    );
 
     // Reload: A's sent time keeps it ahead of its transcript's old prompt.
     await boot();

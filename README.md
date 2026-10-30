@@ -167,6 +167,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   The strip holds every session that is not archived and scrolls sideways like the editor's tabs, the mouse wheel included.
   A New session button stays at its left end, and a button at its right end hides the secondary side bar (where Claude Code puts the chat).
   That button's arrow points to the side of the window the secondary side bar is on.
+  Both buttons sit on the chat's own background, so the band of cards between them stands apart.
   Between the buttons the strip shows only whole cards, sharing the width equally, with as few cards as keep each at most 300 pixels wide.
   A title too long for its card ends in an ellipsis.
   Hovering a card shows its full title.

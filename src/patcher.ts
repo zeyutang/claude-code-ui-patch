@@ -8106,9 +8106,9 @@ function ccupSessionCardsWeb(
     if (i < first) list.scrollLeft = i * per;
     else if (i > first + k - 1) list.scrollLeft = (i - k + 1) * per;
   };
-  // Where the card on screen meets the scroller's edge, the shoulder it draws
-  // outside itself falls past that edge, into the gap before a button, so
-  // that button draws it there instead.
+  // Where the card on screen meets the scroller's edge it meets a button, on
+  // the same background, so the scroller marks that side and the card
+  // squares its corner there, the two joining with no strip between them.
   const edges = (): void => {
     let l = false;
     let r = false;
@@ -8119,10 +8119,10 @@ function ccupSessionCardsWeb(
       l = Math.abs(ra.left - rl.left) < 0.5;
       r = Math.abs(ra.right - rl.right) < 0.5;
     }
-    if (newBtn.hasAttribute("data-shoulder") !== l)
-      newBtn.toggleAttribute("data-shoulder", l);
-    if (hideBtn.hasAttribute("data-shoulder") !== r)
-      hideBtn.toggleAttribute("data-shoulder", r);
+    if (list.hasAttribute("data-flush-l") !== l)
+      list.toggleAttribute("data-flush-l", l);
+    if (list.hasAttribute("data-flush-r") !== r)
+      list.toggleAttribute("data-flush-r", r);
   };
 
   // The header's New session button (not this strip's), and its icon for
@@ -8581,23 +8581,24 @@ function scardSide(): ScardSide {
 // own background (the card on screen's, painted under each as a layer of the
 // strip's background, groove included), so the band of cards between them
 // stands apart, with the ghost hover color under the pointer as on the
-// header's icon buttons, then a gap of the strip's color on each side of the
-// cards (so the card on screen, first more often than not, never runs into a
-// button), the cards scrolling sideways with no scrollbar of their own, cards
-// with a leading state circle (in the card's own color, clay for a session
-// waiting on you, filled while the session's prompt cache is warm and a
-// hollow ring once it is cold), the card on screen in the chat's background
-// with its corners and shoulders and the look's line, its text in the input
-// box's color (the editor tab's white read as distracting, and the others'
-// grey would not set it apart), and the input box's lowered gap. The corners
-// take VS Code's small radius (cornerRadius.small) and the shoulders the same
-// curve, drawn as masked squares in the chat's background just outside the
-// card's top corners, so they paint only where the strip meets the chat; the
-// scroller cuts off a shoulder past its edge, so the button beside it draws
-// that one in the gap between them. The text takes the editor tab's size
-// (fontSize.body1). At the default density the webview itself is clipped to
-// VS Code's large radius (cornerRadius.large), so there the strip's ends stay
-// that far in from the sides, which keeps its own corners square.
+// header's icon buttons, the cards scrolling sideways between them with no
+// scrollbar of their own, cards with a leading state circle (in the card's
+// own color, clay for a session waiting on you, filled while the session's
+// prompt cache is warm and a hollow ring once it is cold), the card on
+// screen in the chat's background with its corners and shoulders and the
+// look's line, its text in the input box's color (the editor tab's white
+// read as distracting, and the others' grey would not set it apart), and the
+// input box's lowered gap. The corners take VS Code's small radius
+// (cornerRadius.small) and the shoulders the same curve, drawn as masked
+// squares in the chat's background just outside the card's top corners, so
+// they paint only where the strip meets the chat. Beside a button (first
+// more often than not) the card on screen has neither on that side, its
+// corner square and the look's line running to the edge, so it joins the
+// button with no sliver of the strip between them. The text takes the
+// editor tab's size (fontSize.body1). At the default density the webview
+// itself is clipped to VS Code's large radius (cornerRadius.large), so there
+// the strip's ends stay that far in from the sides, which keeps its own
+// corners square.
 function scardCss(chat: string, look: ScardLook, tabH: number): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
@@ -8617,17 +8618,23 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
     look === "line"
       ? `;background-image:linear-gradient(${tab("activeBorderTop", "var(--vscode-focusBorder)")},${tab("activeBorderTop", "var(--vscode-focusBorder)")});background-repeat:no-repeat;background-position:50% 100%;background-size:calc(100% - 2 * var(--ccup-card-r)) 1px`
       : "";
+  // The card on screen beside a button, on that side.
+  const flushL = ".ccup-cards-scroll[data-flush-l]>.ccup-card[data-active]";
+  const flushR = ".ccup-cards-scroll[data-flush-r]>.ccup-card[data-active]";
+  const flushLine =
+    look === "line"
+      ? `${flushL}{background-size:calc(100% - var(--ccup-card-r)) 1px;background-position:0 100%}` +
+        `${flushR}{background-size:calc(100% - var(--ccup-card-r)) 1px;background-position:100% 100%}` +
+        ".ccup-cards-scroll[data-flush-l][data-flush-r]>.ccup-card[data-active]{background-size:100% 1px}"
+      : "";
   return (
     `.ccup-cards{--ccup-card-r:var(--vscode-cornerRadius-small,4px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;${ends};height:${tabH + groove}px;padding:0 0 ${groove}px;background:${under("left")},${under("right")},var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
     ".ccup-cards[hidden]{display:none}" +
-    `.ccup-cards-scroll{position:relative;display:flex;flex:1 1 auto;min-width:0;height:${tabH}px;margin:0 var(--ccup-card-r);overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none}` +
+    `.ccup-cards-scroll{position:relative;display:flex;flex:1 1 auto;min-width:0;height:${tabH}px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none}` +
     ".ccup-cards-scroll::-webkit-scrollbar{display:none}" +
     `.ccup-cards-btn{position:relative;display:flex;align-items:center;justify-content:center;flex:none;width:${tabH}px;height:${tabH}px;box-sizing:border-box;margin:0;padding:0;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};cursor:pointer;outline:none}` +
     ".ccup-cards-btn svg{display:block;width:16px;height:16px;pointer-events:none}" +
     `.ccup-cards-btn${HOVER}{${hover}}` +
-    ".ccup-cards-btn[data-shoulder]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
-    `.ccup-cards-new[data-shoulder]::after{left:100%;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
-    `.ccup-cards-hide[data-shoulder]::after{right:100%;-webkit-mask:${shoulder("100% 100%")};mask:${shoulder("100% 100%")}}` +
     `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 var(--ccup-card-w,auto);width:var(--ccup-card-w,auto);height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +
     ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
@@ -8639,6 +8646,9 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
     ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
     `.ccup-card[data-active]::before{right:100%;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
     `.ccup-card[data-active]::after{left:100%;-webkit-mask:${shoulder("100% 100%")};mask:${shoulder("100% 100%")}}` +
+    `${flushL}{border-bottom-left-radius:0}${flushL}::before{display:none}` +
+    `${flushR}{border-bottom-right-radius:0}${flushR}::after{display:none}` +
+    flushLine +
     ".ccup-card:focus-visible,.ccup-cards-btn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
     `[data-ccup-cards] .inputContainer_${chat}{bottom:${SCARD_GAP}px}` +
     HOVER_TIP_CSS

@@ -15,14 +15,14 @@
 //   active    the session on screen is marked, never shows pending, and its
 //             text takes the input box's color
 //   buttons   both sit on the chat's own background, the card on screen's,
-//             groove included, a gap of the strip's color between each and
-//             the cards, the ghost hover under the pointer, each with its own
-//             tip; New session presses the header's own button (by click or
-//             key, once each) and wears its icon, or with no header creates
-//             the session itself; the hide button asks the host to hide the
-//             secondary side bar, a host without that request gets the reload
-//             notice, and its arrow points to the bar's edge of the window,
-//             either side
+//             groove included, the band of cards starting right at each, the
+//             ghost hover under the pointer, each with its own tip; New
+//             session presses the header's own button (by click or key, once
+//             each) and wears its icon, or with no header creates the session
+//             itself; the hide button asks the host to hide the secondary
+//             side bar, a host without that request gets the reload notice,
+//             and its arrow points to the bar's edge of the window, either
+//             side
 //   pending   the host's feed: awaiting input in a tab, and Claude Code's
 //             unread mark, each mark the card, its reason in the label read
 //             out to assistive tech
@@ -36,8 +36,9 @@
 //             the expiry
 //   seamless  the card on screen is the chat's own background, joined to
 //             the chat above with no edge, its bottom corners rounded and the
-//             strip curving into it at the top, on the screen's pixels, a
-//             button it meets drawing the curve the scroller cuts off
+//             strip curving into it at the top, on the screen's pixels, and
+//             beside a button it joins that button, its corner there square
+//             and no sliver of the strip between them
 //   click     a session open in an editor tab asks the host to focus that
 //             tab, any other opens here, the strip staying the same element
 //             and the input box staying put
@@ -67,8 +68,9 @@
 //             (emulated), and when compact the 1px groove and the blue line
 //             along the bottom of the card on screen (both built here, as
 //             the patcher would from window.density.layout); a compact tab
-//             height makes the cards and buttons 20px tall; the first card
-//             keeps its rounded corner beside the New session button
+//             height makes the cards and buttons 20px tall; the card on screen
+//             first joins New session, its corner there square and its blue
+//             line running to that edge
 //   editor    an editor tab (IS_SIDEBAR false) gets no strip
 //   empty     with no session to show the strip stays hidden and the input
 //             box keeps its native 16px
@@ -503,7 +505,7 @@ export async function run(ctx) {
         `return{last:b.parentNode.matches(${JSON.stringify(BODY)})&&!b.nextSibling,h:rb.height,ch:c0.height,top:c0.top-rb.top,gap:rb.top-rf.bottom,` +
         `edge:innerHeight-rb.bottom,left:rb.left,right:innerWidth-rb.right,first:c0.left-rl.left+L.scrollLeft,` +
         `nl:n.left-rb.left,nw:n.width,nh:n.height,ntop:n.top-rb.top,hr:rb.right-h.right,hw:h.width,hh:h.height,` +
-        `between:Math.abs(rl.left-n.right-4)<0.6&&Math.abs(h.left-rl.right-4)<0.6&&L.parentNode===b,` +
+        `between:Math.abs(rl.left-n.right)<0.6&&Math.abs(h.left-rl.right)<0.6&&L.parentNode===b,` +
         `size:getComputedStyle(c[0].lastChild).fontSize,marked:b.parentNode.hasAttribute("data-ccup-cards"),n:c.length}})()`,
     );
     check(
@@ -523,7 +525,7 @@ export async function run(ctx) {
       g.ch === 24 && Math.abs(g.top) < 0.6 && g.h === 25 && g.size === "13px",
     );
     check(
-      "mount: New session square at the strip's left end, the hide button at its right, the cards scrolling between from the first, 4px in from each",
+      "mount: New session square at the strip's left end, the hide button at its right, the cards scrolling between from the first",
       Math.abs(g.nl) < 0.6 &&
         Math.abs(g.hr) < 0.6 &&
         g.nw === 24 &&
@@ -668,10 +670,12 @@ export async function run(ctx) {
     await ctx.sleep(150);
     const a = await box(cardEl("A"));
     const cIdle = await box(cardEl("C"));
-    // A, brought into view at boot, ends at the scroller's right edge, so the
-    // hide button draws the right shoulder the scroller cuts off, in the gap
-    // between them.
+    // A, brought into view at boot, ends at the hide button: its right side
+    // joins the button, the corner square, the blue line running to the edge.
     const hb = await box(q(HIDE));
+    const sides = await json(
+      `(function(){var L=${q(LIST)};return{l:L.hasAttribute("data-flush-l"),r:L.hasAttribute("data-flush-r")}})()`,
+    );
     const [
       above,
       joined,
@@ -680,8 +684,11 @@ export async function run(ctx) {
       cornerOut,
       cornerIn,
       foot,
-      borrowed,
-      borrowedIn,
+      joinTop,
+      joinCorner,
+      joinLine,
+      joinButton,
+      joinFoot,
     ] = await colorsAt([
       [a.x + a.w / 2, a.y - 3],
       [a.x + a.w / 2, a.y + 0.5],
@@ -690,8 +697,11 @@ export async function run(ctx) {
       [a.x + 0.5, a.b - 0.5],
       [a.x + 4, a.b - 1.5],
       [cIdle.x + cIdle.w / 2, cIdle.b + 0.5],
+      [a.r - 0.5, a.y + 0.5],
+      [a.r - 0.5, a.b - 2.5],
+      [a.r - 0.5, a.b - 0.5],
       [a.r + 0.5, a.y + 0.5],
-      [a.r + 1, a.y + 3.5],
+      [a.r + 0.5, a.b + 0.5],
     ]);
     const CHAT = "rgb(24, 24, 24)";
     const STRIP = "rgb(43, 43, 43)";
@@ -710,11 +720,25 @@ export async function run(ctx) {
       JSON.stringify({ shoulder, beside, cornerOut, cornerIn, foot }),
     );
     check(
-      "seamless: at the scroller's edge the hide button draws the shoulder the scroller cuts off, in the gap",
-      Math.abs(a.r + 4 - hb.x) < 0.6 &&
-        borrowed === CHAT &&
-        borrowedIn === STRIP,
-      JSON.stringify({ ar: a.r, hx: hb.x, borrowed, borrowedIn }),
+      "seamless: beside the hide button it joins the button, its corner there square, no sliver of the strip between",
+      Math.abs(a.r - hb.x) < 0.6 &&
+        sides.r &&
+        !sides.l &&
+        joinTop === CHAT &&
+        joinCorner === CHAT &&
+        joinLine === "rgb(0, 120, 212)" &&
+        joinButton === CHAT &&
+        joinFoot === CHAT,
+      JSON.stringify({
+        ar: a.r,
+        hx: hb.x,
+        sides,
+        joinTop,
+        joinCorner,
+        joinLine,
+        joinButton,
+        joinFoot,
+      }),
     );
     // The tip is the full title, above the card, though the card's own label
     // cuts it; the label read out to assistive tech names the reason too.
@@ -770,7 +794,8 @@ export async function run(ctx) {
     await ctx.sleep(100);
 
     // Buttons: the chat's own background, groove included, until hovered,
-    // each with its tip, and a gap of the strip's color before the cards.
+    // each with its tip, and the band of cards starting right at each (here
+    // with B and C in view, the card on screen out of it).
     const away = async () => {
       await ctx.cdp("Input.dispatchMouseEvent", {
         type: "mouseMoved",
@@ -787,14 +812,19 @@ export async function run(ctx) {
       );
     const nb = await box(q(NEW));
     const hb1 = await box(q(HIDE));
-    const [newRest, hideRest, newFoot, hideFoot, gapL, gapR] = await colorsAt([
-      [nb.x + 1.5, nb.y + nb.h / 2],
-      [hb1.r - 1.5, hb1.y + hb1.h / 2],
-      [nb.x + nb.w / 2, nb.b + 0.5],
-      [hb1.x + hb1.w / 2, hb1.b + 0.5],
-      [nb.r + 2, nb.y + nb.h / 2],
-      [hb1.x - 2, hb1.y + hb1.h / 2],
-    ]);
+    const [newRest, hideRest, newFoot, hideFoot, bandL, bandR] = await colorsAt(
+      [
+        [nb.x + 1.5, nb.y + nb.h / 2],
+        [hb1.r - 1.5, hb1.y + hb1.h / 2],
+        [nb.x + nb.w / 2, nb.b + 0.5],
+        [hb1.x + hb1.w / 2, hb1.b + 0.5],
+        [nb.r + 0.5, nb.y + nb.h / 2],
+        [hb1.x - 0.5, hb1.y + hb1.h / 2],
+      ],
+    );
+    const sides0 = await json(
+      `(function(){var L=${q(LIST)};return{l:L.hasAttribute("data-flush-l"),r:L.hasAttribute("data-flush-r")}})()`,
+    );
     const hover = async (b) => {
       await ctx.cdp("Input.dispatchMouseEvent", {
         type: "mouseMoved",
@@ -827,9 +857,9 @@ export async function run(ctx) {
       }),
     );
     check(
-      "buttons: a gap of the strip's color between each and the cards",
-      gapL === STRIP && gapR === STRIP,
-      JSON.stringify({ gapL, gapR }),
+      "buttons: the band of cards starts right at each, the card on screen joining neither while out of view",
+      bandL === STRIP && bandR === STRIP && !sides0.l && !sides0.r,
+      JSON.stringify({ bandL, bandR, sides0 }),
     );
     // The hide button's arrow points right, to the edge a secondary side bar
     // on the right sits on (VS Code's default): above the arrowhead only its
@@ -1359,8 +1389,9 @@ export async function run(ctx) {
 
     // Look: the line form (compact density, or no modern UI) draws the tab's
     // blue accent along the bottom edge of the card on screen, inset by its
-    // corners, and the seamless form (default density) draws none. Both keep
-    // the card in the chat's background.
+    // rounded corners (A's right one here, its left joining New session, as
+    // checked next), and the seamless form (default density) draws none.
+    // Both keep the card in the chat's background.
     const paint = (k) =>
       json(
         `(function(){var s=getComputedStyle(${cardEl(k)});` +
@@ -1371,7 +1402,7 @@ export async function run(ctx) {
       const b = await box(cardEl("A"));
       return colorsAt([
         [b.x + b.w / 2, b.b - 0.5],
-        [b.x + 2, b.b - 0.5],
+        [b.r - 2, b.b - 0.5],
       ]);
     })();
     check(
@@ -1382,44 +1413,45 @@ export async function run(ctx) {
         lineCorner !== "rgb(0, 120, 212)",
       JSON.stringify({ line, lineMid, lineCorner }),
     );
-    // A, first since the send, sits one gap after the New session button: its
-    // bottom-left corner stays rounded, the button draws the left shoulder
-    // the scroller cuts off in that gap, and the gap keeps the two apart.
+    // A, first since the send, sits right after the New session button and
+    // joins it: no shoulder and a square corner on that side, the blue line
+    // running to the edge, and nothing of the strip between the two.
     const lead = await json(
       `(function(){var b=${cardEl("A")},n=${q(NEW)};return{first:b===b.parentNode.firstElementChild,` +
-        `corner:getComputedStyle(b).borderBottomLeftRadius,lent:n.hasAttribute("data-shoulder"),` +
+        `corner:getComputedStyle(b).borderBottomLeftRadius,before:getComputedStyle(b,"::before").display,` +
+        `side:b.parentNode.hasAttribute("data-flush-l"),` +
         `gap:b.getBoundingClientRect().left-n.getBoundingClientRect().right}})()`,
     );
-    const [leadShoulder, leadIn, leadApart, leadCorner, leadButton] =
+    const [leadTop, leadButton, leadCorner, leadLine, leadFoot] =
       await (async () => {
-        const n = await box(q(NEW));
         const b = await box(cardEl("A"));
         return colorsAt([
+          [b.x + 0.5, b.y + 0.5],
           [b.x - 0.5, b.y + 0.5],
-          [b.x - 1, b.y + 3.5],
-          [n.r + 0.5, n.y + n.h / 2],
+          [b.x + 0.1, b.b - 2.5],
           [b.x + 0.5, b.b - 0.5],
-          [n.r - 1, n.y + 0.5],
+          [b.x - 0.5, b.b + 0.5],
         ]);
       })();
     check(
-      "look: the first card keeps its rounded corner a gap from New session, the button drawing its shoulder there",
+      "look: the card on screen first joins New session, its corner there square and its blue line running to that edge",
       lead.first &&
-        Math.abs(lead.gap - 4) < 0.6 &&
-        lead.corner === "4px" &&
-        lead.lent &&
-        leadShoulder === CHAT &&
-        leadIn === STRIP &&
-        leadApart === STRIP &&
-        leadCorner === STRIP &&
-        leadButton === CHAT,
+        Math.abs(lead.gap) < 0.6 &&
+        lead.corner === "0px" &&
+        lead.before === "none" &&
+        lead.side &&
+        leadTop === CHAT &&
+        leadButton === CHAT &&
+        leadCorner === CHAT &&
+        leadLine === "rgb(0, 120, 212)" &&
+        leadFoot === CHAT,
       JSON.stringify({
         lead,
-        leadShoulder,
-        leadIn,
-        leadApart,
-        leadCorner,
+        leadTop,
         leadButton,
+        leadCorner,
+        leadLine,
+        leadFoot,
       }),
     );
     await ctx.shot("session-cards-line");
@@ -1450,11 +1482,12 @@ export async function run(ctx) {
     );
     // There VS Code clips the webview to its 8px radius, so the strip's ends
     // keep 8px in, over the chat's background, and its corners stay square:
-    // the buttons' chat background at its ends, and the band of cards square
-    // at the gaps beside them. The clip is emulated by a box over the whole
-    // view with those corners, its shadow painting what falls outside them in
-    // a color nothing else uses, and the view's own corner shows that it
-    // took.
+    // the buttons' chat background at its ends, the band of cards square
+    // beside the hide button, and on the left the card on screen (A, first)
+    // joining New session with a square corner. The clip is emulated by a box
+    // over the whole view with those corners, its shadow painting what falls
+    // outside them in a color nothing else uses, and the view's own corner
+    // shows that it took.
     const ends = await json(
       `(function(){var e=${q(BAR)},b=e.getBoundingClientRect(),s=getComputedStyle(e),` +
         `n=${q(NEW)}.getBoundingClientRect(),h=${q(HIDE)}.getBoundingClientRect();` +
@@ -1487,7 +1520,7 @@ export async function run(ctx) {
         endLeft === CHAT &&
         endRight === CHAT &&
         pastEnd === CHAT &&
-        bandLeft === STRIP &&
+        bandLeft === CHAT &&
         bandRight === STRIP,
       JSON.stringify({
         ends,

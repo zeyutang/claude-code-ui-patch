@@ -4573,6 +4573,178 @@ export function diffEdFreeWebview(web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Session open landing (always on): the chat leaves room under the transcript
+// for the input box it overlays with a spacer as tall as the box, from a
+// height state that its ResizeObserver on the box keeps. The chat remounts on
+// every session switch with that state at 0, and the observer only starts in
+// an effect after the first paint, so each switch first paints the new
+// transcript scrolled to its end with that end hidden behind the input box,
+// and a frame or more later (185ms on a 736-entry transcript, the observer's
+// report re-rendering the whole chat) the spacer grows and the sticky scroll
+// jumps down to it.
+//
+// Two fragments, /*ccup:inputSeed:<tag>*/.../*ccup:inputSeedEnd*/, keep the
+// last height the observer reported on the window and start the state from
+// it, so the first paint already holds the spacer at its height and the
+// observer's first report sets the same value, which React skips. The first
+// chat a webview shows still starts at 0, as natively.
+//
+// Found by structure (src/derive.ts): in a function, a ResizeObserver whose
+// callback runs <s>(<e>.contentRect.height) for each entry and nothing else,
+// with <s> the setter of a [<v>,<s>]=useState(0) of that function's own, and
+// an element there styled {height:`${<v>}px`,minHeight:`${<v>}px`}.
+// ---------------------------------------------------------------------------
+const ISEED_INIT = "/*ccup:inputSeed:init*/";
+const ISEED_MEASURE = "/*ccup:inputSeed:measure*/";
+const ISEED_END = "/*ccup:inputSeedEnd*/";
+const ISEED_FRAG_RE =
+  /\/\*ccup:inputSeed:[-\w]+\*\/[\s\S]*?\/\*ccup:inputSeedEnd\*\//g;
+const ISEED_FILE = "webview/index.js";
+// The window property holding the last reported height.
+const ISEED_GLOBAL = "__ccupInputH";
+// How far ahead of the height read its component may start (about 9,600
+// chars on 2.1.312).
+const ISEED_REACH = 60000;
+// How many enclosing `function` candidates to try: the chat body defines 8
+// functions of its own ahead of the observer on 2.1.312.
+const ISEED_TRIES = 24;
+
+// `${<v>}px`, the template the spacer's sizes take.
+function iseedIsPx(n: N | null | undefined, v: string): boolean {
+  return (
+    n?.type === "TemplateLiteral" &&
+    n.expressions.length === 1 &&
+    idName(n.expressions[0]) === v &&
+    n.quasis.length === 2 &&
+    n.quasis[0].value.cooked === "" &&
+    n.quasis[1].value.cooked === "px"
+  );
+}
+
+function inputSeedFind(c: string): { unit: N; edits: Edit[] } | null {
+  const sites: { unit: N; edits: Edit[] }[] = [];
+  for (const fn of unitsWith(
+    c,
+    ".contentRect.height)",
+    "function",
+    isFn,
+    ISEED_REACH,
+    ISEED_TRIES,
+  )) {
+    walk(fn, (n) => {
+      // new ResizeObserver((E)=>{for(let X of E)S(X.contentRect.height)})
+      if (
+        n.type !== "NewExpression" ||
+        idName(n.callee) !== "ResizeObserver" ||
+        n.arguments.length !== 1
+      )
+        return;
+      const cb = n.arguments[0];
+      if (
+        cb.type !== "ArrowFunctionExpression" ||
+        cb.params.length !== 1 ||
+        cb.body.type !== "BlockStatement" ||
+        cb.body.body.length !== 1
+      )
+        return;
+      const loop = cb.body.body[0];
+      if (
+        loop.type !== "ForOfStatement" ||
+        idName(loop.right) !== idName(cb.params[0]) ||
+        loop.left.type !== "VariableDeclaration" ||
+        loop.left.declarations.length !== 1
+      )
+        return;
+      const x = idName(loop.left.declarations[0].id);
+      const st =
+        loop.body.type === "BlockStatement" && loop.body.body.length === 1
+          ? loop.body.body[0]
+          : loop.body;
+      const call = st?.type === "ExpressionStatement" ? st.expression : null;
+      const arg = call?.arguments?.[0];
+      const set =
+        call?.type === "CallExpression" && call.arguments.length === 1
+          ? idName(call.callee)
+          : null;
+      if (
+        !x ||
+        !set ||
+        memberProp(arg) !== "height" ||
+        memberProp(arg.object) !== "contentRect" ||
+        idName(arg.object.object) !== x
+      )
+        return;
+      // [V,S]=useState(0), the function's own.
+      const decls: N[] = [];
+      walkOwn(fn, (m) => {
+        const z = m.init?.arguments?.[0];
+        if (
+          m.type === "VariableDeclarator" &&
+          m.id.type === "ArrayPattern" &&
+          m.id.elements.length === 2 &&
+          idName(m.id.elements[1]) === set &&
+          m.init.type === "CallExpression" &&
+          m.init.arguments.length === 1 &&
+          z.type === "Literal" &&
+          z.value === 0
+        )
+          decls.push(m);
+      });
+      if (decls.length !== 1) return;
+      const decl = decls[0];
+      if (bindingSite(call, set, fn) !== decl.parent?.parent) return;
+      const v = idName(decl.id.elements[0]);
+      // The spacer, sized from V.
+      let spacer = false;
+      walk(fn, (m) => {
+        if (spacer) return false;
+        if (
+          m.type === "ObjectExpression" &&
+          iseedIsPx(propOf(m, "height")?.value, v!) &&
+          iseedIsPx(propOf(m, "minHeight")?.value, v!)
+        )
+          spacer = true;
+      });
+      if (!v || !spacer) return;
+      sites.push({
+        unit: fn,
+        edits: [
+          {
+            pos: decl.init.arguments[0].start,
+            text: `${ISEED_INIT}globalThis.${ISEED_GLOBAL}||${ISEED_END}`,
+          },
+          {
+            pos: arg.start,
+            text: `${ISEED_MEASURE}globalThis.${ISEED_GLOBAL}=${ISEED_END}`,
+          },
+        ],
+      });
+    });
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The native webview bundle with both fragments in, or null when the site is
+// missing or the edits would not parse.
+const inputSeedBuild = sdelMemo((native) => {
+  const site = inputSeedFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, site.edits);
+  return unitsReparse(out, site.edits, [[site.unit, isFn]]) ? out : null;
+});
+
+function inputSeedPatch(native: string): string | null {
+  return inputSeedBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its site is gone. scripts/repro's session-open.mjs serves
+// this, so it runs exactly what the patcher writes.
+export function inputSeedWebview(web: string): string | null {
+  return inputSeedBuild(web.replace(ISEED_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
 // Chat math rendering (ON): the chat webview renders agent markdown through
 // react-markdown with no math support, so TeX like $\mathcal{G}$ shows as raw
 // source. When ON we render it with a bundled KaTeX (vendored under this
@@ -7703,12 +7875,15 @@ function ccupSessionCardsWeb(
     b.toggleAttribute("data-warm", r.warm);
     if (r.active) b.setAttribute("aria-current", "true");
     else b.removeAttribute("aria-current");
-    const tip =
+    // The tip is the full title, which the label may cut; the label read out
+    // to assistive tech carries the card's state as well.
+    b.dataset.tip = r.title;
+    b.setAttribute(
+      "aria-label",
       r.title +
-      (r.why ? ` ${String.fromCharCode(8212)} ${r.why}` : "") +
-      (r.tab && !r.active ? " (open in a tab)" : "");
-    b.dataset.tip = tip;
-    b.setAttribute("aria-label", tip);
+        (r.why ? ` ${String.fromCharCode(8212)} ${r.why}` : "") +
+        (r.tab && !r.active ? " (open in a tab)" : ""),
+    );
   };
   const render = (): void => {
     raf = 0;
@@ -7828,34 +8003,16 @@ function ccupSessionCardsWeb(
     tipT = 0;
     if (tip) tip.style.display = "none";
   };
-  // Its second line is the cache, worded as the footer clock's own tip, with
-  // the minutes counted when it shows.
-  const idleText = (ms: number): string => {
-    const m = Math.max(0, Math.floor(ms / 60000));
-    if (m < 60) return `${m}m`;
-    const h = Math.floor(m / 60);
-    return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
-  };
-  const tipText = (b: any): string => {
-    const t = b.dataset.tip || "";
-    const c = rows.find((r) => r.id === b.dataset.id)?.cache;
-    if (!c) return t;
-    const now = Date.now();
-    const line = c.compacted
-      ? "Prompt cache does not cover the compacted conversation"
-      : c.until > now
-        ? `Prompt cache warm, about ${Math.ceil((c.until - now) / 60000)} min left`
-        : `Prompt cache likely expired (idle ${idleText(now - c.at)})`;
-    return `${t}\n${line}`;
-  };
   const showTip = (b: any): void => {
     if (!tip) {
       tip = doc.createElement("div");
       tip.className = "ccup-hover-tip";
-      tip.style.whiteSpace = "pre";
+      // A long title wraps rather than running past the view.
+      tip.style.whiteSpace = "normal";
+      tip.style.maxWidth = "calc(100vw - 8px)";
       doc.body.appendChild(tip);
     }
-    tip.textContent = tipText(b);
+    tip.textContent = b.dataset.tip || "";
     tip.style.display = "block";
     const r = b.getBoundingClientRect();
     const w = tip.offsetWidth;
@@ -8048,15 +8205,17 @@ function scardTabH(): number {
 // with a leading state circle (in the card's own color, clay for a session
 // waiting on you, filled while the session's prompt cache is warm and a
 // hollow ring once it is cold), the card on screen in the chat's background
-// with its corners and shoulders and the look's line, and the input box's
-// lowered gap. The corners take VS Code's small radius (cornerRadius.small)
-// and the shoulders the same curve, drawn as masked squares in the chat's
-// background just outside the card's top corners, so they paint only where
-// the strip meets the chat; the first card sits flush with the strip's left
-// edge, without either. The text takes the editor tab's size
-// (fontSize.body1). At the default density the webview itself is clipped to
-// VS Code's large radius (cornerRadius.large), so there the strip's ends stay
-// that far in from the sides, which keeps its own corners square.
+// with its corners and shoulders and the look's line, its text in the same
+// grey as the others' (the editor tab's white read as distracting), and the
+// input box's lowered gap. The corners take VS Code's small radius
+// (cornerRadius.small) and the shoulders the same curve, drawn as masked
+// squares in the chat's background just outside the card's top corners, so
+// they paint only where the strip meets the chat; the first card sits flush
+// with the strip's left edge, without either. The text takes the editor tab's
+// size (fontSize.body1). At the default density the webview itself is
+// clipped to VS Code's large radius (cornerRadius.large), so there the
+// strip's ends stay that far in from the sides, which keeps its own corners
+// square.
 function scardCss(chat: string, look: ScardLook, tabH: number): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
@@ -8082,7 +8241,7 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
     `.ccup-card[data-pending] .ccup-card-dot{border-color:${clay}}` +
     `.ccup-card[data-pending][data-warm] .ccup-card-dot{background:${clay}}` +
     `.ccup-card:not([data-active])${HOVER}{background:var(--app-ghost-button-hover-background);color:${tab("hoverForeground", "var(--app-primary-foreground)")}}` +
-    `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);color:${tab("activeForeground", "var(--app-primary-foreground)")};cursor:default${line}}` +
+    `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);cursor:default${line}}` +
     ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
     `.ccup-card[data-active]::before{right:100%;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
     `.ccup-card[data-active]::after{left:100%;-webkit-mask:${shoulder("100% 100%")};mask:${shoulder("100% 100%")}}` +
@@ -11759,6 +11918,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: DEFREE_FILE,
     frags: DEFREE_FRAG_RE,
     patch: diffEdFreePatch,
+  },
+  {
+    kind: "inline",
+    id: "inputSeed",
+    label: "session open landing",
+    file: ISEED_FILE,
+    frags: ISEED_FRAG_RE,
+    patch: inputSeedPatch,
   },
   {
     kind: "inline",

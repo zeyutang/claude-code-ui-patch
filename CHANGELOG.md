@@ -8,6 +8,7 @@
   The card of the session on screen joins the chat above it, and also carries a blue line along its bottom when `window.density.layout` is compact.
 - Switching sessions no longer keeps the previous session's transcript in memory, which had made a window that switched often grow slower until it was reloaded.
 - Switching to a long session is faster: the find bar's match colors and the selection colors no longer add work to every redraw of the chat.
+- Opening a session no longer jumps: its last lines show at once instead of sitting behind the input box until the view scrolls down to them.
 
 ## 1.6.3
 

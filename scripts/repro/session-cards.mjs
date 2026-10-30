@@ -13,14 +13,16 @@
 //             Web session, and a prompt you send moves its session first
 //   active    the session on screen is marked, and never shows pending
 //   pending   the host's feed: awaiting input in a tab, and Claude Code's
-//             unread mark, each mark the card, its reason in the hover tip
+//             unread mark, each mark the card, its reason in the label read
+//             out to assistive tech
+//   tip       the hover tip is the full title alone, where the card cuts it
 //   circle    each card leads with a circle in the card's color, clay for a
 //             session waiting on you, filled while its prompt cache is warm
 //             and a ring once cold
 //   warm      the session on screen reads its own record, as the footer
 //             clock does, a held one its live record, the rest their newest
-//             message at that record's TTL; the tip counts the minutes, and
-//             a card empties on its own at the expiry
+//             message at that record's TTL, and a card empties on its own at
+//             the expiry
 //   seamless  the card on screen is the chat's own background, joined to
 //             the chat above with no edge, its bottom corners rounded and the
 //             strip curving into it at the top, on the screen's pixels
@@ -609,10 +611,11 @@ export async function run(ctx) {
       JSON.stringify(rc),
     );
     check(
-      "circle: in the text color for the session on screen, a ring while cold",
+      "circle: the session on screen in the cards' own grey, its text no brighter than theirs, a ring while cold",
       ra.bg === "rgba(0, 0, 0, 0)" &&
         ra.edge === ra.ink &&
-        ra.ink === "rgb(255, 255, 255)",
+        ra.ink === rc.ink &&
+        ra.ink === "rgb(157, 157, 157)",
       JSON.stringify(ra),
     );
     check(
@@ -672,7 +675,8 @@ export async function run(ctx) {
         foot === STRIP,
       JSON.stringify({ shoulder, beside, cornerOut, cornerIn, foot }),
     );
-    // The tip names the reason, above the card.
+    // The tip is the full title, above the card, though the card's own label
+    // cuts it; the label read out to assistive tech names the reason too.
     await ctx.cdp("Input.dispatchMouseEvent", {
       type: "mouseMoved",
       ...center(await box(cardEl("B"))),
@@ -686,18 +690,22 @@ export async function run(ctx) {
       `[].find.call(document.querySelectorAll(".ccup-hover-tip"),function(e){return e.style.display==="block"})`,
     );
     const bBox = await box(cardEl("B"));
-    const [tipWhy, tipCache] = String(tip).split("\n");
-    check(
-      "pending: the hover tip says why, above the card",
-      tipWhy === `${TITLES.B} — awaiting input (open in a tab)` &&
-        !!tipBox &&
-        tipBox.b <= bBox.y,
-      tip,
+    const bLabel = await json(
+      `(function(){var b=${cardEl("B")};return{text:b.lastChild.textContent,aria:b.getAttribute("aria-label")}})()`,
     );
     check(
-      "warm: the tip's second line counts the cache's minutes, as the footer clock's tip words it",
-      /^Prompt cache warm, about (29|30) min left$/.test(tipCache ?? ""),
-      tipCache,
+      "tip: the full title alone, above the card, where the card's label cuts it",
+      tip === TITLES.B &&
+        bLabel.text !== TITLES.B &&
+        bLabel.text.endsWith(ELLIPSIS) &&
+        !!tipBox &&
+        tipBox.b <= bBox.y,
+      JSON.stringify({ tip, label: bLabel.text }),
+    );
+    check(
+      "pending: the label read out to assistive tech still names the reason",
+      bLabel.aria === `${TITLES.B} — awaiting input (open in a tab)`,
+      bLabel.aria,
     );
     await ctx.cdp("Input.dispatchMouseEvent", {
       type: "mouseMoved",
@@ -896,7 +904,7 @@ export async function run(ctx) {
     await ctx.evaluate(`window.__permit(${JSON.stringify(S.A)})`);
     await ctx.sleep(300);
     const s7 = await strip();
-    const why = await ctx.evaluate(`${cardEl("A")}.dataset.tip`);
+    const why = await ctx.evaluate(`${cardEl("A")}.getAttribute("aria-label")`);
     check(
       "held: a permission request in the background gives its session a dot",
       s7.includes("A!") && why.endsWith("awaiting input"),

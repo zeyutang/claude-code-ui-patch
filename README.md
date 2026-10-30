@@ -102,6 +102,7 @@ Always applied                         # no setting; installing this patch is th
    ├── editor selection colors         # selected text in the editor's selection colors
    ├── input box redraw                # selecting chat text no longer redraws the input box
    ├── diff card release               # a session you switch away from no longer stays in memory
+   ├── session open landing            # an opened session shows its last lines at once, no jump
    ├── inline math spans               # fix for math rendering
    ├── last turn delete                # prompt history's last entry: delete that turn
    └── bookmark notes                  # Bookmarks pane rows: annotate a bookmark with your own note
@@ -161,9 +162,10 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   A click opens the session as the Session history list does, and one open in an editor tab gets that tab focused.
   Each card's circle is filled while the session's prompt cache is still warm, as the cache timer in the input box reckons it, and a hollow ring once it has gone cold.
   A session the sidebar has not opened, or one that has gone on in a tab or another window since, counts from its newest message instead.
-  The circle turns clay while a permission or question prompt waits or a finished turn is still unseen, and the hover tip says which, along with the minutes the cache has left.
+  The circle turns clay while a permission or question prompt waits or a finished turn is still unseen.
   The strip holds every session that is not archived and scrolls sideways like the editor's tabs, the mouse wheel included.
   A title shows up to 40 characters, and fewer as the sidebar narrows so that more cards stay in view, but never fewer than 15.
+  Hovering a card shows its full title.
   The strip runs along the sidebar's bottom edge in the editor tab row's size and shape, and the card of the session on screen joins the chat above it, as an editor tab joins its editor.
   At the default density its ends stop short of the sidebar's rounded corners, so its own corners stay square.
   The cards are as tall as `window.density.editorTabHeight` makes editor tabs, and when `window.density.layout` is compact, or without VS Code's modern UI, they keep a hairline below them and the card on screen also carries a blue line along its bottom edge.

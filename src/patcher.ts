@@ -7765,6 +7765,10 @@ const SCARD_CARD_MAX = 300;
 const SCARD_TAB_H = 24;
 const SCARD_TAB_H_COMPACT = 20;
 const SCARD_GAP = 8;
+// How far a button's icon stays in from the strip's top and bottom, its
+// hover tint showing around it: the header's 20px icon size at the default
+// tab height, 16px when compact.
+const SCARD_ICON_INSET = 2;
 // The members the strip reads off a session, the manager, and the feed.
 const SCARD_SESSION_FIELDS = [
   "claudeChannelIdSignal",
@@ -8045,10 +8049,12 @@ function ccupSessionCardsWeb(
   bar.hidden = true;
   const list = doc.createElement("div");
   list.className = "ccup-cards-scroll";
+  // Drawn on the header icon's 20-unit grid, so at any size their 1-unit
+  // strokes match its outline.
   const SVG = "http://www.w3.org/2000/svg";
   const glyph = (d: string): any => {
     const s = doc.createElementNS(SVG, "svg");
-    s.setAttribute("viewBox", "0 0 16 16");
+    s.setAttribute("viewBox", "0 0 20 20");
     s.setAttribute("fill", "none");
     s.setAttribute("stroke", "currentColor");
     s.setAttribute("stroke-linecap", "round");
@@ -8073,15 +8079,15 @@ function ccupSessionCardsWeb(
   const newBtn = button(
     "ccup-cards-new",
     "New session",
-    glyph("M8 3.5v9M3.5 8h9"),
+    glyph("M10 4.5v11M4.5 10h11"),
   );
   const hideBtn = button(
     "ccup-cards-hide",
     "Hide Secondary Side Bar",
     glyph(
       cfg.side === "left"
-        ? "M13.5 8h-8M8.5 5l-3 3 3 3M2.5 3.5v9"
-        : "M2.5 8h8M7.5 5l3 3-3 3M13.5 3.5v9",
+        ? "M17 10H7M10.75 6.25 7 10l3.75 3.75M3.25 4.5v11"
+        : "M3 10h10M9.25 6.25 13 10l-3.75 3.75M16.75 4.5v11",
     ),
   );
   bar.appendChild(newBtn);
@@ -8577,11 +8583,12 @@ function scardSide(): ScardSide {
 }
 
 // The strip's stylesheet: the connected tab row's background across the
-// sidebar's width, its two buttons square at a card's height on the chat's
-// own background (the card on screen's, painted under each as a layer of the
-// strip's background, groove included), so the band of cards between them
-// stands apart, with the ghost hover color under the pointer as on the
-// header's icon buttons, the cards scrolling sideways between them with no
+// sidebar's width, its two buttons square at a card's height, their icons
+// SCARD_ICON_INSET in from its top and bottom, on the chat's own background
+// (the card on screen's, painted under each as a layer of the strip's
+// background, groove included), so the band of cards between them stands
+// apart, with the ghost hover color under the pointer as on the header's
+// icon buttons, the cards scrolling sideways between them with no
 // scrollbar of their own, cards with a leading state circle (in the card's
 // own color, clay for a session waiting on you, filled while the session's
 // prompt cache is warm and a hollow ring once it is cold), the card on
@@ -8633,7 +8640,7 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
     `.ccup-cards-scroll{position:relative;display:flex;flex:1 1 auto;min-width:0;height:${tabH}px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none}` +
     ".ccup-cards-scroll::-webkit-scrollbar{display:none}" +
     `.ccup-cards-btn{position:relative;display:flex;align-items:center;justify-content:center;flex:none;width:${tabH}px;height:${tabH}px;box-sizing:border-box;margin:0;padding:0;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};cursor:pointer;outline:none}` +
-    ".ccup-cards-btn svg{display:block;width:16px;height:16px;pointer-events:none}" +
+    `.ccup-cards-btn svg{display:block;width:${tabH - 2 * SCARD_ICON_INSET}px;height:${tabH - 2 * SCARD_ICON_INSET}px;pointer-events:none}` +
     `.ccup-cards-btn${HOVER}{${hover}}` +
     `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 var(--ccup-card-w,auto);width:var(--ccup-card-w,auto);height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +
     ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +

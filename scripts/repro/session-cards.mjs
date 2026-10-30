@@ -861,16 +861,30 @@ export async function run(ctx) {
       bandL === STRIP && bandR === STRIP && !sides0.l && !sides0.r,
       JSON.stringify({ bandL, bandR, sides0 }),
     );
+    // Icons: the line height less 2px above and below, the header's 20px at
+    // the default tab height, both the same size.
+    const icons = await json(
+      `[${JSON.stringify(NEW)},${JSON.stringify(HIDE)}].map(function(s){var b=document.querySelector(s).getBoundingClientRect(),` +
+        `i=document.querySelector(s+" svg").getBoundingClientRect();return[i.width,i.height,i.top-b.top,b.bottom-i.bottom]})`,
+    );
+    check(
+      "buttons: icons 20px at the default tab height, 2px in from the top and bottom",
+      icons.every((i) => i.join() === "20,20,2,2"),
+      JSON.stringify(icons),
+    );
     // The hide button's arrow points right, to the edge a secondary side bar
     // on the right sits on (VS Code's default): above the arrowhead only its
-    // bar shows, near the button's right side, against the button's own
+    // bar shows, near the icon's right side (16.75 of its 20 units, the
+    // other side's spot mirrored at 3.25), against the button's own
     // background.
     const arrowAt = async () => {
       const b = await box(q(HIDE));
+      const i = await box(q(`${HIDE} svg`));
+      const k = i.w / 20;
       const [ground, l, r] = await colorsAt([
-        [b.x + 1.5, b.y + b.h / 2],
-        [b.x + 6.5, b.y + 8],
-        [b.x + 17.5, b.y + 8],
+        [b.x + 0.5, b.y + b.h / 2],
+        [i.x + 3.25 * k, i.y + 5.25 * k],
+        [i.x + 16.75 * k, i.y + 5.25 * k],
       ]);
       return { l: l !== ground, r: r !== ground };
     };
@@ -1538,15 +1552,17 @@ export async function run(ctx) {
     await ctx.sleep(400);
     const short = await json(
       `(function(){var b=${q(BAR)}.getBoundingClientRect(),c=${cardEl("A")}.getBoundingClientRect(),` +
-        `n=${q(NEW)}.getBoundingClientRect(),h=${q(HIDE)}.getBoundingClientRect();` +
-        `return{h:b.height,ch:c.height,n:[n.width,n.height],x:[h.width,h.height]}})()`,
+        `n=${q(NEW)}.getBoundingClientRect(),h=${q(HIDE)}.getBoundingClientRect(),` +
+        `ni=${q(`${NEW} svg`)}.getBoundingClientRect(),hi=${q(`${HIDE} svg`)}.getBoundingClientRect();` +
+        `return{h:b.height,ch:c.height,n:[n.width,n.height],x:[h.width,h.height],icons:[ni.width,ni.height,hi.width,hi.height]}})()`,
     );
     check(
-      "look: a compact editor tab height makes the cards and buttons 20px tall",
+      "look: a compact editor tab height makes the cards and buttons 20px tall, their icons 16px",
       short.ch === 20 &&
         short.h === 21 &&
         short.n.join() === "20,20" &&
-        short.x.join() === "20,20",
+        short.x.join() === "20,20" &&
+        short.icons.join() === "16,16,16,16",
       JSON.stringify(short),
     );
     // A secondary side bar on the left (the primary moved right): the arrow

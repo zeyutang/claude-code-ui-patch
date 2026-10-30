@@ -274,15 +274,18 @@ export function appendProp(obj: N, prop: string): Edit {
 // enclosing unit, so a token in the wrong place costs one parse rather than a
 // climb through ever larger functions. An `async function` is parsed from its
 // `async`, where an `await` inside it is legal. `reach` bounds how far back the
-// unit may start.
+// unit may start, and `maxTries` how many of the keyword's occurrences it
+// parses (raise it for a token that sits past many nested functions of the
+// unit it needs).
 export function unitAround(
   c: string,
   at: number,
   keyword: string,
   kind: (n: N) => boolean,
   reach: number,
+  maxTries = 8,
 ): N | null {
-  for (let j = at, tries = 0; tries < 8;) {
+  for (let j = at, tries = 0; tries < maxTries;) {
     j = c.lastIndexOf(keyword, j - 1);
     if (j < 0 || at - j > reach) return null;
     if (j > 0 && /[\w$]/.test(c[j - 1])) continue;
@@ -306,11 +309,12 @@ export function unitsWith(
   keyword: string,
   kind: (n: N) => boolean,
   reach: number,
+  maxTries = 8,
 ): N[] {
   const found: N[] = [];
   for (let i = c.indexOf(token); i >= 0; i = c.indexOf(token, i + 1)) {
     if (found.some((u) => u.start <= i && i < u.end)) continue;
-    const n = unitAround(c, i, keyword, kind, reach);
+    const n = unitAround(c, i, keyword, kind, reach, maxTries);
     if (n) found.push(n);
   }
   return found;

@@ -52,18 +52,24 @@ const VER_RE = /^anthropic\.claude-code-(\d+(?:\.\d+)*)/;
 
 // Globals each toggle's injected code installs in the webview, for the runtime
 // probe at the end. Keyed by the public setting name so this survives renames of
-// the internal point ids. "late" marks a global that only appears once the
-// feature's surface has rendered, so its absence alone proves nothing.
+// the internal point ids. A note marks a global that appears only once the
+// feature's surface has rendered, or only in some webviews, so its absence
+// elsewhere proves nothing.
 const PROBES = [
   ["chatFindBar", "window.__ccupFindCfg"],
   ["chatScrollToBottomDot", "window.__ccupScrollDot"],
   ["chatScrollToBottomDot", "window.__ccupPermGlide"],
   ["chatJumpToMessageButtons", "window.__ccupJumpMsg"],
   ["chatPromptHistoryButton", "window.__ccupPromptHist"],
+  ["chatSessionCards", "window.__ccupSessionCards", "in the sidebar only"],
   ["chatDiffCardLineNumbers", "window.__ccupAbsLn"],
   ["chatMathRendering", "window.__ccupMathW"],
   ["chatMathRendering", "window.__ccupMathR"],
-  ["chatDiffCardThemeSync", "window.__ccupThemeObs", "late"],
+  [
+    "chatDiffCardThemeSync",
+    "window.__ccupThemeObs",
+    "only after a diff card renders",
+  ],
 ];
 
 function userDir() {
@@ -417,12 +423,10 @@ console.log("  copy and only a reload (or a forced rewrite) will help.");
 const nativeKeys = new Set(
   st.filter((s) => s.status === "native").map((s) => s.key),
 );
-for (const [key, global, late] of PROBES) {
+for (const [key, global, note] of PROBES) {
   const on = config[`claudeCodeUiPatch.${key}`];
   if (!on || nativeKeys.has(key)) continue;
-  console.log(
-    `    ${global}${late ? "   (only after a diff card renders)" : ""}`,
-  );
+  console.log(`    ${global}${note ? `   (${note})` : ""}`);
 }
 
 for (const n of notices) console.log(`\npatcher reported: ${n}`);

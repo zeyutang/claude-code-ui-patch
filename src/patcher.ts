@@ -106,6 +106,7 @@ const KNOB_ORDER: string[] = [
   "promptHist", // prompt history list
   "rawMd", // raw markdown of a response
   "scrollDot", // scroll-to-bottom dot
+  "sessionCards", // recent session cards in the sidebar
   "permCode",
   "permNoWrap",
   "effortSyncFix",
@@ -1465,11 +1466,17 @@ function permNoWrapSet(c: string, on: boolean): string {
 // window.find), and unmarks on focus. A selection inside a contenteditable
 // is marked on the editable's parent, so the editor never meets a foreign
 // attribute in its own DOM, and no observer in the bundle watches the
-// attribute (they filter on class and style). The mark goes on that subtree
-// rather than on <html> because a ::selection rule reaching every element
-// makes Blink compute a highlight style for each: a full recalc costs about
-// twice as much (12ms to 23ms on a 34k-element page), which an <html>
-// attribute would pay on every focus change.
+// attribute (they filter on class and style).
+// The rules match only the root and the inactive mark, and reach every other
+// element through highlight inheritance (Chromium 150 hands a ::selection's
+// background and colors down to descendants that match no rule of their own):
+// a ::selection rule matching every element made Blink resolve a highlight
+// style for each element on every style recalc, about 45ms more on a long
+// transcript's session switch. An element with a rule of its own (an image,
+// the composer's editable) keeps it, which is why high contrast names the
+// editable again: its own colors would otherwise beat the foreground it
+// inherits. The mark goes on the selection's subtree rather than on <html>, so
+// a focus change re-resolves that subtree's highlights alone.
 // An always-on fix rather than a knob: the native highlight is the browser's,
 // tied to no theme, so there is no native behavior worth keeping as an option.
 // No anchor: both halves read only what VS Code provides, so every build takes
@@ -1492,18 +1499,21 @@ function selectionCssBuild(css: string): string {
   const v = "--ccup-selection";
   const hc = "var(--vscode-editor-selectionForeground,currentcolor)";
   const mirror = css.match(SELECTION_MIRROR_RE);
-  const composer =
+  const editable =
     mirror && selectionEditableRe(mirror[1]).test(css)
-      ? `.messageInput_${mirror[1]}::selection{color:${mirror[2]};-webkit-text-fill-color:${mirror[2]}}`
+      ? `.messageInput_${mirror[1]}`
       : "";
+  const composer = editable
+    ? `${editable}::selection{color:${mirror![2]};-webkit-text-fill-color:${mirror![2]}}`
+    : "";
   return (
     SELECTION_CSS_MARKER +
     `:root{${v}:var(--vscode-editor-selectionBackground,Highlight)}` +
     `[${SELECTION_INACTIVE_ATTR}]{${v}:var(--vscode-editor-inactiveSelectionBackground,Highlight)}` +
-    `::selection{background-color:var(${v})}` +
+    `:root::selection,[${SELECTION_INACTIVE_ATTR}]::selection{background-color:var(${v})}` +
     `img::selection{background-color:color-mix(in srgb,var(${v}) 50%,transparent)}` +
     composer +
-    `.vscode-high-contrast ::selection{color:${hc};-webkit-text-fill-color:${hc}}`
+    `.vscode-high-contrast::selection${editable ? `,.vscode-high-contrast ${editable}::selection` : ""}{color:${hc};-webkit-text-fill-color:${hc}}`
   );
 }
 
@@ -4454,6 +4464,287 @@ export function mentionRedrawWebview(web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Diff editor release (always on): every diff card mounts a Monaco diff
+// editor, and the editor service bundled into the webview registers each one
+// in its `_diffEditors` table (addDiffEditor) but has no removeDiffEditor, and
+// the editor never fires its onDidDispose either, so the table keeps every
+// diff editor the webview ever made. Each holds its own DOM and, through its
+// ancestors, the whole transcript it was mounted in, so every session switch
+// left the previous transcript alive: on 2.1.312 a round trip between two long
+// sessions kept about 6,400 more nodes and 5 MB more heap after a GC, 98% of it
+// through this table. The cards' own cleanup already disposes the editor.
+//
+// One fragment, /*ccup:diffEdFree*/.../*ccup:diffEdFreeEnd*/, at the end of
+// addDiffEditor registers a disposable on the editor that, when the editor is
+// disposed, deletes its entry and fires the service's onDiffEditorRemove, as
+// Monaco's own removeDiffEditor does upstream. Any error leaves the editor
+// registered, as natively.
+//
+// Found by structure (src/derive.ts): the class method addDiffEditor(<p>)
+// whose body sets this._diffEditors[<p>.getId()] to <p>.
+// ---------------------------------------------------------------------------
+const DEFREE_MARKER = "/*ccup:diffEdFree*/";
+const DEFREE_END = "/*ccup:diffEdFreeEnd*/";
+const DEFREE_FRAG_RE =
+  /\/\*ccup:diffEdFree\*\/[\s\S]*?\/\*ccup:diffEdFreeEnd\*\//g;
+const DEFREE_FILE = "webview/index.js";
+// How far ahead of the method its class may start (about 1,100 chars on
+// 2.1.285 to 2.1.312).
+const DEFREE_REACH = 20000;
+
+// The release the fragment adds, with <p> the method's parameter.
+function diffEdFreeHook(p: string): string {
+  return (
+    `;try{var ccupSvc=this,ccupKey=${p}.getId();${p}._register({dispose:function(){` +
+    `try{if(ccupSvc._diffEditors[ccupKey]===${p}){delete ccupSvc._diffEditors[ccupKey];` +
+    `if(ccupSvc._onDiffEditorRemove)ccupSvc._onDiffEditorRemove.fire(${p})}}catch(e){}}})}catch(e){}`
+  );
+}
+
+function diffEdFreeFind(c: string): { unit: N; edit: Edit } | null {
+  const sites: { unit: N; edit: Edit }[] = [];
+  for (const k of unitsWith(
+    c,
+    "addDiffEditor(",
+    "class",
+    isClass,
+    DEFREE_REACH,
+  )) {
+    for (const m of k.body.body as N[]) {
+      if (
+        m.type !== "MethodDefinition" ||
+        m.kind !== "method" ||
+        m.static ||
+        m.computed ||
+        idName(m.key) !== "addDiffEditor"
+      )
+        continue;
+      const f = m.value;
+      const p = f.params.length === 1 ? idName(f.params[0]) : null;
+      if (!p || f.body.type !== "BlockStatement") continue;
+      let sets = false;
+      walkOwn(f, (n) => {
+        if (sets) return false;
+        const t = n.type === "AssignmentExpression" ? n.left : null;
+        if (
+          n.operator === "=" &&
+          idName(n.right) === p &&
+          t?.type === "MemberExpression" &&
+          t.computed &&
+          memberProp(t.object) === "_diffEditors" &&
+          t.object.object?.type === "ThisExpression" &&
+          t.property.type === "CallExpression" &&
+          t.property.arguments.length === 0 &&
+          memberProp(t.property.callee) === "getId" &&
+          idName(t.property.callee.object) === p
+        )
+          sets = true;
+      });
+      if (!sets) continue;
+      sites.push({
+        unit: k,
+        edit: {
+          pos: f.body.end - 1,
+          text: `${DEFREE_MARKER}${diffEdFreeHook(p)}${DEFREE_END}`,
+        },
+      });
+    }
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The native webview bundle with the fragment in, or null when the site is
+// missing or the edit would not parse.
+const diffEdFreeBuild = sdelMemo((native) => {
+  const site = diffEdFreeFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, [site.edit]);
+  return unitsReparse(out, [site.edit], [[site.unit, isClass]]) ? out : null;
+});
+
+function diffEdFreePatch(native: string): string | null {
+  return diffEdFreeBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its site is gone (for the scratch leak harness and the repro).
+export function diffEdFreeWebview(web: string): string | null {
+  return diffEdFreeBuild(web.replace(DEFREE_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
+// Session open landing (always on): the chat leaves room under the transcript
+// for the input box it overlays with a spacer as tall as the box, from a
+// height state that its ResizeObserver on the box keeps. The chat remounts on
+// every session switch with that state at 0, and the observer only starts in
+// an effect after the first paint, so each switch first paints the new
+// transcript scrolled to its end with that end hidden behind the input box,
+// and a frame or more later (185ms on a 736-entry transcript, the observer's
+// report re-rendering the whole chat) the spacer grows and the sticky scroll
+// jumps down to it.
+//
+// Two fragments, /*ccup:inputSeed:<tag>*/.../*ccup:inputSeedEnd*/, keep the
+// last height the observer reported on the window and start the state from
+// it, so the first paint already holds the spacer at its height and the
+// observer's first report sets the same value, which React skips. The first
+// chat a webview shows still starts at 0, as natively.
+//
+// Found by structure (src/derive.ts): in a function, a ResizeObserver whose
+// callback runs <s>(<e>.contentRect.height) for each entry and nothing else,
+// with <s> the setter of a [<v>,<s>]=useState(0) of that function's own, and
+// an element there styled {height:`${<v>}px`,minHeight:`${<v>}px`}.
+// ---------------------------------------------------------------------------
+const ISEED_INIT = "/*ccup:inputSeed:init*/";
+const ISEED_MEASURE = "/*ccup:inputSeed:measure*/";
+const ISEED_END = "/*ccup:inputSeedEnd*/";
+const ISEED_FRAG_RE =
+  /\/\*ccup:inputSeed:[-\w]+\*\/[\s\S]*?\/\*ccup:inputSeedEnd\*\//g;
+const ISEED_FILE = "webview/index.js";
+// The window property holding the last reported height.
+const ISEED_GLOBAL = "__ccupInputH";
+// How far ahead of the height read its component may start (about 9,600
+// chars on 2.1.312).
+const ISEED_REACH = 60000;
+// How many enclosing `function` candidates to try: the chat body defines 8
+// functions of its own ahead of the observer on 2.1.312.
+const ISEED_TRIES = 24;
+
+// `${<v>}px`, the template the spacer's sizes take.
+function iseedIsPx(n: N | null | undefined, v: string): boolean {
+  return (
+    n?.type === "TemplateLiteral" &&
+    n.expressions.length === 1 &&
+    idName(n.expressions[0]) === v &&
+    n.quasis.length === 2 &&
+    n.quasis[0].value.cooked === "" &&
+    n.quasis[1].value.cooked === "px"
+  );
+}
+
+function inputSeedFind(c: string): { unit: N; edits: Edit[] } | null {
+  const sites: { unit: N; edits: Edit[] }[] = [];
+  for (const fn of unitsWith(
+    c,
+    ".contentRect.height)",
+    "function",
+    isFn,
+    ISEED_REACH,
+    ISEED_TRIES,
+  )) {
+    walk(fn, (n) => {
+      // new ResizeObserver((E)=>{for(let X of E)S(X.contentRect.height)})
+      if (
+        n.type !== "NewExpression" ||
+        idName(n.callee) !== "ResizeObserver" ||
+        n.arguments.length !== 1
+      )
+        return;
+      const cb = n.arguments[0];
+      if (
+        cb.type !== "ArrowFunctionExpression" ||
+        cb.params.length !== 1 ||
+        cb.body.type !== "BlockStatement" ||
+        cb.body.body.length !== 1
+      )
+        return;
+      const loop = cb.body.body[0];
+      if (
+        loop.type !== "ForOfStatement" ||
+        idName(loop.right) !== idName(cb.params[0]) ||
+        loop.left.type !== "VariableDeclaration" ||
+        loop.left.declarations.length !== 1
+      )
+        return;
+      const x = idName(loop.left.declarations[0].id);
+      const st =
+        loop.body.type === "BlockStatement" && loop.body.body.length === 1
+          ? loop.body.body[0]
+          : loop.body;
+      const call = st?.type === "ExpressionStatement" ? st.expression : null;
+      const arg = call?.arguments?.[0];
+      const set =
+        call?.type === "CallExpression" && call.arguments.length === 1
+          ? idName(call.callee)
+          : null;
+      if (
+        !x ||
+        !set ||
+        memberProp(arg) !== "height" ||
+        memberProp(arg.object) !== "contentRect" ||
+        idName(arg.object.object) !== x
+      )
+        return;
+      // [V,S]=useState(0), the function's own.
+      const decls: N[] = [];
+      walkOwn(fn, (m) => {
+        const z = m.init?.arguments?.[0];
+        if (
+          m.type === "VariableDeclarator" &&
+          m.id.type === "ArrayPattern" &&
+          m.id.elements.length === 2 &&
+          idName(m.id.elements[1]) === set &&
+          m.init.type === "CallExpression" &&
+          m.init.arguments.length === 1 &&
+          z.type === "Literal" &&
+          z.value === 0
+        )
+          decls.push(m);
+      });
+      if (decls.length !== 1) return;
+      const decl = decls[0];
+      if (bindingSite(call, set, fn) !== decl.parent?.parent) return;
+      const v = idName(decl.id.elements[0]);
+      // The spacer, sized from V.
+      let spacer = false;
+      walk(fn, (m) => {
+        if (spacer) return false;
+        if (
+          m.type === "ObjectExpression" &&
+          iseedIsPx(propOf(m, "height")?.value, v!) &&
+          iseedIsPx(propOf(m, "minHeight")?.value, v!)
+        )
+          spacer = true;
+      });
+      if (!v || !spacer) return;
+      sites.push({
+        unit: fn,
+        edits: [
+          {
+            pos: decl.init.arguments[0].start,
+            text: `${ISEED_INIT}globalThis.${ISEED_GLOBAL}||${ISEED_END}`,
+          },
+          {
+            pos: arg.start,
+            text: `${ISEED_MEASURE}globalThis.${ISEED_GLOBAL}=${ISEED_END}`,
+          },
+        ],
+      });
+    });
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The native webview bundle with both fragments in, or null when the site is
+// missing or the edits would not parse.
+const inputSeedBuild = sdelMemo((native) => {
+  const site = inputSeedFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, site.edits);
+  return unitsReparse(out, site.edits, [[site.unit, isFn]]) ? out : null;
+});
+
+function inputSeedPatch(native: string): string | null {
+  return inputSeedBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its site is gone. scripts/repro's session-open.mjs serves
+// this, so it runs exactly what the patcher writes.
+export function inputSeedWebview(web: string): string | null {
+  return inputSeedBuild(web.replace(ISEED_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
 // Chat math rendering (ON): the chat webview renders agent markdown through
 // react-markdown with no math support, so TeX like $\mathcal{G}$ shows as raw
 // source. When ON we render it with a bundled KaTeX (vendored under this
@@ -7134,6 +7425,996 @@ export function promptHistWebview(
 }
 
 // ---------------------------------------------------------------------------
+// Session cards (ON, the sidebar chat only): a strip across the bottom of the
+// sidebar, below the input box, with one card per recent local session,
+// shaped like the modern UI's connected editor tabs turned upside down, so
+// that switching sessions takes one click instead of the Session history
+// dropdown. The cards run left to right from the session where you last sent
+// a message, a click does what picking that row in the dropdown does (a
+// session open in an editor tab gets that tab focused, any other one opens
+// here), and each card leads with a circle where a tab shows its file icon: a
+// hollow ring, solid for the session on screen, and solid clay when the
+// session waits on you (a permission or question prompt, or a turn that
+// ended while another session was on screen).
+//
+// One fragment, /*ccup:scard*/.../*ccup:scardEnd*/, at the end of the webview
+// session manager's constructor (the class with doListSessions, one per
+// webview), found by structure (src/derive.ts). It calls the compiled
+// ccupSessionCardsWeb with the manager, a config baked at patch time, and the
+// bundle's own signal effect, the callee the constructor wraps its watchers
+// in. The end of the constructor, because last turn delete's bridge takes its
+// head. Every webview loads the bundle, and the function returns at once
+// outside the sidebar chat (window.IS_SIDEBAR, which editor tabs and the
+// session list view leave false).
+//
+// What the strip reads, all of it native state:
+//   list     the manager's sessions: the local ones the list read (Web
+//            sessions live elsewhere and are skipped anyway), less archived,
+//            unreadable, and id-less (blank) ones. A session a surface reports
+//            that the list has not read yet asks for a re-read, at most every
+//            5s, under the "state_sync" entry point the session list view uses
+//            for the same reason
+//   order    the time of your last message in the session: for a session this
+//            view holds, the newest prompt among its messages and queued sends
+//            (createdAt, the transcript's own timestamp, so a reload keeps
+//            it), and for one held by an editor tab, the moment the host
+//            reports it leaving idle, the turn your message starts there. The
+//            times persist in the webview's localStorage, so a session that
+//            leaves this view keeps its place; one seen in neither way sorts by
+//            Claude Code's own activity time, which is at least as late
+//            as its last prompt
+//   pending  for a session this view holds, its own pending permission and
+//            question requests, and a turn that ended while another session was
+//            shown here, until you open it; for any other one, the state the
+//            host relays from the surface showing it (waiting_input, or a
+//            terminal or window holding it waiting); and for every session,
+//            Claude Code's unread mark. The session on screen never shows one
+// The strip holds every such session and scrolls sideways like the editor's
+// tab row, the wheel included, bringing the card on screen into view when
+// it changes or moves. A title shows up to SCARD_TITLE_LONGEST characters and
+// then an ellipsis, and that cap steps down as the strip narrows, never below
+// SCARD_TITLE_SHORTEST: as many cards are kept in view as fit at the shortest
+// cap, and then the longest cap that still fits them all is used, for every
+// card. Widths come from the label's own font on a canvas, kept per text, so
+// a resize measures nothing new. Each card is a button with its whole title
+// in a hover tip and its state in the tip and the accessible name, the strip
+// is a toolbar (one tab stop, arrow keys between cards), and a press keeps
+// focus where it was, as the jump buttons do.
+//
+// The strip lives in the session body (sessionBody_<hash>), the flex column
+// holding the chat, which a session switch keeps: the chat inside it remounts
+// per session, and a strip inside the chat's floating input container would
+// leave and rejoin the layout on every card click. A body MutationObserver
+// keeps it the session body's last child (React appends a remounted chat after
+// it), in the same task as the mutation, so no frame shows it out of place.
+// While it shows, the input container sits SCARD_GAP from the strip instead
+// of its native 16px from the view's edge, keyed on an attribute of the
+// session body, which React never touches.
+//
+// Required: the manager (doListSessions, focusTabShowing, listSessions,
+// activeSession, sessions, comms) with a block constructor and a single effect
+// callee there, the session class (every member read above), a class carrying
+// the host's session feed (sessionStates, openSessionIds, unreadSessionKeys,
+// liveElsewhereSessions), and the session body and chat input container class
+// map entries. If any is gone the point reports missing and the bundle stays
+// native.
+// ---------------------------------------------------------------------------
+const SCARD_MARKER = "/*ccup:scard*/";
+const SCARD_END = "/*ccup:scardEnd*/";
+const SCARD_FRAG_RE = /\/\*ccup:scard\*\/[\s\S]*?\/\*ccup:scardEnd\*\//g;
+const SCARD_FILE = "webview/index.js";
+// The localStorage item holding last message times, and how many sessions it
+// keeps (most recent first).
+const SCARD_STORE = "ccup-session-cards";
+const SCARD_STORE_CAP = 200;
+// The most cards the strip holds (it scrolls), and the longest and shortest
+// a title gets before its ellipsis, in characters.
+const SCARD_MAX = 100;
+const SCARD_TITLE_LONGEST = 40;
+const SCARD_TITLE_SHORTEST = 15;
+// A card's height, an editor tab's: window.density.editorTabHeight's default
+// and compact. The strip spans the sidebar's whole width and sits on its
+// bottom edge, SCARD_GAP below the input box.
+const SCARD_TAB_H = 24;
+const SCARD_TAB_H_COMPACT = 20;
+const SCARD_GAP = 8;
+// The members the strip reads off a session, the manager, and the feed.
+const SCARD_SESSION_FIELDS = [
+  "claudeChannelIdSignal",
+  "sessionId",
+  "summary",
+  "isRemote",
+  "archived",
+  "unreadable",
+  "messages",
+  "heldPrompts",
+  "busy",
+  "backgroundTaskIds",
+  "permissionRequests",
+  "userDialogRequests",
+  "lastModifiedTime",
+  "promptCacheRecord",
+];
+const SCARD_FEED_FIELDS = [
+  "sessionStates",
+  "openSessionIds",
+  "unreadSessionKeys",
+  "liveElsewhereSessions",
+];
+
+interface ScardCfg {
+  body: string; // the session body's class
+  css: string;
+  store: string;
+  cap: number;
+  max: number;
+  longest: number; // title characters before the ellipsis, at most
+  shortest: number; // and at least, however narrow the strip
+}
+
+// The strip, built around the session manager by its constructor. Compiled
+// into the webview bundle by toString, so it may use only its parameters and
+// the page's globals. Everything it runs inside `effect` stays in a try, and
+// writes no signal, since an effect runs inside whatever native write set it
+// off.
+function ccupSessionCardsWeb(
+  mgr: any,
+  cfg: ScardCfg,
+  effect: (fn: () => void) => unknown,
+): void {
+  const g = globalThis as Record<string, any>;
+  if (g.IS_SIDEBAR !== true || g.IS_SESSION_LIST_ONLY === true) return;
+  if (g.__ccupSessionCards) return;
+  const doc = g.document;
+  const api: { rows: any[] } = { rows: [] };
+  g.__ccupSessionCards = api;
+
+  // Last message times by session id, kept across reloads.
+  let sent: Record<string, number> = {};
+  try {
+    const o = JSON.parse(g.localStorage.getItem(cfg.store) || "{}");
+    if (o && typeof o.sent === "object" && o.sent) sent = o.sent;
+  } catch {
+    // no storage: times start over
+  }
+  let saveT = 0;
+  const save = (): void => {
+    if (saveT) return;
+    saveT = g.setTimeout(() => {
+      saveT = 0;
+      try {
+        const ids = Object.keys(sent);
+        if (ids.length > cfg.cap) {
+          ids.sort((a, b) => sent[b] - sent[a]);
+          for (const id of ids.slice(cfg.cap)) delete sent[id];
+        }
+        g.localStorage.setItem(cfg.store, JSON.stringify({ sent }));
+      } catch {
+        // storage full or gone: the times live on in memory
+      }
+    }, 1000);
+  };
+  const note = (id: string, t: unknown): void => {
+    if (typeof t === "number" && t > 0 && !(sent[id] >= t)) {
+      sent[id] = t;
+      save();
+    }
+  };
+
+  // A message you sent: no tool result alone, no subagent's, no meta row, no
+  // notice a task or a peer delivered.
+  const isPrompt = (m: any): boolean =>
+    m?.type === "user" &&
+    !m.parentToolUseId &&
+    !m.isSynthetic &&
+    !m.notAPrompt &&
+    (!m.origin || m.origin.kind === "human") &&
+    Array.isArray(m.content) &&
+    m.content.some((b: any) => b?.content && b.content.type !== "tool_result");
+  // A held session's newest prompt, sent or queued, per messages array.
+  const last = new WeakMap<object, { msgs: any; held: any; t?: number }>();
+  const promptAt = (s: any): number | undefined => {
+    const msgs = s.messages.value;
+    const held = s.heldPrompts.value;
+    const hit = last.get(s);
+    if (hit && hit.msgs === msgs && hit.held === held) return hit.t;
+    let t: number | undefined;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (isPrompt(msgs[i]) && typeof msgs[i].createdAt === "number") {
+        t = msgs[i].createdAt;
+        break;
+      }
+    }
+    for (const h of held) {
+      const c = h?.message?.createdAt;
+      if (typeof c === "number" && !(t !== undefined && t >= c)) t = c;
+    }
+    last.set(s, { msgs, held, t });
+    return t;
+  };
+
+  // Turns that ended in a held session while another one was on screen, and
+  // the host-reported state of every other session, for its sends.
+  const worked = new WeakMap<object, boolean>();
+  const done = new WeakSet<object>();
+  const seen = new Map<string, string>();
+  // Ids the list was already asked to read, so a session it never lists (a
+  // Web session a tab shows) asks once.
+  const asked = new Set<string>();
+  let relistAt = 0;
+
+  // The prompt cache, as Claude Code's footer clock reads it: warm while the
+  // last request that read or wrote it is younger than its TTL. The session
+  // on screen, and any other held here, carries that record live, and its
+  // card reads it as the clock does. Another session counts from its newest
+  // sign of a request instead: the record this view last loaded, while the
+  // transcript has not grown since, else its newest message or the last time
+  // the host saw it working, at the record's TTL or else the newest one any
+  // record here used.
+  const TTL: Record<string, number> = { "5m": 300000, "1h": 3600000 };
+  const recSeen = new WeakMap<object, number>();
+  const ranAt = new Map<string, number>();
+  const wasRunning = new Set<string>();
+  const judge = (at: number, span: number, clock: number): any => {
+    const until = Math.min(clock + span, at + span);
+    return { warm: until > clock, until, at };
+  };
+  const fromRecord = (rec: any, clock: number): any =>
+    rec.compactedAt !== undefined
+      ? { warm: false, compacted: true }
+      : typeof rec.anchorAt === "number" && TTL[rec.ttl]
+        ? judge(rec.anchorAt, TTL[rec.ttl], clock)
+        : null;
+  const cacheOf = (
+    s: any,
+    id: string,
+    live: boolean,
+    clock: number,
+    ttl: number | undefined,
+  ): any => {
+    const rec = s.promptCacheRecord.value;
+    const newest = s.lastModifiedTime.value || 0;
+    if (rec && !recSeen.has(rec)) recSeen.set(rec, newest);
+    if (live) return rec ? fromRecord(rec, clock) : null;
+    const ran = ranAt.get(id) || 0;
+    if (
+      rec &&
+      !(newest > (recSeen.get(rec) as number)) &&
+      !(ran > (rec.anchorAt || 0))
+    )
+      return fromRecord(rec, clock);
+    const span = (rec && TTL[rec.ttl]) || ttl;
+    const at = Math.max(newest, ran);
+    return span && at > 0 ? judge(at, span, clock) : null;
+  };
+
+  const compute = (): any[] => {
+    const active = mgr.activeSession.value;
+    const feed = mgr.comms;
+    const unread = new Set<string>(feed.unreadSessionKeys.value || []);
+    const tabs = new Set<string>(feed.openSessionIds.value || []);
+    const away = new Map<string, any>();
+    for (const x of feed.liveElsewhereSessions.value || [])
+      if (x?.sessionId) away.set(x.sessionId, x);
+    const states = new Map<string, any>();
+    for (const x of feed.sessionStates.value || [])
+      if (x?.sessionId) states.set(x.sessionId, x);
+    // The TTL the newest record here used, for a session with none of its
+    // own.
+    const clock = Date.now();
+    let ttl: number | undefined;
+    let ttlAt = -Infinity;
+    for (const s of mgr.sessions.value) {
+      const rec = s.promptCacheRecord.value;
+      if (rec && TTL[rec.ttl] && rec.anchorAt > ttlAt) {
+        ttl = TTL[rec.ttl];
+        ttlAt = rec.anchorAt;
+      }
+    }
+    const rows: any[] = [];
+    const known = new Set<string>();
+    for (const s of mgr.sessions.value) {
+      const id = s.sessionId.value;
+      if (id) known.add(id);
+      if (!id || s.isRemote.value || s.archived.value || s.unreadable.value)
+        continue;
+      let waiting = false;
+      let ended = false;
+      // Held here: it has a channel. The signal, since the session's own
+      // claudeChannelId getter peeks, which an effect would not follow.
+      const held = s.claudeChannelIdSignal.value !== undefined;
+      if (held) {
+        waiting =
+          s.permissionRequests.value.length > 0 ||
+          s.userDialogRequests.value.length > 0;
+        const work = s.busy.value || s.backgroundTaskIds.value.size > 0;
+        if (work || s === active) done.delete(s);
+        else if (worked.get(s)) done.add(s);
+        worked.set(s, work);
+        ended = done.has(s);
+        note(id, promptAt(s));
+      } else {
+        const now = states.get(id)?.state;
+        if (seen.get(id) === "idle" && now && now !== "idle")
+          note(id, Date.now());
+        if (now) seen.set(id, now);
+        waiting =
+          now === "waiting_input" ||
+          (!tabs.has(id) && away.get(id)?.activity === "waiting");
+        // Running there, or just stopped (to wait on you, or done): a request
+        // went out about now. A wait alone dates from the request before it.
+        const running =
+          now === "running" || away.get(id)?.activity === "running";
+        if (running || wasRunning.has(id)) ranAt.set(id, clock);
+        if (running) wasRunning.add(id);
+        else wasRunning.delete(id);
+      }
+      const isNew = ended || unread.has(id);
+      const cache = cacheOf(s, id, held || s === active, clock, ttl);
+      rows.push({
+        s,
+        id,
+        title: s.summary.value || "Untitled",
+        active: s === active,
+        pending: s !== active && (waiting || isNew),
+        why: waiting ? "awaiting input" : isNew ? "turn finished" : "",
+        warm: !!cache?.warm,
+        cache,
+        tab: tabs.has(id),
+        at: sent[id] || s.lastModifiedTime.value || 0,
+        mod: s.lastModifiedTime.value || 0,
+      });
+    }
+    const fresh = [...states.keys()].filter(
+      (id) => !known.has(id) && !asked.has(id),
+    );
+    const loaded = mgr.localSessionsLoaded?.value !== false;
+    if (loaded && fresh.length && Date.now() - relistAt > 5000) {
+      for (const id of fresh) asked.add(id);
+      relistAt = Date.now();
+      g.setTimeout(() => {
+        try {
+          void Promise.resolve(mgr.listSessions("state_sync")).catch(() => {});
+        } catch {
+          // the next report asks again
+        }
+      }, 0);
+    }
+    rows.sort((a, b) => b.at - a.at || b.mod - a.mod || (a.id < b.id ? -1 : 1));
+    return rows.slice(0, cfg.max);
+  };
+
+  // The strip and its cards, keyed by session id so a re-render keeps each
+  // card's element (and its hover and focus).
+  const sheet = doc.createElement("style");
+  sheet.textContent = cfg.css;
+  const bar = doc.createElement("div");
+  bar.className = "ccup-cards";
+  bar.setAttribute("role", "toolbar");
+  bar.setAttribute("aria-label", "Recent sessions");
+  bar.hidden = true;
+  const cards = new Map<string, any>();
+  let rows: any[] = [];
+  let shown = "";
+  let raf = 0;
+  let host: any = null;
+
+  // A title cut to n characters with an ellipsis, counting code points so no
+  // surrogate pair splits, and the width of a label's text, measured on a
+  // canvas in the label's own font and kept per text.
+  const cut = (t: string, n: number): string => {
+    const cs = Array.from(t);
+    return cs.length <= n
+      ? t
+      : `${cs.slice(0, n).join("").trimEnd()}${String.fromCharCode(8230)}`;
+  };
+  const pen = doc.createElement("canvas").getContext("2d");
+  const widths = new Map<string, number>();
+  const textW = (font: string, s: string): number => {
+    const k = `${font}\n${s}`;
+    let v = widths.get(k);
+    if (v === undefined) {
+      if (widths.size > 4000) widths.clear();
+      pen.font = font;
+      v = pen.measureText(s).width as number;
+      widths.set(k, v);
+    }
+    return v;
+  };
+  // The card on screen, and where it sat, when the strip last brought it into
+  // view.
+  let revealed = "";
+  const reveal = (b: any): void => {
+    const r = parseFloat(g.getComputedStyle(bar).paddingRight) || 0;
+    const a = b.offsetLeft - r;
+    const z = b.offsetLeft + b.offsetWidth + r;
+    if (a < bar.scrollLeft) bar.scrollLeft = Math.max(0, a);
+    else if (z > bar.scrollLeft + bar.clientWidth)
+      bar.scrollLeft = z - bar.clientWidth;
+  };
+
+  const mark = (on: boolean): void => {
+    if (host && host.hasAttribute("data-ccup-cards") !== on)
+      host.toggleAttribute("data-ccup-cards", on);
+  };
+  // Last in the session body, wherever that is now.
+  const mount = (): void => {
+    if (host === bar.parentNode && host?.isConnected && !bar.nextSibling)
+      return;
+    const t = doc.querySelector("." + cfg.body);
+    if (!t) return;
+    if (!sheet.isConnected) doc.head.appendChild(sheet);
+    if (host && host !== t) host.removeAttribute("data-ccup-cards");
+    host = t;
+    t.appendChild(bar);
+    mark(!bar.hidden);
+  };
+  const cardFor = (id: string): any => {
+    let b = cards.get(id);
+    if (b) return b;
+    b = doc.createElement("button");
+    b.type = "button";
+    b.className = "ccup-card";
+    b.tabIndex = -1;
+    b.dataset.id = id;
+    // The state circle leads, where an editor tab shows its file icon, and the
+    // title follows (the card's last child).
+    const dot = doc.createElement("span");
+    dot.className = "ccup-card-dot";
+    dot.setAttribute("aria-hidden", "true");
+    const label = doc.createElement("span");
+    label.className = "ccup-card-label";
+    b.appendChild(dot);
+    b.appendChild(label);
+    cards.set(id, b);
+    return b;
+  };
+  const paint = (b: any, r: any): void => {
+    b.toggleAttribute("data-active", r.active);
+    b.toggleAttribute("data-pending", r.pending);
+    b.toggleAttribute("data-warm", r.warm);
+    if (r.active) b.setAttribute("aria-current", "true");
+    else b.removeAttribute("aria-current");
+    // The tip is the full title, which the label may cut; the label read out
+    // to assistive tech carries the card's state as well.
+    b.dataset.tip = r.title;
+    b.setAttribute(
+      "aria-label",
+      r.title +
+        (r.why ? ` ${String.fromCharCode(8212)} ${r.why}` : "") +
+        (r.tab && !r.active ? " (open in a tab)" : ""),
+    );
+  };
+  const render = (): void => {
+    raf = 0;
+    try {
+      const some = rows.length > 0;
+      if (bar.hidden === some) bar.hidden = !some;
+      mount();
+      mark(some);
+      const pad = g.getComputedStyle(bar);
+      const w = some
+        ? bar.clientWidth -
+          parseFloat(pad.paddingLeft) -
+          parseFloat(pad.paddingRight)
+        : 0;
+      const key = JSON.stringify([
+        w,
+        rows.map((r) => [
+          r.id,
+          r.title,
+          r.active,
+          r.pending,
+          r.why,
+          r.warm,
+          r.tab,
+        ]),
+      ]);
+      if (key === shown) return;
+      shown = key;
+      // Every card, in order: the strip scrolls through the ones it cannot
+      // show at once.
+      const keep = new Set(rows.map((r) => r.id));
+      for (const [id, b] of cards) {
+        if (keep.has(id)) continue;
+        b.remove();
+        cards.delete(id);
+      }
+      let stop: any = null;
+      rows.forEach((r, i) => {
+        const b = cardFor(r.id);
+        paint(b, r);
+        if (bar.children[i] !== b) bar.insertBefore(b, bar.children[i] ?? null);
+        if (r.active || (!stop && i === 0)) stop = b;
+      });
+      // The title cap: as many cards as fit in view at the shortest cap, then
+      // the longest cap that still keeps them all in view. A card is its
+      // chrome (padding, circle, gap) plus its label's text.
+      let n = cfg.longest;
+      if (w > 0 && rows.length) {
+        const b0 = cards.get(rows[0].id);
+        const l0 = b0.lastChild;
+        const s = g.getComputedStyle(l0);
+        const font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+        const chrome =
+          b0.getBoundingClientRect().width - l0.getBoundingClientRect().width;
+        const wide = (r: any, c: number): number =>
+          chrome + textW(font, cut(r.title, c));
+        let k = 0;
+        for (let room = w; k < rows.length; k++) {
+          const need = wide(rows[k], cfg.shortest);
+          if (k > 0 && need > room + 0.5) break;
+          room -= need;
+        }
+        // No card wider than the strip either, which a narrow one keeping a
+        // single card in view would otherwise allow.
+        const first = rows.slice(0, Math.max(1, k));
+        n = cfg.shortest;
+        for (let c = cfg.longest; c > cfg.shortest; c--) {
+          let sum = 0;
+          for (const r of first) sum += wide(r, c);
+          if (sum > w + 0.5 || rows.some((r) => wide(r, c) > w + 0.5)) continue;
+          n = c;
+          break;
+        }
+      }
+      for (const r of rows) {
+        const l = cards.get(r.id).lastChild;
+        const t = cut(r.title, n);
+        if (l.textContent !== t) l.textContent = t;
+      }
+      // One tab stop: the focused card, else the session on screen, else the
+      // first.
+      const f = doc.activeElement;
+      if (f && f.parentNode === bar) stop = f;
+      for (const b of cards.values()) b.tabIndex = b === stop ? 0 : -1;
+      // The card on screen comes into view when it changes or moves, as the
+      // editor reveals its active tab; a scroll of your own stays otherwise.
+      const at = rows.findIndex((r) => r.active);
+      const now = at < 0 ? "" : `${rows[at].id}:${at}`;
+      if (now && now !== revealed && w > 0) reveal(cards.get(rows[at].id));
+      revealed = now;
+    } catch {
+      // a render never breaks the chat
+    }
+  };
+  const schedule = (): void => {
+    if (!raf) raf = g.requestAnimationFrame(render);
+  };
+
+  // What picking the session in the Session history dropdown does.
+  const open = (id: string): void => {
+    const r = rows.find((x) => x.id === id);
+    if (!r || r.active) return;
+    try {
+      if (mgr.focusTabShowing(r.s, { includeSidebarChat: true })) return;
+      mgr.activeSession.value = r.s;
+    } catch {
+      // the session stays where it was
+    }
+  };
+
+  // The hover tip above a card (a title tooltip is unreliable in a webview),
+  // styled by the patch's shared tip rule.
+  let tip: any = null;
+  let tipT = 0;
+  const hideTip = (): void => {
+    if (tipT) g.clearTimeout(tipT);
+    tipT = 0;
+    if (tip) tip.style.display = "none";
+  };
+  const showTip = (b: any): void => {
+    if (!tip) {
+      tip = doc.createElement("div");
+      tip.className = "ccup-hover-tip";
+      // A long title wraps rather than running past the view.
+      tip.style.whiteSpace = "normal";
+      tip.style.maxWidth = "calc(100vw - 8px)";
+      doc.body.appendChild(tip);
+    }
+    tip.textContent = b.dataset.tip || "";
+    tip.style.display = "block";
+    const r = b.getBoundingClientRect();
+    const w = tip.offsetWidth;
+    const vw = doc.documentElement.clientWidth || 0;
+    tip.style.left = `${Math.max(4, Math.min(r.left, vw - w - 4))}px`;
+    tip.style.top = `${r.top - tip.offsetHeight - 6}px`;
+  };
+  const cardAt = (t: any): any => {
+    const b = t?.closest?.(".ccup-card");
+    return b && b.parentNode === bar ? b : null;
+  };
+
+  bar.addEventListener("mousedown", (e: any) => {
+    hideTip();
+    if (e.button === 0) e.preventDefault();
+  });
+  bar.addEventListener("click", (e: any) => {
+    const b = cardAt(e.target);
+    if (b) open(b.dataset.id);
+  });
+  bar.addEventListener("keydown", (e: any) => {
+    if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+    const all = Array.from(bar.children) as any[];
+    const i = all.indexOf(doc.activeElement);
+    if (i < 0) return;
+    // Opened here rather than by the button's own activation, so no handler
+    // further up (the app's root listeners) can take the key first.
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.repeat) open(all[i].dataset.id);
+      return;
+    }
+    const j =
+      e.key === "ArrowRight"
+        ? Math.min(all.length - 1, i + 1)
+        : e.key === "ArrowLeft"
+          ? Math.max(0, i - 1)
+          : e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? all.length - 1
+              : -1;
+    if (j < 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    all[i].tabIndex = -1;
+    all[j].tabIndex = 0;
+    all[j].focus({ preventScroll: true });
+    reveal(all[j]);
+  });
+  // The wheel scrolls the strip sideways, either axis, as over the editor's
+  // tabs; a strip with nothing to scroll lets it pass.
+  bar.addEventListener(
+    "wheel",
+    (e: any) => {
+      if (e.ctrlKey || bar.scrollWidth <= bar.clientWidth) return;
+      const unit =
+        e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? bar.clientWidth : 1;
+      const d =
+        (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * unit;
+      if (!d) return;
+      e.preventDefault();
+      hideTip();
+      bar.scrollLeft += d;
+    },
+    { passive: false },
+  );
+  bar.addEventListener("scroll", hideTip);
+  bar.addEventListener("mouseover", (e: any) => {
+    const b = cardAt(e.target);
+    if (!b) return;
+    if (tipT) g.clearTimeout(tipT);
+    tipT = 0;
+    // From one card to the next, the tip follows at once.
+    if (tip && tip.style.display === "block") {
+      showTip(b);
+      return;
+    }
+    tipT = g.setTimeout(() => {
+      tipT = 0;
+      try {
+        if (b.isConnected && b.matches(":hover")) showTip(b);
+      } catch {
+        // no tip
+      }
+    }, 250);
+  });
+  bar.addEventListener("mouseout", (e: any) => {
+    if (!cardAt(e.relatedTarget)) hideTip();
+  });
+
+  // A warm cache turns cold with nothing to signal it, so the strip wakes at
+  // the next expiry to repaint.
+  let wake = 0;
+  const arm = (): void => {
+    if (wake) g.clearTimeout(wake);
+    wake = 0;
+    let next = Infinity;
+    for (const r of rows)
+      if (r.warm && r.cache.until < next) next = r.cache.until;
+    if (next < Infinity)
+      wake = g.setTimeout(refresh, Math.max(1000, next - Date.now() + 250));
+  };
+  const refresh = (): void => {
+    wake = 0;
+    try {
+      rows = compute();
+    } catch {
+      rows = [];
+    }
+    api.rows = rows;
+    schedule();
+    arm();
+  };
+
+  effect(() => {
+    try {
+      rows = compute();
+    } catch {
+      rows = [];
+    }
+    api.rows = rows;
+    schedule();
+    arm();
+  });
+  try {
+    new g.MutationObserver(mount).observe(doc.body, {
+      childList: true,
+      subtree: true,
+    });
+    // A new width may fit another card, or one fewer (render skips a width
+    // it has already laid out).
+    new g.ResizeObserver(() => {
+      if (!bar.hidden) schedule();
+    }).observe(bar);
+  } catch {
+    // no observers: the strip mounts on each render alone
+  }
+}
+
+// How the strip sits and how the card of the session on screen stands out.
+// Either way that card is cut from the chat's own background, as a connected
+// editor tab of VS Code's modern UI is cut from the editor's: no edge between
+// the card and the chat above it, rounded corners on its far (bottom) side,
+// and the strip curving into it where they meet, with the editor tab row's
+// geometry (the small corner radius, no groove left of the first card, the
+// tab height and text size). The look follows window.density.layout, which
+// applies under the modern UI (workbench.experimental.modernUI). At the
+// default density the cards reach the bottom of the view ("seamless"), where
+// VS Code's floating panel then leaves its own few pixels of padding, outside
+// the webview. At the compact density the cards keep a hairline groove below
+// them and the card on screen carries the tab's blue accent line, along its
+// bottom edge rather than the top, since the strip sits below the chat rather
+// than above it ("line"); the classic tabs, without the modern UI, do the
+// same. The card height follows window.density.editorTabHeight. All three
+// settings are read, never written, at patch time, so a change to any of
+// them re-applies (see Patcher.register) and asks for a webview refresh.
+export type ScardLook = "seamless" | "line";
+export const SCARD_LOOK_KEYS = [
+  "window.density.layout",
+  "window.density.editorTabHeight",
+  "workbench.experimental.modernUI",
+];
+function scardLook(): ScardLook {
+  try {
+    const c = vscode.workspace.getConfiguration();
+    const modern = c.get<boolean>("workbench.experimental.modernUI") === true;
+    return modern && c.get<string>("window.density.layout") !== "compact"
+      ? "seamless"
+      : "line";
+  } catch {
+    return "line"; // outside VS Code: the repro scenarios pass a look
+  }
+}
+function scardTabH(): number {
+  try {
+    return vscode.workspace
+      .getConfiguration()
+      .get<string>("window.density.editorTabHeight") === "compact"
+      ? SCARD_TAB_H_COMPACT
+      : SCARD_TAB_H;
+  } catch {
+    return SCARD_TAB_H;
+  }
+}
+
+// The strip's stylesheet: the connected tab row's background across the
+// sidebar's width, scrolling sideways with no scrollbar of its own, cards
+// with a leading state circle (in the card's own color, clay for a session
+// waiting on you, filled while the session's prompt cache is warm and a
+// hollow ring once it is cold), the card on screen in the chat's background
+// with its corners and shoulders and the look's line, its text in the same
+// grey as the others' (the editor tab's white read as distracting), and the
+// input box's lowered gap. The corners take VS Code's small radius
+// (cornerRadius.small) and the shoulders the same curve, drawn as masked
+// squares in the chat's background just outside the card's top corners, so
+// they paint only where the strip meets the chat; the first card sits flush
+// with the strip's left edge, without either. The text takes the editor tab's
+// size (fontSize.body1). At the default density the webview itself is
+// clipped to VS Code's large radius (cornerRadius.large), so there the
+// strip's ends stay that far in from the sides, which keeps its own corners
+// square.
+function scardCss(chat: string, look: ScardLook, tabH: number): string {
+  const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
+  const clay = "var(--app-claude-orange,#d97757)";
+  const groove = look === "line" ? 1 : 0;
+  const ends =
+    look === "seamless"
+      ? "width:calc(100% - 2 * var(--vscode-cornerRadius-large,8px));margin:0 var(--vscode-cornerRadius-large,8px)"
+      : "width:100%;margin:0";
+  const shoulder = (at: string) =>
+    `radial-gradient(circle at ${at},transparent calc(var(--ccup-card-r) - .5px),#000 var(--ccup-card-r))`;
+  const line =
+    look === "line"
+      ? `;background-image:linear-gradient(${tab("activeBorderTop", "var(--vscode-focusBorder)")},${tab("activeBorderTop", "var(--vscode-focusBorder)")});background-repeat:no-repeat;background-position:50% 100%;background-size:calc(100% - 2 * var(--ccup-card-r)) 1px`
+      : "";
+  return (
+    `.ccup-cards{--ccup-card-r:var(--vscode-cornerRadius-small,4px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;${ends};height:${tabH + groove}px;padding:0 var(--ccup-card-r) ${groove}px 0;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
+    ".ccup-cards::-webkit-scrollbar{display:none}" +
+    ".ccup-cards[hidden]{display:none}" +
+    `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 auto;height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${tab("inactiveForeground", "var(--app-secondary-foreground)")};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +
+    ".ccup-card-label{white-space:nowrap}" +
+    ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
+    ".ccup-card[data-warm] .ccup-card-dot{background:currentColor}" +
+    `.ccup-card[data-pending] .ccup-card-dot{border-color:${clay}}` +
+    `.ccup-card[data-pending][data-warm] .ccup-card-dot{background:${clay}}` +
+    `.ccup-card:not([data-active])${HOVER}{background:var(--app-ghost-button-hover-background);color:${tab("hoverForeground", "var(--app-primary-foreground)")}}` +
+    `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);cursor:default${line}}` +
+    ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
+    `.ccup-card[data-active]::before{right:100%;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
+    `.ccup-card[data-active]::after{left:100%;-webkit-mask:${shoulder("100% 100%")};mask:${shoulder("100% 100%")}}` +
+    ".ccup-card[data-active]:first-child{border-bottom-left-radius:0}" +
+    ".ccup-card[data-active]:first-child::before{display:none}" +
+    ".ccup-card:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
+    `[data-ccup-cards] .inputContainer_${chat}{bottom:${SCARD_GAP}px}` +
+    HOVER_TIP_CSS
+  );
+}
+
+// The webview's site and what its insertion reads, or null.
+interface ScardSite {
+  unit: N;
+  pos: number;
+  effect: string;
+  chat: string;
+  body: string;
+}
+function sessionCardsFind(c: string): ScardSite | null {
+  const chat = c.match(JUMP_MSG_CHAT_HASH_RE)?.[1];
+  const body = c.match(/sessionBody:"(sessionBody_[-\w]+)"/)?.[1];
+  if (!chat || !body || !c.includes(`inputContainer:"inputContainer_${chat}"`))
+    return null;
+
+  // The session manager, one per webview.
+  const mgrs = unitsWith(
+    c,
+    "doListSessions(",
+    "class ",
+    isClass,
+    STAY_CLASS_REACH,
+  ).filter(
+    (k) =>
+      ["doListSessions", "focusTabShowing", "listSessions"].every((m) =>
+        sdelMethod(k, m),
+      ) && ["activeSession", "sessions", "comms"].every((f) => sdelField(k, f)),
+  );
+  if (mgrs.length !== 1 || mgrs[0].superClass) return null;
+  const mgr = mgrs[0];
+  const ctor = (mgr.body.body as N[]).find(
+    (m) => m.type === "MethodDefinition" && m.kind === "constructor",
+  );
+  if (!ctor || ctor.value.body.type !== "BlockStatement") return null;
+
+  // The effect: the one callee the constructor's own statements hand a bare
+  // arrow to, more than once, bound outside the class.
+  const calls = new Map<string, N[]>();
+  for (const st of ctor.value.body.body as N[]) {
+    if (st.type !== "ExpressionStatement") continue;
+    const ex = st.expression;
+    for (const e of ex.type === "SequenceExpression" ? ex.expressions : [ex]) {
+      const name = e.type === "CallExpression" ? idName(e.callee) : null;
+      const arg = e.arguments?.[0];
+      if (
+        name &&
+        e.arguments.length === 1 &&
+        arg.type === "ArrowFunctionExpression" &&
+        arg.params.length === 0
+      )
+        calls.set(name, [...(calls.get(name) ?? []), e]);
+    }
+  }
+  const names = [...calls].filter(([, a]) => a.length >= 2);
+  if (names.length !== 1) return null;
+  const [effect, uses] = names[0];
+  if (bindingSite(uses[0], effect, mgr) !== null) return null;
+
+  // The session class, and a class carrying the host's session feed.
+  const sessions = unitsWith(
+    c,
+    "loadFromServer(",
+    "class ",
+    isClass,
+    TRW_CLASS_REACH,
+  ).filter((k) => SCARD_SESSION_FIELDS.every((f) => sdelField(k, f)));
+  if (sessions.length !== 1) return null;
+  const feeds = unitsWith(
+    c,
+    "unreadSessionKeys=",
+    "class ",
+    isClass,
+    TRW_CLASS_REACH,
+  ).filter((k) => SCARD_FEED_FIELDS.every((f) => sdelField(k, f)));
+  if (!feeds.length) return null;
+
+  return { unit: mgr, pos: ctor.value.body.end - 1, effect, chat, body };
+}
+
+// The native bundle with the fragment in for a look, or null when a site is
+// missing or the edit would not parse. The sites are looked up once per
+// bundle, and the two most recent builds are kept.
+const sessionCardsSite = (() => {
+  let last: { native: string; site: ScardSite | null } | undefined;
+  return (native: string): ScardSite | null => {
+    if (last?.native !== native)
+      last = { native, site: sessionCardsFind(native) };
+    return last.site;
+  };
+})();
+let scardBuilt: {
+  native: string;
+  look: ScardLook;
+  tabH: number;
+  out: string | null;
+}[] = [];
+function sessionCardsBuild(
+  native: string,
+  look: ScardLook,
+  tabH: number,
+): string | null {
+  const hit = scardBuilt.find(
+    (b) => b.native === native && b.look === look && b.tabH === tabH,
+  );
+  if (hit) return hit.out;
+  const site = sessionCardsSite(native);
+  let out: string | null = null;
+  if (site) {
+    const cfg: ScardCfg = {
+      body: site.body,
+      css: scardCss(site.chat, look, tabH),
+      store: SCARD_STORE,
+      cap: SCARD_STORE_CAP,
+      max: SCARD_MAX,
+      longest: SCARD_TITLE_LONGEST,
+      shortest: SCARD_TITLE_SHORTEST,
+    };
+    const edit: Edit = {
+      pos: site.pos,
+      text:
+        `${SCARD_MARKER};(${ccupSessionCardsWeb.toString()})` +
+        `(this,${JSON.stringify(cfg)},${site.effect});${SCARD_END}`,
+    };
+    const o = applyEdits(native, [edit]);
+    if (unitsReparse(o, [edit], [[site.unit, isClass]])) out = o;
+  }
+  scardBuilt = [{ native, look, tabH, out }, ...scardBuilt].slice(0, 2);
+  return out;
+}
+const scardStrip = (c: string): string => c.replace(SCARD_FRAG_RE, "");
+
+function sessionCardsPresent(c: string): boolean {
+  return c.includes(SCARD_MARKER) || sessionCardsSite(scardStrip(c)) !== null;
+}
+// true = ON (the fragment as this build writes it for the current look, or one
+// left with no site to rebuild it from, so it stays removable), false = OFF or
+// stale (a look that changed since included), undefined = sites gone and
+// nothing to remove.
+function sessionCardsCurrentOn(c: string): boolean | undefined {
+  const native = scardStrip(c);
+  const want = sessionCardsBuild(native, scardLook(), scardTabH());
+  if (native !== c) return want === null || want === c;
+  return want === null ? undefined : false;
+}
+function sessionCardsSet(c: string, on: boolean): string {
+  const native = scardStrip(c);
+  if (!on) return native;
+  // sites gone: leave the file as it is
+  return sessionCardsBuild(native, scardLook(), scardTabH()) ?? c;
+}
+
+// The webview bundle with the strip in for a look and card height, or null
+// when a site is gone. scripts/repro's session-cards.mjs serves this, so it
+// runs exactly what an apply writes and doubles as the drift canary.
+export function sessionCardsWebview(
+  js: string,
+  look: ScardLook = "line",
+  tabH: number = SCARD_TAB_H,
+): string | null {
+  return sessionCardsBuild(scardStrip(js), look, tabH);
+}
+
+// ---------------------------------------------------------------------------
 // In-chat find bar (ON): a working Cmd/Ctrl+F for the chat webview. The native
 // webview find widget (the chat editor tab sets enableFindWidget) can only
 // HIGHLIGHT: typing starts a fresh Chromium find-in-page session each
@@ -8838,9 +10119,9 @@ function ccupFindBarWebview(): void {
       if (!isOpen()) {
         lastFocus = doc.activeElement;
         bar.setAttribute("data-open", "");
-        // Mirrored onto <body> for the button toggles' dim lift, which needs an
-        // "is the bar open" test that costs nothing between transitions (see
-        // dimCss). Harmless when those toggles are off: nothing reads the class.
+        // Mirrored onto <body> for the match highlights' rules (findBarCssBuild)
+        // and the button toggles' dim lift, both needing an "is the bar open"
+        // test that costs nothing between transitions (see dimCss).
         doc.body.classList.add("ccup-find-open");
         dirty = true; // nothing watched the transcript while closed
         watch();
@@ -9094,7 +10375,11 @@ function findBarSet(c: string, on: boolean): string {
 }
 
 // The appended stylesheet line: the two highlight pseudo-styles on the editor
-// findMatch theme tokens (the same yellow/orange the native find paints), and
+// findMatch theme tokens (the same yellow/orange the native find paints),
+// scoped to the open bar (body.ccup-find-open) since a rule for a highlight
+// pseudo that every element meets makes Blink resolve that highlight's style
+// for each element it restyles, which cost about 95ms more on a long
+// transcript's session switch with the bar closed, and
 // the bar itself on the editorWidget/input tokens with the chat's own --app-*
 // variables as first choice, so it reads native in either surface and theme.
 // The option toggles take the inputOption tokens and the editor's codicons,
@@ -9117,8 +10402,8 @@ function findBarCssBuild(css: string): string | undefined {
       '.ccup-find-opt[data-opt=r]::before{content:".*"}';
   return (
     FINDBAR_CSS_MARKER +
-    "::highlight(ccup-find){background-color:var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.33))}" +
-    "::highlight(ccup-find-active){background-color:var(--vscode-editor-findMatchBackground,rgba(237,148,30,.8));color:var(--vscode-editor-foreground,inherit)}" +
+    "body.ccup-find-open ::highlight(ccup-find){background-color:var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.33))}" +
+    "body.ccup-find-open ::highlight(ccup-find-active){background-color:var(--vscode-editor-findMatchBackground,rgba(237,148,30,.8));color:var(--vscode-editor-foreground,inherit)}" +
     ".ccup-find-bar{position:fixed;top:8px;right:16px;z-index:1200;display:none;align-items:center;gap:4px;max-width:calc(100vw - 20px);padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--app-input-border,#454545));border-radius:6px;background:var(--vscode-editorWidget-background,var(--app-input-background,#252526));color:var(--vscode-editorWidget-foreground,var(--app-primary-foreground,#cccccc));box-shadow:0 2px 8px var(--vscode-widget-shadow,rgba(0,0,0,.36));font-size:12px}" +
     ".ccup-find-bar[data-open]{display:flex}" +
     ".ccup-find-bar .ccup-find-field{flex:1 1 auto;display:flex;align-items:center;min-width:132px;min-height:24px;box-sizing:border-box;padding-right:2px;border:1px solid var(--app-input-border,var(--vscode-input-border,transparent));border-radius:4px;background:var(--app-input-background,var(--vscode-input-background,#3c3c3c))}" +
@@ -10228,6 +11513,17 @@ const TOGGLE_POINTS: TogglePoint[] = [
     fnSet: promptHistSet,
   },
   {
+    id: "sessionCards",
+    section: "Behavior",
+    label: "Chat sidebar: cards of recent sessions below the input box",
+    key: "chatSessionCards",
+    defaultOn: false,
+    file: SCARD_FILE,
+    fnPresent: sessionCardsPresent,
+    fnCurrentOn: sessionCardsCurrentOn,
+    fnSet: sessionCardsSet,
+  },
+  {
     id: "rawMd",
     section: "Behavior",
     label: "Chat panel or tab: show an agent response as raw markdown",
@@ -10614,6 +11910,22 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: MREDRAW_FILE,
     frags: MREDRAW_FRAG_RE,
     patch: mentionRedrawPatch,
+  },
+  {
+    kind: "inline",
+    id: "diffEdFree",
+    label: "diff card release",
+    file: DEFREE_FILE,
+    frags: DEFREE_FRAG_RE,
+    patch: diffEdFreePatch,
+  },
+  {
+    kind: "inline",
+    id: "inputSeed",
+    label: "session open landing",
+    file: ISEED_FILE,
+    frags: ISEED_FRAG_RE,
+    patch: inputSeedPatch,
   },
   {
     kind: "inline",
@@ -12739,6 +14051,10 @@ export class Patcher {
     // claudeCode.useCtrlEnterToSend through the commentCtrlEnter fold, so a
     // change there must re-run the apply pass too.
     patchKeys.push("claudeCode.useCtrlEnterToSend");
+    // The session cards bake how the card on screen stands out from VS Code's
+    // own layout density (see ScardLook), so a density or modern UI change
+    // re-applies too.
+    patchKeys.push(...SCARD_LOOK_KEYS);
     // chat.fontSize is no longer a knob, but the chatHistoryFontSize knob shows it
     // while inheriting, so a native change should refresh (not re-patch) the view.
     // The editor sizes feed what the patch knobs show at 0 (see NativeEnv).

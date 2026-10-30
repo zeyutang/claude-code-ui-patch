@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- New `chatSessionCards` setting: along the bottom of the sidebar chat, below its input box, a strip of cards for your local sessions, the one where you last sent a message first, scrolling sideways through every session that is not archived.
+  A click opens that session as the Session history list does.
+  Each card's circle is filled while the session's prompt cache is still warm, and turns clay while the session waits on you: a permission or question prompt, or a finished turn you have not seen.
+  The card of the session on screen joins the chat above it, and also carries a blue line along its bottom when `window.density.layout` is compact.
+- Switching sessions no longer keeps the previous session's transcript in memory, which had made a window that switched often grow slower until it was reloaded.
+- Switching to a long session is faster: the find bar's match colors and the selection colors no longer add work to every redraw of the chat.
+- Opening a session no longer jumps: its last lines show at once instead of sitting behind the input box until the view scrolls down to them.
+
 ## 1.6.3
 
 - On Claude Code 2.1.307 and later, a long message of yours opened with "Show more" shows its last lines and its "Show less" button again, which had been cut off below the message's edge.

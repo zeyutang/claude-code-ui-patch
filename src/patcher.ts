@@ -4270,6 +4270,248 @@ export function bookmarkNoteHost(host: string, web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Reveal if open (always on): every file Claude Code opens for a click (a path
+// or link in a response, a tool card's file, an @-mention, a plan comment's
+// location, the plan and memory files it opens itself) reaches the host's
+// openFile, which resolves the path and shows it with window.showTextDocument
+// and no view column, falling back to vscode.open for a file no text editor
+// can show (2.1.285 on). VS Code puts it in the active editor group, a second
+// tab when another group already shows the file, unless its own
+// workbench.editor.revealIfOpen is on, which governs every open in the window
+// rather than these alone.
+//
+// Patched, the show options gain the view column of the group that already
+// holds the file, by VS Code's rule for that setting: a group showing it
+// first, then one holding it behind another tab, the active group ahead of the
+// rest either way (VS Code ranks the rest by recent use, which the extension
+// API does not expose, so they go in view column order). A text tab counts for
+// the text show, and a custom editor's tab too for the vscode.open fallback (a
+// binary file in an extension's editor), while diff and notebook tabs never
+// do: a text show into a group holding only those would add a second tab
+// there. VS Code's own image preview (1.144) reaches the API as a tab of
+// unknown kind, with no uri to compare, so an image opens as before. Options
+// that already name a column, a file the active group holds, and the setting
+// being on leave the show as it was, so VS Code keeps those to itself.
+//
+// The fragments in extension.js, each wrapped in
+// /*ccup:revealIfOpen:<site>*/.../*ccup:revealIfOpenEnd*/:
+//   fn    at the head of openFile: ccupRevealIfOpen, the compiled
+//         ccupRevealIfOpenHost, mapping (uri, options, anyEditor) to the
+//         options to show with
+//   opts  around the show's options argument, one on each side, or one adding
+//         the argument where the show passes the uri alone (through 2.1.270),
+//         and likewise around the fallback's
+// openFile is found by structure (src/derive.ts): the one class method of that
+// name, holding one window.showTextDocument call whose uri is a local of the
+// method, which the fallback, where present, opens too.
+// ---------------------------------------------------------------------------
+const RIO_END = "/*ccup:revealIfOpenEnd*/";
+const RIO_FN = "/*ccup:revealIfOpen:fn*/";
+const RIO_OPTS = "/*ccup:revealIfOpen:opts*/";
+const RIO_FRAG_RE =
+  /\/\*ccup:revealIfOpen:[-\w]+\*\/[\s\S]*?\/\*ccup:revealIfOpenEnd\*\//g;
+const RIO_FILE = "extension.js";
+const rioEdit = (marker: string, e: Edit): Edit => ({
+  pos: e.pos,
+  text: `${marker}${e.text}${RIO_END}`,
+});
+// The helper's name inside openFile.
+const RIO_LOCAL = "ccupRevealIfOpen";
+// How far ahead of openFile its class may start (the comms subclass spans
+// about 55KB, with openFile some 24KB in).
+const RIO_CLASS_REACH = 400000;
+
+// The options openFile shows a file with, given the tabs already holding it
+// (the rule above): the holding group's view column added, or the options as
+// they came. Compiled into Claude Code's extension host by toString, as a
+// local of openFile, so it may use only its parameters and Node's globals.
+function ccupRevealIfOpenHost(uri: any, opts: any, anyEditor?: boolean): any {
+  try {
+    const vscode = require("vscode");
+    const path = require("path");
+    const tabs = vscode.window.tabGroups;
+    const column = opts?.viewColumn;
+    if (
+      !tabs ||
+      uri?.scheme !== "file" ||
+      (column !== undefined && column !== vscode.ViewColumn.Active) ||
+      vscode.workspace.getConfiguration("workbench.editor").get("revealIfOpen")
+    )
+      return opts;
+    // A path as VS Code tells editors apart: normalized, and case-folded
+    // except on Linux, the one platform whose paths it treats as case
+    // sensitive.
+    const key = (u: any): string => {
+      const p = path.normalize(u.fsPath);
+      return process.platform === "linux" ? p : p.toLowerCase();
+    };
+    const want = key(uri);
+    const kinds = [vscode.TabInputText];
+    if (anyEditor) kinds.push(vscode.TabInputCustom);
+    const active = tabs.activeTabGroup;
+    const rest = tabs.all
+      .filter((g: any) => g !== active)
+      .sort((a: any, b: any) => a.viewColumn - b.viewColumn);
+    let shown: any;
+    let held: any;
+    for (const g of [active, ...rest]) {
+      for (const t of g?.tabs ?? []) {
+        const input = t.input;
+        if (
+          !kinds.some((k: any) => k && input instanceof k) ||
+          input.uri?.scheme !== "file" ||
+          key(input.uri) !== want
+        )
+          continue;
+        held ??= g;
+        if (t.isActive) shown ??= g;
+      }
+    }
+    const g = shown ?? held;
+    if (!g || g === active || typeof g.viewColumn !== "number") return opts;
+    return { ...opts, viewColumn: g.viewColumn };
+  } catch {
+    return opts;
+  }
+}
+
+// `<v>.<ns>.<name>(...)`, a call of a vscode namespace's function: gives <v>.
+function rioApiCall(n: N, ns: string, name: string): string | null {
+  if (n.type !== "CallExpression" || memberProp(n.callee) !== name) return null;
+  const o = n.callee.object;
+  return memberProp(o) === ns ? idName(o.object) : null;
+}
+
+// The insertions passing a call's options argument, at `index`, through the
+// helper: one on each side of it, or one adding it after the last argument
+// where the call passes none. The argument must sit bare between its comma
+// and the closing parenthesis, so the wrap takes exactly it.
+function rioWrap(
+  c: string,
+  call: N,
+  index: number,
+  uri: string,
+  tail: string,
+): Edit[] | null {
+  const args: N[] = call.arguments;
+  if (
+    args.length < index ||
+    args.length > index + 1 ||
+    args.some((a) => a.type === "SpreadElement")
+  )
+    return null;
+  const prev = args[index - 1];
+  const opts = args[index];
+  if (!opts) {
+    if (!/^\s*\)$/.test(c.slice(prev.end, call.end))) return null;
+    return [
+      rioEdit(RIO_OPTS, {
+        pos: prev.end,
+        text: `,${RIO_LOCAL}(${uri},void 0${tail})`,
+      }),
+    ];
+  }
+  if (
+    !/^\s*,\s*$/.test(c.slice(prev.end, opts.start)) ||
+    !/^\s*\)$/.test(c.slice(opts.end, call.end))
+  )
+    return null;
+  return [
+    rioEdit(RIO_OPTS, { pos: opts.start, text: `${RIO_LOCAL}(${uri},` }),
+    rioEdit(RIO_OPTS, { pos: opts.end, text: `${tail})` }),
+  ];
+}
+
+// openFile's class and the insertions, or null.
+function rioFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  // The one class defining an openFile method: a definition, never a call
+  // (`.openFile(`) or the tail of a longer name.
+  const classes: N[] = [];
+  for (
+    let i = c.indexOf("openFile(");
+    i >= 0;
+    i = c.indexOf("openFile(", i + 1)
+  ) {
+    if (/[\w$.]/.test(c[i - 1] ?? "")) continue;
+    if (classes.some((k) => k.start <= i && i < k.end)) continue;
+    const k = unitAround(c, i, "class ", isClass, RIO_CLASS_REACH);
+    if (k && sdelMethod(k, "openFile")) classes.push(k);
+  }
+  if (classes.length !== 1) return null;
+  const cls = classes[0];
+  const fn: N = sdelMethod(cls, "openFile")!.value;
+  if (fn.body.type !== "BlockStatement") return null;
+
+  // Its one text show and, where it has one, the vscode.open fallback, both
+  // through the vscode binding from outside the method, on the same local
+  // uri, with nothing in the method named like the helper.
+  const shows: N[] = [];
+  const opens: N[] = [];
+  let taken = false;
+  walk(fn, (n) => {
+    if (idName(n) === RIO_LOCAL) taken = true;
+    if (rioApiCall(n, "window", "showTextDocument")) shows.push(n);
+    else if (
+      rioApiCall(n, "commands", "executeCommand") &&
+      isStr(n.arguments[0], "vscode.open")
+    )
+      opens.push(n);
+  });
+  if (taken || shows.length !== 1 || opens.length > 1) return null;
+  const show = shows[0];
+  const vs = rioApiCall(show, "window", "showTextDocument")!;
+  if (bindingSite(show.callee.object.object, vs, fn) !== null) return null;
+  const uri = idName(show.arguments[0]);
+  const uriSite = uri ? bindingSite(show.arguments[0], uri, fn) : null;
+  if (!uri || !uriSite) return null;
+  const edits = rioWrap(c, show, 1, uri, "");
+  if (!edits) return null;
+
+  const open = opens[0];
+  if (open) {
+    if (
+      rioApiCall(open, "commands", "executeCommand") !== vs ||
+      bindingSite(open.callee.object.object, vs, fn) !== null ||
+      idName(open.arguments[1]) !== uri ||
+      bindingSite(open.arguments[1], uri, fn) !== uriSite
+    )
+      return null;
+    const more = rioWrap(c, open, 2, uri, ",!0");
+    if (!more) return null;
+    edits.push(...more);
+  }
+  edits.push(
+    rioEdit(RIO_FN, {
+      pos: fn.body.start + 1,
+      text: `let ${RIO_LOCAL}=${ccupRevealIfOpenHost.toString()};`,
+    }),
+  );
+  return { units: [[cls, isClass]], edits };
+}
+
+// The native host bundle with the fragments in, or null when a site is missing
+// or an edit would not parse.
+const rioBuild = sdelMemo((native) => {
+  const sites = rioFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+function revealIfOpenPatch(native: string): string | null {
+  return rioBuild(native);
+}
+
+// The host bundle, patched or not, as an apply writes this point into it, or
+// null when its sites are gone. scripts/repro's reveal-if-open.mjs runs the
+// openFile this gives, so it checks exactly what the patcher writes and
+// doubles as the drift canary.
+export function revealIfOpenHost(host: string): string | null {
+  return rioBuild(host.replace(RIO_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
 // Input box selection redraw (always on): the input box's mention and
 // slash-command detector (the hook yielding `{atMention,slashCommand,...}`)
 // subscribes to `selectionchange` on the whole document and answers every one
@@ -11993,6 +12235,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     frags: BNOTE_FRAG_RE,
     patch: bookmarkNoteHostPatch,
     inert: (native) => !native.includes('"update_session_bookmark"'),
+  },
+  {
+    kind: "inline",
+    id: "revealIfOpen",
+    label: "file link reveal",
+    file: RIO_FILE,
+    frags: RIO_FRAG_RE,
+    patch: revealIfOpenPatch,
   },
 ];
 

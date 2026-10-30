@@ -9,6 +9,9 @@
 - Switching sessions no longer keeps the previous session's transcript in memory, which had made a window that switched often grow slower until it was reloaded.
 - Switching to a long session is faster: the find bar's match colors and the selection colors no longer add work to every redraw of the chat.
 - Opening a session no longer jumps: its last lines show at once instead of sitting behind the input box until the view scrolls down to them.
+- Clicking a file reference in the chat, such as `README.md:42`, goes to the tab where that file is already open, in whichever editor group holds it, instead of opening a second copy in the active group.
+  An image already showing in VS Code's image preview still opens a second tab in the active group.
+  Always applied, no setting.
 
 ## 1.6.3
 

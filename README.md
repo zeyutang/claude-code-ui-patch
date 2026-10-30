@@ -105,7 +105,8 @@ Always applied                         # no setting; installing this patch is th
    ├── session open landing            # an opened session shows its last lines at once, no jump
    ├── inline math spans               # fix for math rendering
    ├── last turn delete                # prompt history's last entry: delete that turn
-   └── bookmark notes                  # Bookmarks pane rows: annotate a bookmark with your own note
+   ├── bookmark notes                  # Bookmarks pane rows: annotate a bookmark with your own note
+   └── file link reveal                # a file link goes to the file's open tab in any group
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)

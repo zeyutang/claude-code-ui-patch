@@ -2956,11 +2956,17 @@ export function untitledStaysWebview(web: string): string | null {
 
 // ---------------------------------------------------------------------------
 // Last turn delete (always on, two halves): the prompt history list
-// (promptHist) gives its last entry a delete button, and a confirmed click
-// takes that turn out of the conversation as if it had never been sent. Only
-// the last turn has one: every later turn builds on the ones before it, so
-// cutting one from the middle would strand whatever came after, while
-// deleting backward one turn at a time reaches any point.
+// (promptHist) gives every entry a delete button, and a confirmed click on
+// the last one takes that turn out of the conversation as if it had never
+// been sent. Every other button stays greyed out, with a hover tip saying
+// why. Only the last turn can go, since every later turn builds on the ones
+// before it, and only while cutting it from the conversation leaves nothing
+// of it elsewhere: for 30 seconds after its prompt joined the conversation,
+// and until the turn uses a tool that can leave changes behind (an edit, a
+// command, a subagent, an MCP tool, any tool not known to only read). Past
+// either, the turn's work may already sit in files, branches, worktrees or
+// memory. A prompt joins when it is sent, or, queued while Claude works, when
+// Claude starts on it, which is also when the list first shows it.
 //
 // Nothing native deletes a turn in place. Fork and rewind start a new session
 // from the turn before, and the CLI's own rewind_conversation control request
@@ -2976,15 +2982,21 @@ export function untitledStaysWebview(web: string): string | null {
 // bring the deleted turn back until the next prompt grows a newer one. The
 // checkpoint also repeats the deleted prompt as the session's lastPrompt.
 //
-// The webview half (turnRewind) is two fragments in webview/index.js:
+// The webview half (turnRewind) is three fragments in webview/index.js:
 //   mgr  at the head of the session manager's constructor: window's
-//        __ccupTurnRewind bridge, built around the manager, whose run(uuid)
-//        stops the active session's turn, waits for it to wind down, asks the
-//        host to rewind, and then drops the turn from the view (its messages,
-//        the todo list a TodoWrite in it set, the reply suggestion)
+//        __ccupTurnRewind bridge, built around the manager with the delete
+//        window baked in (TRW_WEB_CFG), whose states(uuids) tells the list
+//        which entry may go and why the others may not, and whose run(uuid)
+//        stops the active session's turn, waits for it to wind down, checks
+//        again that it used no tool that can leave changes behind, asks the
+//        host to rewind, and then drops the turn from the view (its
+//        messages, the todo list a TodoWrite in it set, the reply suggestion)
 //   row  in the user message component's container props: data-ccup-uuid,
 //        the message's own uuid, which the sticky header that the history
 //        list reads therefore carries
+//   pick at the head of the session's appendPickedUp(rows, picked), the step
+//        every path moving a queued prompt into the conversation takes: the
+//        bridge notes when each one joined
 // The host half (turnRewindHost) is two fragments in extension.js:
 //   case    at the head of the comms base's request switch: ccup_rewind_turn
 //           goes to the method below
@@ -3008,6 +3020,7 @@ export function untitledStaysWebview(web: string): string | null {
 const TRW_END = "/*ccup:trwEnd*/";
 const TRW_MGR = "/*ccup:trw:mgr*/";
 const TRW_ROW = "/*ccup:trw:row*/";
+const TRW_PICK = "/*ccup:trw:pick*/";
 const TRW_CASE = "/*ccup:trw:case*/";
 const TRW_METHOD = "/*ccup:trw:method*/";
 const TRW_FRAG_RE = /\/\*ccup:trw:[-\w]+\*\/[\s\S]*?\/\*ccup:trwEnd\*\//g;
@@ -3041,6 +3054,43 @@ const TRW_SESSION_FIELDS = [
   "replayInsertIndex",
   "turnStarting",
 ];
+
+// The delete window the bridge enforces, baked into its fragment: how long
+// after its prompt joined the conversation a turn may still go, and the tools
+// that leave nothing behind outside the conversation, which keep the window
+// open. Any other tool closes it, one this list does not know included, while
+// the API's own server tools (web search and fetch, run by Anthropic) keep it
+// open too.
+interface TrwCfg {
+  windowMs: number;
+  safeTools: string[];
+}
+const TRW_WEB_CFG: TrwCfg = {
+  windowMs: 30000,
+  safeTools: [
+    // file reads and searches
+    "Read",
+    "Glob",
+    "Grep",
+    "LS",
+    "NotebookRead",
+    // web lookups, tool schemas, code intelligence
+    "WebFetch",
+    "WebSearch",
+    "ToolSearch",
+    "LSP",
+    // the turn's own todo list, task reads, a background task's output
+    "TodoWrite",
+    "TaskList",
+    "TaskGet",
+    "TaskOutput",
+    "BashOutput",
+    // a question to the user, MCP resource reads
+    "AskUserQuestion",
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool",
+  ],
+};
 
 // The dead branch a rewind_conversation leaves in a transcript, taken out.
 // `file` is the session's transcript, `target` the deleted turn's prompt and
@@ -3351,13 +3401,42 @@ async function ccupTurnRewindHost(
   return done({ rewound: true, cleaned });
 }
 
-// The bridge the history list's delete button calls, window.__ccupTurnRewind,
-// built around the session manager by its constructor. Compiled into the
-// webview bundle by toString, so it may use only its parameter and the page's
-// globals. run(uuid) answers whether the turn went, and says why not in a
-// notification otherwise.
-function ccupTurnRewindWeb(mgr: any): { run(uuid: string): Promise<boolean> } {
+// The bridge the history list's delete buttons call, window.__ccupTurnRewind,
+// built around the session manager by its constructor with the delete window
+// (TRW_WEB_CFG). Compiled into the webview bundle by toString, so it may use
+// only its parameters and the page's globals. states(uuids) takes the list's
+// entries in order and answers, for each, the milliseconds left in which its
+// turn may go, or a hover tip saying why it may not. run(uuid) answers
+// whether the turn went, and says why not in a notification otherwise.
+// picked(entries) hears from the pickup fragment which queued prompts just
+// joined the conversation.
+function ccupTurnRewindWeb(
+  mgr: any,
+  cfg: TrwCfg,
+): {
+  states(uuids: string[]): (number | string)[];
+  run(uuid: string): Promise<boolean>;
+  picked(entries: unknown): void;
+} {
   const busy = new Set<unknown>();
+  const safe = new Set(cfg.safeTools);
+  const secs = cfg.windowMs / 1000;
+  // When each queued prompt left the queue, the first time only, so a window
+  // never starts over, for the 200 latest. A prompt's createdAt is when it
+  // was typed, which for one that waited could leave it no window at all.
+  const joined = new Map<string, number>();
+  const picked = (entries: unknown): void => {
+    if (!Array.isArray(entries)) return;
+    const now = Date.now();
+    for (const x of entries) {
+      const u = x?.uuid;
+      if (typeof u === "string" && !joined.has(u)) joined.set(u, now);
+    }
+    for (const u of joined.keys()) {
+      if (joined.size <= 200) break;
+      joined.delete(u);
+    }
+  };
   const say = (s: any, m: string): void => {
     try {
       void s.showNotification(m, "warning");
@@ -3366,14 +3445,89 @@ function ccupTurnRewindWeb(mgr: any): { run(uuid: string): Promise<boolean> } {
     }
   };
   const nap = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  // The prompt's place among the messages: the first row carrying its uuid,
+  // so that any later row sharing it counts as part of the turn.
+  const indexOf = (msgs: any[], uuid: string): number =>
+    msgs.findIndex((x: any) => x?.uuid === uuid);
+  // The first tool after the prompt at j that can leave changes behind, or
+  // null. A plain tool_use counts unless its tool is a safe one, and so does
+  // every other kind of tool use but the server's own.
+  const actor = (msgs: any[], j: number): string | null => {
+    for (let i = j + 1; i < msgs.length; i++) {
+      const x = msgs[i];
+      if (x?.type !== "assistant" || !Array.isArray(x.content)) continue;
+      for (const w of x.content) {
+        const b = w?.content;
+        if (
+          typeof b?.type !== "string" ||
+          !b.type.endsWith("tool_use") ||
+          b.type === "server_tool_use" ||
+          (b.type === "tool_use" && safe.has(b.name))
+        )
+          continue;
+        return typeof b.name === "string" && b.name ? b.name : "a tool";
+      }
+    }
+    return null;
+  };
+  // The turn of the prompt at j: the milliseconds left of its window, which
+  // runs from when the prompt joined the conversation, or what closed it, a
+  // tool it used or its age.
+  const windowOf = (
+    msgs: any[],
+    j: number,
+  ): { ms: number } | { tool: string } | { old: true } => {
+    const tool = actor(msgs, j);
+    if (tool !== null) return { tool };
+    const p = msgs[j];
+    const at = Math.max(
+      typeof p?.createdAt === "number" ? p.createdAt : -Infinity,
+      joined.get(p?.uuid) ?? -Infinity,
+    );
+    const ms =
+      at > -Infinity
+        ? Math.min(cfg.windowMs, at + cfg.windowMs - Date.now())
+        : 0;
+    return ms > 0 ? { ms } : { old: true };
+  };
+  const shut = (w: { tool: string } | { old: true }): string =>
+    "tool" in w
+      ? `Could not delete the turn: it used ${w.tool}, which can leave changes behind.`
+      : `Could not delete the turn: it started more than ${secs} seconds ago.`;
+  const states = (uuids: string[]): (number | string)[] => {
+    const s = mgr.activeSession?.value;
+    const msgs: any[] = s?.messages.value ?? [];
+    const held = new Set((s?.heldPrompts.value ?? []).map((h: any) => h?.uuid));
+    const want = new Set(uuids);
+    const at = new Map<string, number>();
+    msgs.forEach((x, i) => {
+      if (want.has(x?.uuid) && !at.has(x.uuid)) at.set(x.uuid, i);
+    });
+    // The last entry sent, ahead of the queued prompts that follow it and of
+    // any entry the conversation does not hold.
+    let last = uuids.length - 1;
+    while (last >= 0 && (held.has(uuids[last]) || !at.has(uuids[last]))) last--;
+    return uuids.map((u, k) => {
+      if (held.has(u)) return "Not sent yet";
+      const j = at.get(u);
+      if (j === undefined || msgs[j]?.type !== "user")
+        return "Not in this conversation";
+      if (k < last) return "Only the last turn can be deleted";
+      if (held.size > 0) return "A queued message waits to be sent";
+      const w = windowOf(msgs, j);
+      if ("ms" in w) return w.ms;
+      return "tool" in w
+        ? `Used ${w.tool}, which can leave changes behind`
+        : `Started more than ${secs} seconds ago`;
+    });
+  };
   const run = async (uuid: string): Promise<boolean> => {
     const s = mgr.activeSession?.value;
     if (!s || typeof uuid !== "string" || busy.has(s)) return false;
     busy.add(s);
     try {
       const id = s.sessionId.value;
-      const at = (): number =>
-        s.messages.value.findIndex((x: any) => x?.uuid === uuid);
+      const at = (): number => indexOf(s.messages.value, uuid);
       if (!id || at() < 0) {
         say(
           s,
@@ -3388,6 +3542,11 @@ function ccupTurnRewindWeb(mgr: any): { run(uuid: string): Promise<boolean> } {
         );
         return false;
       }
+      const w = windowOf(s.messages.value, at());
+      if (!("ms" in w)) {
+        say(s, shut(w));
+        return false;
+      }
       // The stop, sent whether or not the turn still runs, and then up to
       // ten seconds for it to wind down; the rewind interrupts what is left.
       const settle = async (tries: number) => {
@@ -3400,6 +3559,14 @@ function ccupTurnRewindWeb(mgr: any): { run(uuid: string): Promise<boolean> } {
         // the rewind's own interrupt still stands
       }
       await settle(100);
+      // A tool the stop came too late for may have left changes behind, so
+      // the turn stays.
+      const j0 = at();
+      const late = j0 >= 0 ? actor(s.messages.value, j0) : null;
+      if (late !== null) {
+        say(s, shut({ tool: late }));
+        return false;
+      }
       const ch = s.claudeChannelId ?? (await s.launchClaude());
       const conn = s.connection.value ?? (await s.getConnection());
       let res: any;
@@ -3458,7 +3625,7 @@ function ccupTurnRewindWeb(mgr: any): { run(uuid: string): Promise<boolean> } {
       busy.delete(s);
     }
   };
-  return { run };
+  return { states, run, picked };
 }
 
 // The session store as the comms base opens it, `S.load(this.cwd,this.logger)`,
@@ -3614,6 +3781,33 @@ function turnRewindWebFind(
       ),
   );
   if (sessions.length !== 1) return null;
+  // Its pickup of queued prompts, appendPickedUp(rows, picked), whose body
+  // loops over the picked entries ({uuid, message, ...}).
+  const pickFn = sdelMethod(sessions[0], "appendPickedUp")?.value;
+  const picked = pickFn?.params.length === 2 ? idName(pickFn.params[1]) : null;
+  let loops = false;
+  if (pickFn && picked)
+    walkOwn(pickFn, (n) => {
+      if (
+        n.type === "ForOfStatement" &&
+        idName(n.right) === picked &&
+        hasKeys(n.left.declarations?.[0]?.id, ["uuid"])
+      )
+        loops = true;
+    });
+  if (!loops || pickFn.body.type !== "BlockStatement") return null;
+
+  // The message class, whose createdAt (a prompt's time as the transcript
+  // has it) the delete window runs from, unless the prompt waited in the
+  // queue.
+  const messageClasses = unitsWith(
+    c,
+    "withCreatedAt(",
+    "class ",
+    isClass,
+    TRW_ROW_REACH,
+  ).filter((k) => sdelMethod(k, "withCreatedAt") && sdelField(k, "createdAt"));
+  if (messageClasses.length !== 1) return null;
 
   // The user message component, `{session,message,held,...}` (the assistant
   // one takes no held), and its container's props: the object with
@@ -3652,15 +3846,20 @@ function turnRewindWebFind(
     units: [
       [mgr, isClass],
       [row, isFn],
+      [sessions[0], isClass],
     ],
     edits: [
       trwEdit(TRW_MGR, {
         pos: ctor.value.body.start + 1,
-        text: `window.__ccupTurnRewind=(${ccupTurnRewindWeb.toString()})(this);`,
+        text: `window.__ccupTurnRewind=(${ccupTurnRewindWeb.toString()})(this,${JSON.stringify(TRW_WEB_CFG)});`,
       }),
       trwEdit(TRW_ROW, {
         pos: propOf(props[0], "data-transcript-message")!.end,
         text: `,"data-ccup-uuid":${sent}.uuid`,
+      }),
+      trwEdit(TRW_PICK, {
+        pos: pickFn.body.start + 1,
+        text: `window.__ccupTurnRewind&&window.__ccupTurnRewind.picked(${picked});`,
       }),
     ],
   };
@@ -7295,17 +7494,23 @@ function jumpMsgSet(c: string, on: boolean): string {
 // under the URL's previous id (or none) and fail to match once the id comes
 // in.
 //
-// The last entry, and only the last, carries a delete button at its right end
-// once the last turn delete point is in (window.__ccupTurnRewind, see
-// turnRewindWebFind): one line tall, ending far enough in from the list's
-// right edge that the list's overlay scrollbar, even hovered and wide, never
-// covers it, and shown on hover or keyboard focus like the hide button. A first click arms it, the trash icon giving
-// way to "sure?" in bold red, right-aligned to the button's right edge, and
-// leaving the button disarms it. A second click hands the header's
-// data-ccup-uuid to the bridge, which stops the turn and deletes it, and dims
-// the row meanwhile. The list then rebuilds from the shorter header set, and
-// hidden marks from that position on are dropped, since the next prompts take
-// those positions.
+// Every entry carries a delete button at its right end once the last turn
+// delete point is in (window.__ccupTurnRewind, see turnRewindWebFind): one
+// line tall, ending far enough in from the list's right edge that the list's
+// overlay scrollbar, even hovered and wide, never covers it, and shown on
+// hover or keyboard focus like the hide button. The bridge's states() decides
+// which one works, the last turn's for as long as its delete window stays
+// open, and the others are greyed out (data-off). Hovering any of them shows
+// the shared hover tip, with what a click does or why it does nothing, and a
+// click on a greyed-out one shows its tip at once. Every pass reads the states
+// again, and a timer books a pass for the moment the open window closes, so
+// the button greys out on time with nothing else moving. A first click on the
+// working button arms it, the trash icon giving way to "sure?" in bold red,
+// right-aligned to the button's right edge, and leaving the button disarms
+// it. A second click hands the header's data-ccup-uuid to the bridge, which
+// stops the turn and deletes it, and dims the row meanwhile. The list then
+// rebuilds from the shorter header set, and hidden marks from that position
+// on are dropped, since the next prompts take those positions.
 //
 // Focus follows the menu-button pattern without disturbing the composer: the
 // button and the list swallow mousedown (preventDefault + stopPropagation, as
@@ -7418,14 +7623,17 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-item${HOVER} .ccup-hist-hide,.ccup-hist-item:focus-visible .ccup-hist-hide{visibility:visible}` +
     `.ccup-hist-hide${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-hide{color:inherit}" +
-    // The last entry's delete button, one line square on the second line's
-    // axis (the entry is two lines tall), its icon sized as the hide
-    // button's, and the "sure?" chip an armed one shows over its own box.
+    // Each entry's delete button, one line square on the second line's axis
+    // (the entry is two lines tall), its icon sized as the hide button's,
+    // greyed out where a click does nothing, and the "sure?" chip an armed
+    // one shows over its own box.
     `.ccup-hist-del{flex:none;align-self:flex-end;position:relative;display:flex;align-items:center;justify-content:center;width:1lh;height:1lh;margin:0 ${PROMPT_HIST_DEL_INSET - 13}px 0 0;padding:0;border:none;border-radius:5px;background:none;color:var(--app-secondary-foreground);font:inherit;cursor:pointer;visibility:hidden}` +
     ".ccup-hist-del svg{display:block;width:1.25em;height:1.25em}" +
     `.ccup-hist-item${HOVER} .ccup-hist-del,.ccup-hist-item:focus-visible .ccup-hist-del,.ccup-hist-del[data-arm]{visibility:visible}` +
     `.ccup-hist-del${HOVER}{color:var(--app-primary-foreground);background:var(--app-ghost-button-hover-background)}` +
     ".ccup-hist-item[data-cur] .ccup-hist-del{color:inherit}" +
+    `.ccup-hist-del[data-off]{opacity:.35;cursor:default}.ccup-hist-del[data-off]${HOVER}{color:var(--app-secondary-foreground);background:none}` +
+    ".ccup-hist-item[data-cur] .ccup-hist-del[data-off]{color:inherit}" +
     ".ccup-hist-sure{display:none;position:absolute;top:0;right:0;height:1lh;padding:0 6px;border-radius:5px;background:var(--app-menu-background);box-shadow:0 0 0 1px var(--app-input-border);color:var(--vscode-errorForeground,#f14c4c);font-weight:700;white-space:nowrap}" +
     ".ccup-hist-del[data-arm] svg{visibility:hidden}" +
     ".ccup-hist-del[data-arm] .ccup-hist-sure{display:block}" +
@@ -7464,7 +7672,7 @@ function promptHistBuild(c: string): string | undefined {
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
     `var BARS="${bars}",EYE="${eyeOff}",CHEV="${chevron}",TRASH="${trash}",T="Prompt History",NL=String.fromCharCode(92)+"n",` +
     `SK="${PROMPT_HIST_STORE}",raf=0,gen=0,gl=0,P=null,on=0,pBox=null,pBtn=null,pFoc=null,pHs=[],pCur=-1,` +
-    `pin=-1,pinTop=0,rowOf=[],keyOf=[],curEl=null;` +
+    `pin=-1,pinTop=0,rowOf=[],keyOf=[],curEl=null,dT=0;` +
     HOVER_TIP_JS +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
     btnHostsJs(host, perm, preq, false) +
@@ -7507,7 +7715,8 @@ function promptHistBuild(c: string): string | undefined {
     `it.className="ccup-hist-row ccup-hist-item";it.setAttribute("role","option");it.setAttribute("data-i",i);it.tabIndex=-1;` +
     `ld.className="ccup-hist-lead";nu.className="ccup-hist-num";nu.textContent=i+1;tx.className="ccup-hist-txt";fill(tx,s);` +
     `hb.type="button";hb.className="ccup-hist-hide";hb.tabIndex=-1;hb.setAttribute("aria-label","Hide "+(i+1));hb.innerHTML=EYE;` +
-    `ld.appendChild(nu);ld.appendChild(hb);it.appendChild(ld);it.appendChild(tx);return it}` +
+    `ld.appendChild(nu);ld.appendChild(hb);it.appendChild(ld);it.appendChild(tx);` +
+    `if(window.__ccupTurnRewind)it.appendChild(dbtn(i));return it}` +
     `function fold(a,b){var g=document.createElement("div"),c=document.createElement("span"),` +
     `l=document.createElement("span"),r=document.createElement("span");` +
     `g.className="ccup-hist-row ccup-hist-fold";g.setAttribute("role","option");g.setAttribute("data-a",a);g.setAttribute("data-b",b);g.tabIndex=-1;` +
@@ -7520,14 +7729,25 @@ function promptHistBuild(c: string): string | undefined {
     // Rows in transcript order, a run of hidden entries folded into one, and
     // rowOf mapping every header to its row. A focused row's header, the
     // highlight, and the list's scroll position all survive the rebuild.
-    `function build(hs){var ae=document.activeElement,fi=ae&&ae.parentNode===P?anchor(ae):-1,st=P.scrollTop,` +
+    `function build(hs){hideTip();var ae=document.activeElement,fi=ae&&ae.parentNode===P?anchor(ae):-1,st=P.scrollTop,` +
     `hid=hidden(),f=document.createDocumentFragment(),n=hs.length,tx=hs.map(txt),i,j,q,g;` +
     `pHs=hs;rowOf=[];keyOf=[];curEl=null;for(i=0;i<n;i++)keyOf[i]=i+":"+hsh(tx[i]);` +
     `for(i=0;i<n;i=j+1){j=i;if(hid.has(keyOf[i])){while(j+1<n&&hid.has(keyOf[j+1]))j++;g=fold(i,j)}else g=entry(i,tx[i]);` +
     `for(q=i;q<=j;q++)rowOf[q]=g;f.appendChild(g)}` +
-    `if(n&&window.__ccupTurnRewind&&rowOf[n-1].hasAttribute("data-i"))rowOf[n-1].appendChild(dbtn(n-1));` +
-    `P.textContent="";P.appendChild(f);P.scrollTop=st;P.style.setProperty("--ccup-hist-w",String(n).length+"ch");` +
+    `P.textContent="";P.appendChild(f);P.scrollTop=st;P.style.setProperty("--ccup-hist-w",String(n).length+"ch");dsync();` +
     `if(pCur>=0)mark(pCur);if(fi>=0&&n)focRow(rowOf[Math.min(fi,n-1)])}` +
+    // Each entry's delete button, working or greyed out as the bridge says,
+    // with the tip its hover shows, and a pass booked for the moment the open
+    // window closes.
+    `function dsync(){var api=window.__ccupTurnRewind,n=pHs.length,i,r,b,st,x,t=0,` +
+    `ss=api&&api.states?api.states(pHs.map(function(h){return h.getAttribute("data-ccup-uuid")||""})):[];` +
+    `if(dT){clearTimeout(dT);dT=0}` +
+    `for(i=0;i<n;i++){r=rowOf[i];b=r&&r.hasAttribute("data-i")&&!r.hasAttribute("data-going")?r.querySelector(".ccup-hist-del"):null;` +
+    `if(!b)continue;st=ss[i];x=typeof st==="number"&&st>0;` +
+    `if(x){t=t?Math.min(t,st):st;if(b.hasAttribute("data-off")){b.removeAttribute("data-off");b.removeAttribute("aria-disabled")}}` +
+    `else if(!b.hasAttribute("data-off")){disarm(b);b.setAttribute("data-off","");b.setAttribute("aria-disabled","true")}` +
+    `st=x?"Delete this turn":typeof st==="string"?st:"Cannot be deleted";if(b.getAttribute("data-tip")!==st)b.setAttribute("data-tip",st)}` +
+    `if(t)dT=setTimeout(que,t+50)}` +
     // The current entry: a clicked one while the view stays where its glide
     // put it, the last at the bottom, else the last header at or above the
     // scroll top (the jump census, headers sitting in document order), else
@@ -7548,20 +7768,24 @@ function promptHistBuild(c: string): string | undefined {
     `var y=r.offsetTop,b=y+r.offsetHeight;if(y<P.scrollTop)P.scrollTop=y-4;else if(b>P.scrollTop+P.clientHeight)P.scrollTop=b-P.clientHeight+4}` +
     `function hide(i){var s=hidden();s.add(keyOf[i]);keep(s);build(pHs)}` +
     `function unhide(a,b){var s=hidden();for(var i=a;i<=b;i++)s.delete(keyOf[i]);keep(s);build(pHs)}` +
-    // The last entry's delete button: a click arms it, a second deletes the
-    // turn through the bridge, and leaving the button disarms it.
+    // An entry's delete button: a click on the working one arms it, a second
+    // deletes the turn through the bridge, and leaving the button disarms it.
+    // Its hover tip reads what the last pass wrote into it.
     `function dbtn(i){var b=document.createElement("button");b.type="button";b.className="ccup-hist-del";b.tabIndex=-1;` +
     `b.setAttribute("aria-label","Delete turn "+(i+1));b.innerHTML=TRASH+"<span class='ccup-hist-sure'>sure?</span>";` +
-    `b.addEventListener("mouseleave",function(){disarm(b)});return b}` +
+    `b.addEventListener("mouseenter",function(){if(tipT)clearTimeout(tipT);tipT=setTimeout(function(){tipT=0;` +
+    `var t=b.getAttribute("data-tip");if(t&&b.isConnected&&!b.hasAttribute("data-arm"))try{showTip(b,t)}catch(e){}},250)});` +
+    `b.addEventListener("mouseleave",function(){hideTip();disarm(b)});return b}` +
     `function disarm(b){if(b.hasAttribute("data-arm")){b.removeAttribute("data-arm");` +
     `b.setAttribute("aria-label",b.getAttribute("aria-label").replace(/^Confirm: d/,"D"))}}` +
     `function del(r,b){if(r.hasAttribute("data-going"))return;` +
-    `if(!b.hasAttribute("data-arm")){b.setAttribute("data-arm","");` +
+    `if(b.hasAttribute("data-off")){var t=b.getAttribute("data-tip");hideTip();if(t)try{showTip(b,t)}catch(e){}return}` +
+    `if(!b.hasAttribute("data-arm")){hideTip();b.setAttribute("data-arm","");` +
     `b.setAttribute("aria-label","Confirm: d"+b.getAttribute("aria-label").slice(1));return}` +
     `disarm(b);var i=+r.getAttribute("data-i"),h=pHs[i],u=h&&h.getAttribute("data-ccup-uuid"),api=window.__ccupTurnRewind;` +
     `if(!u||!api||i!==pHs.length-1)return;r.setAttribute("data-going","");` +
     `Promise.resolve().then(function(){return api.run(u)}).then(function(ok){if(ok)forget(i)},function(){})` +
-    `.then(function(){r.removeAttribute("data-going")})}` +
+    `.then(function(){r.removeAttribute("data-going");que()})}` +
     // Marks from a deleted position on: the next prompts take those positions.
     `function forget(i){var s=hidden(),c=0;s.forEach(function(k){if(parseInt(k,10)>=i){s.delete(k);c++}});if(c)keep(s)}` +
     // An entry jumps, a fold brings its run back.
@@ -7597,7 +7821,7 @@ function promptHistBuild(c: string): string | undefined {
     `var it=rowOf[pCur];P.scrollTop=it?it.offsetTop-(P.clientHeight-it.offsetHeight)/2:P.scrollHeight;` +
     `b.setAttribute("aria-expanded","true");P.focus({preventScroll:!0})}` +
     // back: hand focus back to what held it at opening, if the list still has it.
-    `function close(back){if(!on)return;on=0;var f=P.contains(document.activeElement);P.remove();` +
+    `function close(back){if(!on)return;on=0;if(dT){clearTimeout(dT);dT=0}hideTip();var f=P.contains(document.activeElement);P.remove();` +
     `if(pBtn)pBtn.setAttribute("aria-expanded","false");` +
     `if(back&&f&&pFoc&&pFoc.isConnected&&pFoc.focus)try{pFoc.focus({preventScroll:!0})}catch(e){}` +
     `pBox=pBtn=pFoc=curEl=null;pHs=[];rowOf=[];keyOf=[];pCur=-1;pin=-1}` +
@@ -7615,7 +7839,7 @@ function promptHistBuild(c: string): string | undefined {
     `for(i=0;i<boxes.length;i++){b=boxes[i].querySelector(".ccup-hist-btn");if(!b){b=mk();boxes[i].appendChild(b)}ss(b,!0,!n)}` +
     `if(!on)return;` +
     `if(!n||!P.isConnected||!pBox.isConnected||!pBox.getClientRects().length||!pBtn.isConnected){close(0);return}` +
-    `if(!same(hs,pHs)){pin=-1;build(hs)}fit();mark(cur(t,hs))}` +
+    `if(!same(hs,pHs)){pin=-1;build(hs)}else dsync();fit();mark(cur(t,hs))}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
     `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
     // Outside the list and the button row: close, and let the press go on.

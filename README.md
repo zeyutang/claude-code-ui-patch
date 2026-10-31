@@ -104,7 +104,7 @@ Always applied                         # no setting; installing this patch is th
    ├── diff card release               # a session you switch away from no longer stays in memory
    ├── session open landing            # an opened session shows its last lines at once, no jump
    ├── inline math spans               # fix for math rendering
-   ├── last turn delete                # prompt history's last entry: delete that turn
+   ├── last turn delete                # prompt history: delete the last turn within 30s
    ├── bookmark notes                  # Bookmarks pane rows: annotate a bookmark with your own note
    └── file link reveal                # a file link goes to the file's open tab in any group
 
@@ -175,11 +175,13 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   The strip runs along the sidebar's bottom edge in the editor tab row's size, with cards rounded like the input box above them, and the card of the session on screen joins the chat above it, as an editor tab joins its editor, with its title in the input box's text color.
   At the default density its ends stop short of the sidebar's rounded corners, so its own corners stay square.
   The cards are as tall as `window.density.editorTabHeight` makes editor tabs, and when `window.density.layout` is compact, or without VS Code's modern UI, they keep a hairline below them and the card on screen also carries a blue line along its bottom edge.
-- **Last turn delete reaches the last turn only.**
-  With `chatPromptHistoryButton` on, the last entry in the prompt history has a delete button: a first click turns it into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.
+- **Last turn delete reaches the last turn only, within its first 30 seconds.**
+  With `chatPromptHistoryButton` on, every entry in the prompt history has a delete button, and only the last one works: for 30 seconds after that message appears in the list, and until Claude uses a tool that can leave changes behind, such as editing a file, running a command, or starting a subagent.
+  A message you send while Claude is still working appears once Claude starts on it.
+  Tools that leave nothing behind, such as reading and searching files, web lookups, and Claude's todo list, keep it working.
+  The other buttons are greyed out, and hovering one says why.
+  A first click turns the working one into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.
   Every turn builds on the ones before it, so removing one from the middle would leave the later turns answering a conversation that no longer holds it.
-  To go further back, delete one turn at a time.
-  The turn's file edits stay, so use the message's "Rewind code to here" first if you want them undone.
   Deleting a conversation's only turn empties it but keeps the title Claude Code gave it.
 - **Bookmark notes are kept with Claude Code's own bookmarks.**
   Each row of the Bookmarks pane has a notepad button after its time, which opens a box for a note of your own.

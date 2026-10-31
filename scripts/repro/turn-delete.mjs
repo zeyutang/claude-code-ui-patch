@@ -1,29 +1,45 @@
 // Scenario for scripts/cdp-driver.mjs: the prompt history's last turn delete,
 // on the REAL webview bundle booted against a stub host into a session of
-// six prompts, with real mouse events. The checks assert:
+// six prompts, the last two sent seconds before the boot, with real mouse
+// events and a page clock the scenario sets. The checks assert:
 //   uuid      every sticky header carries its message's data-ccup-uuid
-//   button    the last entry, and no other, has a delete button: hidden until
-//             the row is hovered, one line square on the second line's axis
-//             with an icon 1.25em of the text (so it follows chat.fontSize),
-//             after the text, inside the row, and 20px in from the list's
-//             right edge, clear of the overlay scrollbar even hovered
+//   button    every entry has a delete button, and only the last one works,
+//             the others greyed out: hidden until the row is hovered, one line
+//             square on the second line's axis with an icon 1.25em of the text
+//             (so it follows chat.fontSize), after the text, inside the row,
+//             and 20px in from the list's right edge, clear of the overlay
+//             scrollbar even hovered
+//   tip       hovering a button shows the shared hover tip, what a click does
+//             on the working one and why nothing happens on a greyed-out one,
+//             and a click on a greyed-out one shows its tip, arming nothing
 //   arm       a first click shows "sure?" in bold red over the button,
 //             right-aligned to its right edge, the icon hidden, and sends
 //             nothing; leaving the button disarms it
 //   delete    a second click sends one ccup_rewind_turn naming the session
 //             and the last prompt's uuid, the turn leaves the transcript, the
-//             list rebuilds one entry shorter with the button on the new last
-//             entry, unarmed, and the todo list falls back to the kept turns'
-//             last TodoWrite; deleting again walks one more turn back
+//             list rebuilds one entry shorter with the new last entry's button
+//             working, unarmed, and the todo list falls back to the kept
+//             turns' last TodoWrite (a tool that leaves the window open)
 //   marks     hidden marks from the deleted position on are dropped
 //   refuse    a host answer of rewound:false keeps the turn, says why in a
 //             notification, and leaves the row usable
 //   unpatched a host without the handler ("Unknown request type.") keeps the
 //             turn and asks for a reload
+//   again     deleting again walks one more turn back, to a turn sent minutes
+//             ago, whose button is greyed out for its age
 //   live      a prompt sent from the input box, deleted while its reply still
 //             streams: the stop goes out before the rewind, which names the
 //             prompt's own uuid, and the turn, its partial reply and the
 //             interrupt marker the stop brings all leave the view
+//   tool      an Edit streaming into a running turn greys its button out,
+//             naming the tool
+//   timer     with nothing else moving, the button greys out once 30 seconds
+//             have passed since its prompt was sent
+//   race      a Write the stop comes too late for keeps the turn: no rewind
+//             goes out, a notification names the tool, the button greys out
+//   queue     a prompt sent while a turn runs stays out of the list until
+//             Claude starts on it, and its button then works for a full 30
+//             seconds, however long it waited, before greying out
 //
 //   node scripts/cdp-driver.mjs scripts/repro/turn-delete.mjs 760 620
 //
@@ -75,6 +91,10 @@ const PROMPTS = [
 ];
 const uuidOf = (i) =>
   `${String(i).padStart(8, "0")}-0000-4000-8000-00000000000${i % 10}`;
+// How long before the boot each prompt was sent: the last two within the
+// delete window, so both can go in turn while the page clock is held at the
+// boot, the rest minutes before.
+const AGO = [360e3, 300e3, 240e3, 180e3, 4e3, 2e3];
 // Turn 2 (index 2) writes a todo list and turn 4 (index 4) rewrites it, so
 // deleting turn 6 keeps turn 5's list and deleting turn 5 as well falls back
 // to turn 3's.
@@ -102,10 +122,17 @@ body{background:var(--vscode-sideBar-background);color:var(--vscode-foreground)}
 <script>
 window.IS_SIDEBAR = true; window.IS_FULL_EDITOR = false; window.IS_SESSION_LIST_ONLY = false;
 const R = "${R}", NOW = Date.now();
+// The page clock: __at(ms) makes Date.now read the boot time plus ms from
+// then on, and __skew = 0 restores the real one.
+const realNow = Date.now.bind(Date);
+window.__skew = 0;
+Date.now = () => realNow() + window.__skew;
+window.__at = (ms) => { window.__skew = NOW + ms - realNow(); };
 const PROMPTS = ${JSON.stringify(PROMPTS)};
 const UUIDS = ${JSON.stringify(PROMPTS.map((_, i) => uuidOf(i)))};
 const TODO_AT = ${JSON.stringify(TODO_AT)};
-const at = (i) => new Date(NOW - (PROMPTS.length - i) * 60e3).toISOString();
+const AGO = ${JSON.stringify(AGO)};
+const at = (i) => new Date(NOW - AGO[i]).toISOString();
 const MESSAGES = PROMPTS.flatMap((p, i) => [
   { type: "user", uuid: UUIDS[i], session_id: R, parent_tool_use_id: null, timestamp: at(i),
     message: { role: "user", content: [{ type: "text", text: p }] } },
@@ -131,39 +158,71 @@ window.__sent = []; window.__notes = []; window.__rewindMode = "ok";
 // the CLI would: its init, the prompt's echo, and a reply streaming in as
 // partial-message events, until an interrupt ends it with the partial reply
 // as a message, the CLI's interrupt marker, and an error result.
+// __streamTool(name) streams a tool call into the running reply, and a tool
+// named in __stopTool streams in as the stop lands, ahead of the turn's end.
+// A prompt sent while a turn runs waits in the stub's queue, as in the CLI's,
+// until __pickUp() finishes the running turn and starts on it, the CLI's echo
+// of it being the pickup.
 const io = (channelId, message) =>
   deliver({ type: "io_message", channelId, message, done: false });
 const LIVE_TEXT = "Counting " + "one two three ".repeat(3);
+window.__stopTool = null;
+window.__queued = [];
+const toolEvents = (ev, name) => {
+  ev({ type: "content_block_start", index: 1, content_block: { type: "tool_use",
+    id: "toolu_live", name, input: {} } });
+  ev({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta",
+    partial_json: "{}" } });
+};
+window.__streamTool = (name) => toolEvents(window.__live.ev, name);
 const live = (msg) => {
-  const ch = msg.channelId, m = msg.message;
-  window.__live = { ch, uuid: m.uuid };
-  const ev = (event, k) => io(ch, { type: "stream_event", event, session_id: R,
-    parent_tool_use_id: null, uuid: "e" + k + m.uuid.slice(2) });
+  const ch = msg.channelId, m = msg.message, mid = "msg_" + crypto.randomUUID().slice(0, 8);
+  const ev = (event) => io(ch, { type: "stream_event", event, session_id: R,
+    parent_tool_use_id: null, uuid: crypto.randomUUID() });
+  window.__live = { ch, uuid: m.uuid, ev, mid };
   setTimeout(() => {
     io(ch, { type: "system", subtype: "init", session_id: R, model: "claude-fable-5",
-      permissionMode: "default", tools: [], mcp_servers: [], slash_commands: [], uuid: "i" + m.uuid.slice(1) });
+      permissionMode: "default", tools: [], mcp_servers: [], slash_commands: [], uuid: crypto.randomUUID() });
     io(ch, { ...m, session_id: R, isReplay: true });
-    ev({ type: "message_start", message: { id: "msg_live", type: "message", role: "assistant",
+    ev({ type: "message_start", message: { id: mid, type: "message", role: "assistant",
       model: "claude-fable-5", content: [], stop_reason: null,
-      usage: { input_tokens: 1, output_tokens: 1 } } }, 1);
-    ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, 2);
-    ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: LIVE_TEXT } }, 3);
+      usage: { input_tokens: 1, output_tokens: 1 } } });
+    ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: LIVE_TEXT } });
   }, 50);
 };
 const stopped = () => {
-  const { ch, uuid } = window.__live;
+  const { ch, ev, mid } = window.__live;
+  const tool = window.__stopTool;
   window.__live = null;
+  window.__stopTool = null;
+  if (tool) toolEvents(ev, tool);
   setTimeout(() => {
-    io(ch, { type: "assistant", uuid: "b" + uuid.slice(1), session_id: R, parent_tool_use_id: null,
-      message: { id: "msg_live", type: "message", role: "assistant", model: "claude-fable-5",
-        content: [{ type: "text", text: LIVE_TEXT }], stop_reason: null,
-        usage: { input_tokens: 1, output_tokens: 1 } } });
-    io(ch, { type: "user", uuid: "c" + uuid.slice(1), session_id: R, parent_tool_use_id: null,
+    io(ch, { type: "assistant", uuid: crypto.randomUUID(), session_id: R, parent_tool_use_id: null,
+      message: { id: mid, type: "message", role: "assistant", model: "claude-fable-5",
+        content: [{ type: "text", text: LIVE_TEXT },
+          ...(tool ? [{ type: "tool_use", id: "toolu_live", name: tool, input: {} }] : [])],
+        stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } } });
+    io(ch, { type: "user", uuid: crypto.randomUUID(), session_id: R, parent_tool_use_id: null,
       message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } });
     io(ch, { type: "result", subtype: "error_during_execution", is_error: true, duration_ms: 10,
       duration_api_ms: 10, num_turns: 1, session_id: R, total_cost_usd: 0,
-      usage: { input_tokens: 1, output_tokens: 1 }, uuid: "d" + uuid.slice(1) });
+      usage: { input_tokens: 1, output_tokens: 1 }, uuid: crypto.randomUUID() });
   }, 50);
+};
+window.__pickUp = () => {
+  const L = window.__live, next = window.__queued.shift();
+  window.__live = null;
+  if (L) {
+    io(L.ch, { type: "assistant", uuid: crypto.randomUUID(), session_id: R, parent_tool_use_id: null,
+      message: { id: L.mid, type: "message", role: "assistant", model: "claude-fable-5",
+        content: [{ type: "text", text: LIVE_TEXT }], stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 } } });
+    io(L.ch, { type: "result", subtype: "success", is_error: false, duration_ms: 10,
+      duration_api_ms: 10, num_turns: 1, result: LIVE_TEXT, session_id: R, total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 }, uuid: crypto.randomUUID() });
+  }
+  if (next) live(next);
 };
 window.acquireVsCodeApi = () => ({
   getState() { return undefined; },
@@ -171,7 +230,10 @@ window.acquireVsCodeApi = () => ({
   postMessage(msg) {
     if (msg && msg.type === "launch_claude") window.__chan = msg.channelId;
     if (msg && msg.type !== "request") window.__sent.push({ type: msg.type, channelId: msg.channelId });
-    if (msg && msg.type === "io_message" && msg.message && msg.message.type === "user") live(msg);
+    if (msg && msg.type === "io_message" && msg.message && msg.message.type === "user") {
+      if (window.__live) window.__queued.push(msg);
+      else live(msg);
+    }
     if (msg && msg.type === "interrupt_claude" && window.__live) stopped();
     if (!msg || msg.type !== "request") return;
     const r = msg.request;
@@ -231,6 +293,8 @@ const TYPES = {
 const BTN = ".ccup-hist-btn";
 const PANE = ".ccup-hist-pane";
 const DEL = `${PANE} .ccup-hist-del`;
+const delOf = (i) => `${PANE} .ccup-hist-item[data-i="${i}"] .ccup-hist-del`;
+const TIP = ".ccup-hover-tip";
 
 export async function run(ctx) {
   const dir = liveBundleDir();
@@ -328,8 +392,6 @@ export async function run(ctx) {
     ctx.evaluate(
       `(function(){var t=window.__ccupTodosProbe;return t?t():null})()`,
     );
-  const lastRow = () =>
-    `${PANE} .ccup-hist-item[data-i="${PROMPTS.length - 1}"]`;
   const open = async () => {
     if (!(await ctx.evaluate(`!!${q(PANE)}`)))
       await click(center(await rect(BTN)));
@@ -354,6 +416,41 @@ export async function run(ctx) {
         `fromRight:p.right-r.right,icon:Math.round(s.width/fs*1e3)/1e3+"x"+Math.round(s.height/fs*1e3)/1e3}})()`,
     );
   };
+  // An entry's button: whether it is greyed out, and the tip it carries.
+  const stateOf = (i) =>
+    json(
+      `(function(){var b=${q(delOf(i))};return b?{off:b.hasAttribute("data-off"),` +
+        `arm:b.hasAttribute("data-arm"),tip:b.getAttribute("data-tip")}:null})()`,
+    );
+  // The shared hover tip while it shows, and whether it sits above the button.
+  const tipNow = (sel) =>
+    json(
+      `(function(){var t=${q(TIP)},b=${q(sel)};if(!t||!b||getComputedStyle(t).display==="none")return null;` +
+        `return{text:t.textContent,above:t.getBoundingClientRect().bottom<=b.getBoundingClientRect().top+0.5}})()`,
+    );
+  // Hover a button, its row scrolled into the list's view, for longer than
+  // the tip's delay. The pointer crosses the row's text first, as a real one
+  // does: until the row is hovered the button is hidden, and hit testing
+  // passes a hidden element by.
+  const hoverTip = async (sel) => {
+    await ctx.evaluate(
+      `${q(sel)}.closest(".ccup-hist-item").scrollIntoView({block:"nearest"})`,
+    );
+    await mouse("mouseMoved", { x: 5, y: 5 });
+    await ctx.sleep(60);
+    await mouse(
+      "mouseMoved",
+      center(
+        await rect(`${sel.replace(/ \.ccup-hist-del$/, "")} .ccup-hist-txt`),
+      ),
+    );
+    await ctx.sleep(60);
+    await mouse("mouseMoved", center(await rect(sel)));
+    await ctx.sleep(400);
+    return tipNow(sel);
+  };
+  const count = () =>
+    ctx.evaluate(`document.querySelectorAll(${JSON.stringify(HDR)}).length`);
 
   try {
     await ctx.navigate(base);
@@ -385,29 +482,80 @@ export async function run(ctx) {
       await todos(),
     );
 
+    // The page clock at the boot, where the last two prompts are seconds old.
+    await ctx.evaluate("window.__at(0)");
     await open();
     check(
       "open: the list shows every prompt",
       (await rows()) === PROMPTS.length,
     );
     const dels = await json(
-      `[...document.querySelectorAll(${JSON.stringify(DEL)})].map(function(b){return b.closest(".ccup-hist-item").getAttribute("data-i")})`,
+      `[...document.querySelectorAll(${JSON.stringify(DEL)})].map(function(b){return[b.closest(".ccup-hist-item").getAttribute("data-i"),b.hasAttribute("data-off")]})`,
     );
     check(
-      "button: only the last entry has one",
-      dels.length === 1 && dels[0] === String(PROMPTS.length - 1),
-      dels.join(","),
+      "button: every entry has one, and only the last works",
+      dels.length === PROMPTS.length &&
+        dels.every(([i, off]) => off === (i !== String(PROMPTS.length - 1))),
+      JSON.stringify(dels),
     );
-    const hidden = await ctx.evaluate(`getComputedStyle(${q(DEL)}).visibility`);
+    const LAST = delOf(PROMPTS.length - 1);
+    const hidden = await ctx.evaluate(
+      `getComputedStyle(${q(LAST)}).visibility`,
+    );
     await ctx.evaluate(`${q(PANE)}.scrollTop=0`);
     await mouse("mouseMoved", { x: 5, y: 5 });
     await ctx.sleep(60);
     check(
       "button: hidden until its row is hovered",
-      (await ctx.evaluate(`getComputedStyle(${q(DEL)}).visibility`)) ===
+      (await ctx.evaluate(`getComputedStyle(${q(LAST)}).visibility`)) ===
         "hidden",
       hidden,
     );
+    const greyed = await json(
+      `(function(){var b=${q(delOf(1))};b.closest(".ccup-hist-item").scrollIntoView({block:"nearest"});` +
+        `return{op:getComputedStyle(b).opacity,cur:getComputedStyle(b).cursor}})()`,
+    );
+    check(
+      "button: an earlier entry's is greyed out",
+      Math.abs(+greyed.op - 0.35) < 0.01 && greyed.cur === "default",
+      JSON.stringify(greyed),
+    );
+
+    // Tips: what a click on the working button does, why a greyed-out one
+    // does nothing, and a click on that one, which shows its tip at once.
+    const tipLast = await hoverTip(LAST);
+    check(
+      "tip: the working button says what a click does",
+      tipLast?.text === "Delete this turn" && tipLast.above,
+      JSON.stringify(tipLast),
+    );
+    const tipEarly = await hoverTip(delOf(1));
+    check(
+      "tip: a greyed-out button says why it does nothing",
+      tipEarly?.text === "Only the last turn can be deleted" && tipEarly.above,
+      JSON.stringify(tipEarly),
+    );
+    await mouse("mouseMoved", { x: 5, y: 5 });
+    await ctx.sleep(60);
+    const sent0 = (await sent()).length;
+    await click(center(await rect(delOf(1))));
+    await ctx.sleep(60);
+    const clicked = {
+      tip: await tipNow(delOf(1)),
+      state: await stateOf(1),
+      sent: (await sent()).length - sent0,
+    };
+    check(
+      "tip: a click on a greyed-out button shows its tip at once and arms nothing",
+      clicked.tip?.text === "Only the last turn can be deleted" &&
+        clicked.state?.off &&
+        !clicked.state.arm &&
+        clicked.sent === 0,
+      JSON.stringify(clicked),
+    );
+    await mouse("mouseMoved", { x: 5, y: 5 });
+    await ctx.sleep(60);
+
     const m = await measure(PROMPTS.length - 1);
     check("button: shows on hover", m?.vis === "visible", m?.vis);
     check(
@@ -435,10 +583,10 @@ export async function run(ctx) {
 
     // Arm, leave, arm again.
     const before = (await sent()).length;
-    await click(center(await rect(DEL)));
+    await click(center(await rect(LAST)));
     await ctx.sleep(80);
     const armed = await json(
-      `(function(){var b=${q(DEL)},s=b.querySelector(".ccup-hist-sure"),r=b.getBoundingClientRect(),` +
+      `(function(){var b=${q(LAST)},s=b.querySelector(".ccup-hist-sure"),r=b.getBoundingClientRect(),` +
         `sr=s.getBoundingClientRect(),cs=getComputedStyle(s);` +
         `return{arm:b.hasAttribute("data-arm"),text:s.textContent,shown:cs.display!=="none",bold:cs.fontWeight,` +
         `color:cs.color,right:sr.right-r.right,top:sr.top-r.top,h:sr.height-r.height,` +
@@ -468,7 +616,7 @@ export async function run(ctx) {
     await ctx.sleep(60);
     check(
       "arm: leaving the button disarms it",
-      !(await ctx.evaluate(`${q(DEL)}.hasAttribute("data-arm")`)),
+      !(await ctx.evaluate(`${q(LAST)}.hasAttribute("data-arm")`)),
     );
 
     // Seed a stale hidden mark at the last position, then delete the turn.
@@ -476,10 +624,11 @@ export async function run(ctx) {
       `(function(){var o={};o[${JSON.stringify(R)}]={t:Date.now(),k:["${PROMPTS.length - 1}:stale","1:keep"]};` +
         `localStorage.setItem("ccup-prompt-history-hidden",JSON.stringify(o))})()`,
     );
+    await ctx.evaluate("window.__at(0)");
     await measure(PROMPTS.length - 1);
-    await click(center(await rect(DEL)));
+    await click(center(await rect(LAST)));
     await ctx.sleep(60);
-    await click(center(await rect(DEL)));
+    await click(center(await rect(LAST)));
     const gone = await until(
       `document.querySelectorAll(${JSON.stringify(HDR)}).length===${PROMPTS.length - 1}`,
     );
@@ -500,10 +649,11 @@ export async function run(ctx) {
       await rows(),
     );
     const next = await json(
-      `[...document.querySelectorAll(${JSON.stringify(DEL)})].map(function(b){return[b.closest(".ccup-hist-item").getAttribute("data-i"),b.hasAttribute("data-arm")]})`,
+      `[...document.querySelectorAll(${JSON.stringify(DEL)})].filter(function(b){return!b.hasAttribute("data-off")})` +
+        `.map(function(b){return[b.closest(".ccup-hist-item").getAttribute("data-i"),b.hasAttribute("data-arm")]})`,
     );
     check(
-      "delete: the new last entry has the button, unarmed",
+      "delete: the new last entry's button works, unarmed, and no other",
       next.length === 1 &&
         next[0][0] === String(PROMPTS.length - 2) &&
         next[0][1] === false,
@@ -528,11 +678,48 @@ export async function run(ctx) {
       JSON.stringify(await notes()),
     );
 
+    // Refusal and an unpatched host keep the turn and say why.
+    for (const [mode, want] of [
+      ["refuse", "Could not delete the turn: turn running."],
+      ["unknown", "Reload the window to start using turn delete."],
+    ]) {
+      await ctx.evaluate(
+        `window.__rewindMode=${JSON.stringify(mode)};window.__notes=[];window.__at(0)`,
+      );
+      const n0 = await count();
+      if (!(await ctx.evaluate(`!!${q(PANE)}`))) await open();
+      const last = n0 - 1;
+      await measure(last);
+      await click(center(await rect(delOf(last))));
+      await ctx.sleep(60);
+      await click(center(await rect(delOf(last))));
+      const said = await until(`window.__notes.length>0`, 4000);
+      await ctx.sleep(150);
+      const n1 = await count();
+      const row = await ctx.evaluate(
+        `(function(){var r=document.querySelector('${PANE} .ccup-hist-item[data-i="${last}"]');return r?!r.hasAttribute("data-going"):null})()`,
+      );
+      const st = await stateOf(last);
+      check(
+        `${mode}: the turn stays, the row is usable again, and a notification says why`,
+        !!said &&
+          n1 === n0 &&
+          row === true &&
+          st?.off === false &&
+          (await notes())[0] === want,
+        JSON.stringify({ n0, n1, row, st, notes: await notes() }),
+      );
+    }
+
     // One more turn back: turn 5 had rewritten the todos, so turn 3's return.
+    // The new last entry, turn 4, was sent minutes ago.
+    await ctx.evaluate(
+      `window.__rewindMode="ok";window.__notes=[];window.__at(0)`,
+    );
     await measure(PROMPTS.length - 2);
-    await click(center(await rect(DEL)));
+    await click(center(await rect(delOf(PROMPTS.length - 2))));
     await ctx.sleep(60);
-    await click(center(await rect(DEL)));
+    await click(center(await rect(delOf(PROMPTS.length - 2))));
     check(
       "again: a second delete walks one more turn back",
       !!(await until(
@@ -545,72 +732,66 @@ export async function run(ctx) {
       (await todos()) === JSON.stringify(TODO_AT[2]),
       await todos(),
     );
+    const aged = await stateOf(PROMPTS.length - 3);
+    check(
+      "again: the new last entry, sent minutes ago, is greyed out for its age",
+      aged?.off === true && aged.tip === "Started more than 30 seconds ago",
+      JSON.stringify(aged),
+    );
     await ctx.shot("after");
-
-    // Refusal and an unpatched host keep the turn and say why.
-    for (const [mode, want] of [
-      ["refuse", "Could not delete the turn: turn running."],
-      ["unknown", "Reload the window to start using turn delete."],
-    ]) {
-      await ctx.evaluate(
-        `window.__rewindMode=${JSON.stringify(mode)};window.__notes=[]`,
-      );
-      const n0 = await ctx.evaluate(
-        `document.querySelectorAll(${JSON.stringify(HDR)}).length`,
-      );
-      if (!(await ctx.evaluate(`!!${q(PANE)}`))) await open();
-      const last = n0 - 1;
-      await measure(last);
-      await click(center(await rect(DEL)));
-      await ctx.sleep(60);
-      await click(center(await rect(DEL)));
-      const said = await until(`window.__notes.length>0`, 4000);
-      await ctx.sleep(150);
-      const n1 = await ctx.evaluate(
-        `document.querySelectorAll(${JSON.stringify(HDR)}).length`,
-      );
-      const row = await ctx.evaluate(
-        `(function(){var r=document.querySelector('${PANE} .ccup-hist-item[data-i="${last}"]');return r?!r.hasAttribute("data-going"):null})()`,
-      );
-      check(
-        `${mode}: the turn stays, the row is usable again, and a notification says why`,
-        !!said && n1 === n0 && row === true && (await notes())[0] === want,
-        JSON.stringify({ n0, n1, row, notes: await notes() }),
-      );
-    }
 
     // A turn still running: a prompt sent from the input box, its reply
     // streaming, deleted from the list. The stop goes out first, the rewind
     // once the interrupted turn has ended, and the view keeps nothing of it.
-    await ctx.evaluate(`window.__rewindMode="ok";window.__notes=[]`);
-    if (await ctx.evaluate(`!!${q(PANE)}`))
-      await click(center(await rect(BTN)));
-    const n0 = await ctx.evaluate(
-      `document.querySelectorAll(${JSON.stringify(HDR)}).length`,
-    );
-    await ctx.evaluate(`${q('[aria-label="Message input"]')}.focus()`);
-    await ctx.insertText("Count from 1 to 400, one number per line.");
-    for (const type of ["keyDown", "keyUp"])
-      await ctx.cdp("Input.dispatchKeyEvent", {
-        type,
-        key: "Enter",
-        code: "Enter",
-        windowsVirtualKeyCode: 13,
-      });
-    const started = await until(
-      `window.__live&&document.querySelectorAll(${JSON.stringify(HDR)}).length===${n0 + 1}&&` +
-        `[...document.querySelectorAll(${JSON.stringify(HDR)})].pop().getAttribute("data-ccup-uuid")===window.__live.uuid`,
+    // The page clock runs true from here, and the prompts sent from the
+    // input box take their time from it.
+    await ctx.evaluate(`window.__notes=[];window.__skew=0`);
+    // The active session, read through React's own props.
+    await ctx.evaluate(
+      `window.__ccupSessionProbe=function(){var h=document.querySelector(${JSON.stringify(HDR)});` +
+        `var k=h&&Object.keys(h).find(function(k){return k.indexOf("__reactFiber$")===0});` +
+        `for(var f=k&&h[k];f;f=f.return){var s=f.memoizedProps&&f.memoizedProps.session;` +
+        `if(s&&s.busy)return s}return null}`,
     );
     const busy = () =>
       ctx.evaluate(
-        `(function(){var h=document.querySelector(${JSON.stringify(HDR)});` +
-          `var k=h&&Object.keys(h).find(function(k){return k.indexOf("__reactFiber$")===0});` +
-          `for(var f=k&&h[k];f;f=f.return){var s=f.memoizedProps&&f.memoizedProps.session;` +
-          `if(s&&s.busy)return s.busy.value}return null})()`,
+        `(function(){var s=window.__ccupSessionProbe();return s?s.busy.value:null})()`,
       );
+    // Type a prompt into the input box and send it, with the list closed;
+    // resolves once its header carries the uuid the stub saw.
+    const sendPrompt = async (text) => {
+      if (await ctx.evaluate(`!!${q(PANE)}`))
+        await click(center(await rect(BTN)));
+      const n = await count();
+      await ctx.evaluate(`${q('[aria-label="Message input"]')}.focus()`);
+      await ctx.insertText(text);
+      for (const type of ["keyDown", "keyUp"])
+        await ctx.cdp("Input.dispatchKeyEvent", {
+          type,
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+        });
+      const started = await until(
+        `window.__live&&document.querySelectorAll(${JSON.stringify(HDR)}).length===${n + 1}&&` +
+          `[...document.querySelectorAll(${JSON.stringify(HDR)})].pop().getAttribute("data-ccup-uuid")===window.__live.uuid`,
+      );
+      return { n, started: !!started };
+    };
+    // Stop the running turn the way the stop button does, and wait it out.
+    const endTurn = async () => {
+      await ctx.evaluate(
+        `(function(){var s=window.__ccupSessionProbe();if(s)s.interrupt()})()`,
+      );
+      return until(`window.__ccupSessionProbe().busy.value===false`);
+    };
+    const n0 = await count();
+    const { started } = await sendPrompt(
+      "Count from 1 to 400, one number per line.",
+    );
     check(
       "live: a sent prompt's header carries its uuid while the turn runs",
-      !!started && (await busy()) === true,
+      started && (await busy()) === true,
     );
     // The transcript proper, not the screen reader's live region, which keeps
     // the last text it announced.
@@ -628,9 +809,9 @@ export async function run(ctx) {
     const mark0 = (await json("window.__sent")).length;
     await open();
     await measure(n0);
-    await click(center(await rect(DEL)));
+    await click(center(await rect(delOf(n0))));
     await ctx.sleep(60);
-    await click(center(await rect(DEL)));
+    await click(center(await rect(delOf(n0))));
     const back = await until(
       `document.querySelectorAll(${JSON.stringify(HDR)}).length===${n0}`,
     );
@@ -666,6 +847,146 @@ export async function run(ctx) {
         left.busy === false,
       JSON.stringify(left),
     );
+
+    // An Edit streaming into a running turn greys its button out at once.
+    const t2 = await sendPrompt("Fix the typo in the README.");
+    await ctx.sleep(300);
+    await open();
+    const open2 = await stateOf(t2.n);
+    await ctx.evaluate(`window.__streamTool("Edit")`);
+    const shut2 = await until(
+      `${q(delOf(t2.n))}.hasAttribute("data-off")`,
+      3000,
+    );
+    const tool2 = await stateOf(t2.n);
+    check(
+      "tool: an Edit streaming into the running turn greys its button out, naming the tool",
+      t2.started &&
+        open2?.off === false &&
+        !!shut2 &&
+        tool2?.tip === "Used Edit, which can leave changes behind",
+      JSON.stringify({ open2, tool2 }),
+    );
+    await endTurn();
+
+    // A running turn that only streams prose: two seconds before its window
+    // closes, one pass books the timer, and then nothing moves.
+    const t3 = await sendPrompt("Say hello.");
+    await ctx.sleep(300);
+    await open();
+    await ctx.evaluate(
+      `(function(){var s=window.__ccupSessionProbe(),m=s.messages.value,u=window.__live.uuid,p;` +
+        `for(var i=m.length-1;i>=0;i--)if(m[i].uuid===u){p=m[i];break}` +
+        `window.__skew=p.createdAt+28000-Date.now()+window.__skew;document.dispatchEvent(new Event("scroll"))})()`,
+    );
+    await ctx.sleep(300);
+    const before3 = await stateOf(t3.n);
+    const shut3 = await until(
+      `${q(delOf(t3.n))}.hasAttribute("data-off")`,
+      4000,
+    );
+    const after3 = await stateOf(t3.n);
+    check(
+      "timer: with nothing else moving, the button greys out once 30 seconds have passed",
+      t3.started &&
+        before3?.off === false &&
+        !!shut3 &&
+        after3?.tip === "Started more than 30 seconds ago",
+      JSON.stringify({ before3, after3 }),
+    );
+    await ctx.evaluate("window.__skew=0");
+    await endTurn();
+
+    // A Write the stop comes too late for: the turn stays, and no rewind goes.
+    await ctx.evaluate(`window.__notes=[]`);
+    const t4 = await sendPrompt("Write the changelog entry.");
+    await ctx.sleep(300);
+    await ctx.evaluate(`window.__stopTool="Write"`);
+    const rewinds4 = (await sent()).length;
+    const mark4 = (await json("window.__sent")).length;
+    await open();
+    await measure(t4.n);
+    await click(center(await rect(delOf(t4.n))));
+    await ctx.sleep(60);
+    await click(center(await rect(delOf(t4.n))));
+    const said4 = await until(`window.__notes.length>0`, 6000);
+    await ctx.sleep(300);
+    const race = {
+      notes: await notes(),
+      rewinds: (await sent()).length - rewinds4,
+      stop: (await json("window.__sent"))
+        .slice(mark4)
+        .some((x) => x.type === "interrupt_claude"),
+      headers: await count(),
+      state: await stateOf(t4.n),
+      busy: await busy(),
+    };
+    check(
+      "race: a Write the stop comes too late for keeps the turn, says so, and sends no rewind",
+      t4.started &&
+        !!said4 &&
+        race.notes[0] ===
+          "Could not delete the turn: it used Write, which can leave changes behind." &&
+        race.rewinds === 0 &&
+        race.stop &&
+        race.headers === t4.n + 1 &&
+        race.state?.off === true &&
+        race.state.tip === "Used Write, which can leave changes behind" &&
+        race.busy === false,
+      JSON.stringify(race),
+    );
+
+    // A prompt queued while a turn runs stays out of the list until Claude
+    // starts on it, 40 seconds later on the page clock, and its window then
+    // runs from that moment.
+    const qa = await sendPrompt("Start a long task.");
+    const qn = await count();
+    await ctx.evaluate(`${q('[aria-label="Message input"]')}.focus()`);
+    await ctx.insertText("And then a second one.");
+    for (const type of ["keyDown", "keyUp"])
+      await ctx.cdp("Input.dispatchKeyEvent", {
+        type,
+        key: "Enter",
+        code: "Enter",
+        windowsVirtualKeyCode: 13,
+      });
+    const held = await until(
+      `window.__ccupSessionProbe().heldPrompts.value.length===1&&window.__queued.length===1`,
+    );
+    await open();
+    await ctx.sleep(200);
+    const waiting = { headers: await count(), last: await stateOf(qa.n) };
+    check(
+      "queue: a queued prompt stays out of the list, and the running turn's button says why",
+      qa.started &&
+        !!held &&
+        waiting.headers === qn &&
+        waiting.last?.off === true &&
+        waiting.last.tip === "A queued message waits to be sent",
+      JSON.stringify(waiting),
+    );
+    await ctx.evaluate("window.__skew+=40000;window.__pickUp()");
+    const joined = await until(
+      `document.querySelectorAll(${JSON.stringify(HDR)}).length===${qn + 1}`,
+    );
+    await ctx.sleep(300);
+    const fresh = await stateOf(qn);
+    check(
+      "queue: once Claude starts on it, its button works, however long it waited",
+      !!joined && fresh?.off === false && fresh.tip === "Delete this turn",
+      JSON.stringify(fresh),
+    );
+    await ctx.evaluate(
+      `window.__skew+=31000;document.dispatchEvent(new Event("scroll"))`,
+    );
+    const late = await until(`${q(delOf(qn))}.hasAttribute("data-off")`, 3000);
+    const lateState = await stateOf(qn);
+    check(
+      "queue: 30 seconds after Claude started on it, its button greys out",
+      !!late && lateState?.tip === "Started more than 30 seconds ago",
+      JSON.stringify(lateState),
+    );
+    await endTurn();
   } finally {
     server.close();
   }

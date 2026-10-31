@@ -14,6 +14,8 @@
 - Clicking a file reference in the chat, such as `README.md:42`, goes to the tab where that file is already open, in whichever editor group holds it, instead of opening a second copy in the active group.
   An image already showing in VS Code's image preview still opens a second tab in the active group.
   Always applied, no setting.
+- With `chatPromptHistoryButton` on, every entry in the prompt history has a delete button, and only the last one works: for 30 seconds after that message appears in the list, and until Claude uses a tool that can leave changes behind, such as editing a file or running a command.
+  The other buttons are greyed out, and hovering one says why.
 
 ## 1.6.3
 

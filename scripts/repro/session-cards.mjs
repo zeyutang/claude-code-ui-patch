@@ -213,12 +213,12 @@ window.__sent = []; window.__chan = {}; window.__lives = {}; window.__unknown = 
 const LIVE = "Working on it.";
 const live = (msg) => {
   const ch = msg.channelId, m = msg.message, sid = Object.keys(window.__chan).find((s) => window.__chan[s] === ch);
-  window.__lives[ch] = { sid, uuid: m.uuid };
+  window.__lives[ch] = { sid };
   setTimeout(() => {
     io(ch, { type: "system", subtype: "init", session_id: sid, model: "claude-fable-5",
-      permissionMode: "default", tools: [], mcp_servers: [], slash_commands: [], uuid: "i" + m.uuid.slice(1) });
+      permissionMode: "default", tools: [], mcp_servers: [], slash_commands: [], uuid: crypto.randomUUID() });
     io(ch, { ...m, session_id: sid, isReplay: true });
-    io(ch, { type: "stream_event", session_id: sid, parent_tool_use_id: null, uuid: "e" + m.uuid.slice(1),
+    io(ch, { type: "stream_event", session_id: sid, parent_tool_use_id: null, uuid: crypto.randomUUID(),
       event: { type: "message_start", message: { id: "msg_live", type: "message", role: "assistant",
         model: "claude-fable-5", content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } } } });
   }, 30);
@@ -228,12 +228,12 @@ window.__finish = (sid) => {
   const ch = window.__chan[sid], L = window.__lives[ch];
   if (!L) return false;
   delete window.__lives[ch];
-  io(ch, { type: "assistant", uuid: "c" + L.uuid.slice(1), session_id: sid, parent_tool_use_id: null,
+  io(ch, { type: "assistant", uuid: crypto.randomUUID(), session_id: sid, parent_tool_use_id: null,
     message: { id: "msg_live", type: "message", role: "assistant", model: "claude-fable-5",
       content: [{ type: "text", text: LIVE }], stop_reason: "end_turn", usage: USAGE } });
   io(ch, { type: "result", subtype: "success", is_error: false, duration_ms: 10, duration_api_ms: 10,
     num_turns: 1, result: LIVE, session_id: sid, total_cost_usd: 0,
-    usage: { input_tokens: 1, output_tokens: 1 }, uuid: "d" + L.uuid.slice(1) });
+    usage: { input_tokens: 1, output_tokens: 1 }, uuid: crypto.randomUUID() });
   return true;
 };
 window.__permit = (sid) => deliver({ type: "request", channelId: window.__chan[sid], requestId: "q" + Math.random(),

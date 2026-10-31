@@ -7675,9 +7675,7 @@ export function promptHistWebview(
 // a message, a click does what picking that row in the dropdown does (a
 // session open in an editor tab gets that tab focused, any other one opens
 // here), and each card leads with a circle where a tab shows its file icon: a
-// hollow ring, solid for the session on screen, and solid clay when the
-// session waits on you (a permission or question prompt, or a turn that
-// ended while another session was on screen).
+// ring, filled while the session is at work, and clay while it needs you.
 //
 // One fragment, /*ccup:scard*/.../*ccup:scardEnd*/, at the end of the webview
 // session manager's constructor (the class with doListSessions, one per
@@ -7699,16 +7697,27 @@ export function promptHistWebview(
 //   order    the time of your last message in the session: for a session this
 //            view holds, the newest prompt among its messages and queued sends
 //            (createdAt, the transcript's own timestamp, so a reload keeps
-//            it), and for one held by an editor tab, the moment the host
-//            reports it leaving idle, the turn your message starts there. The
-//            times persist in the webview's localStorage, so a session that
-//            leaves this view keeps its place; one seen in neither way sorts by
-//            Claude Code's own activity time, which is at least as late
-//            as its last prompt
+//            it), a prompt being a row Claude Code stamps as yours (origin
+//            human) that is no slash command, so a model or effort change
+//            never counts; and for one held elsewhere (an editor tab, a
+//            terminal, another window), the moment the host reports it
+//            leaving idle, the turn your message starts there. The times
+//            persist in the webview's localStorage, so a session that leaves
+//            this view keeps its place; one seen in neither way sorts by
+//            Claude Code's own activity time, which is at least as late as
+//            its last prompt
+//   at work  for a session this view holds, a turn in progress (one waiting
+//            on you included) or a background agent of its still running, as
+//            Claude Code itself reports a session running; for any other one,
+//            the state the host relays from the surface holding it (running
+//            or waiting_input, or a terminal or window holding it running or
+//            waiting). A reload closes every channel the view held, and a
+//            host restart every CLI the host ran, so neither leaves a session
+//            that stopped reading as at work
 //   pending  for a session this view holds, its own pending permission and
 //            question requests, and a turn that ended while another session was
 //            shown here, until you open it; for any other one, the state the
-//            host relays from the surface showing it (waiting_input, or a
+//            host relays from the surface holding it (waiting_input, or a
 //            terminal or window holding it waiting); and for every session,
 //            Claude Code's unread mark. The session on screen never shows one
 // The strip holds every such session and scrolls sideways like the editor's
@@ -7784,7 +7793,6 @@ const SCARD_SESSION_FIELDS = [
   "permissionRequests",
   "userDialogRequests",
   "lastModifiedTime",
-  "promptCacheRecord",
 ];
 const SCARD_FEED_FIELDS = [
   "sessionStates",
@@ -7854,16 +7862,39 @@ function ccupSessionCardsWeb(
     }
   };
 
-  // A message you sent: no tool result alone, no subagent's, no meta row, no
-  // notice a task or a peer delivered.
-  const isPrompt = (m: any): boolean =>
-    m?.type === "user" &&
-    !m.parentToolUseId &&
-    !m.isSynthetic &&
-    !m.notAPrompt &&
-    (!m.origin || m.origin.kind === "human") &&
-    Array.isArray(m.content) &&
-    m.content.some((b: any) => b?.content && b.content.type !== "tool_result");
+  // A message you sent: a user row Claude Code stamps as yours (origin
+  // human), which no tool result, subagent row, task notice, interruption
+  // marker, compaction summary, or command output carries, less a slash
+  // command, which keeps the stamp: its leading slash as typed, then the
+  // command's own tags once the CLI echoes it back. The text you typed is a
+  // row's last text block, after any editor context the send put first.
+  const COMMAND = [
+    "/",
+    "<command-name>",
+    "<command-message>",
+    "<local-command-",
+    "<bash-",
+  ];
+  const isPrompt = (m: any): boolean => {
+    if (
+      m?.type !== "user" ||
+      m.origin?.kind !== "human" ||
+      m.parentToolUseId ||
+      m.isSynthetic ||
+      m.notAPrompt ||
+      !Array.isArray(m.content)
+    )
+      return false;
+    let typed = "";
+    let other = false;
+    for (const b of m.content) {
+      const c = b?.content;
+      if (c?.type === "text") typed = c.text ?? "";
+      else if (c && c.type !== "tool_result") other = true;
+    }
+    typed = typed.trim();
+    return typed ? !COMMAND.some((p) => typed.startsWith(p)) : other;
+  };
   // A held session's newest prompt, sent or queued, per messages array.
   const last = new WeakMap<object, { msgs: any; held: any; t?: number }>();
   const promptAt = (s: any): number | undefined => {
@@ -7880,14 +7911,20 @@ function ccupSessionCardsWeb(
     }
     for (const h of held) {
       const c = h?.message?.createdAt;
-      if (typeof c === "number" && !(t !== undefined && t >= c)) t = c;
+      if (
+        isPrompt(h?.message) &&
+        typeof c === "number" &&
+        !(t !== undefined && t >= c)
+      )
+        t = c;
     }
     last.set(s, { msgs, held, t });
     return t;
   };
 
   // Turns that ended in a held session while another one was on screen, and
-  // the host-reported state of every other session, for its sends.
+  // whether every other session was last reported at work or idle, for its
+  // sends.
   const worked = new WeakMap<object, boolean>();
   const done = new WeakSet<object>();
   const seen = new Map<string, string>();
@@ -7895,51 +7932,6 @@ function ccupSessionCardsWeb(
   // Web session a tab shows) asks once.
   const asked = new Set<string>();
   let relistAt = 0;
-
-  // The prompt cache, as Claude Code's footer clock reads it: warm while the
-  // last request that read or wrote it is younger than its TTL. The session
-  // on screen, and any other held here, carries that record live, and its
-  // card reads it as the clock does. Another session counts from its newest
-  // sign of a request instead: the record this view last loaded, while the
-  // transcript has not grown since, else its newest message or the last time
-  // the host saw it working, at the record's TTL or else the newest one any
-  // record here used.
-  const TTL: Record<string, number> = { "5m": 300000, "1h": 3600000 };
-  const recSeen = new WeakMap<object, number>();
-  const ranAt = new Map<string, number>();
-  const wasRunning = new Set<string>();
-  const judge = (at: number, span: number, clock: number): any => {
-    const until = Math.min(clock + span, at + span);
-    return { warm: until > clock, until, at };
-  };
-  const fromRecord = (rec: any, clock: number): any =>
-    rec.compactedAt !== undefined
-      ? { warm: false, compacted: true }
-      : typeof rec.anchorAt === "number" && TTL[rec.ttl]
-        ? judge(rec.anchorAt, TTL[rec.ttl], clock)
-        : null;
-  const cacheOf = (
-    s: any,
-    id: string,
-    live: boolean,
-    clock: number,
-    ttl: number | undefined,
-  ): any => {
-    const rec = s.promptCacheRecord.value;
-    const newest = s.lastModifiedTime.value || 0;
-    if (rec && !recSeen.has(rec)) recSeen.set(rec, newest);
-    if (live) return rec ? fromRecord(rec, clock) : null;
-    const ran = ranAt.get(id) || 0;
-    if (
-      rec &&
-      !(newest > (recSeen.get(rec) as number)) &&
-      !(ran > (rec.anchorAt || 0))
-    )
-      return fromRecord(rec, clock);
-    const span = (rec && TTL[rec.ttl]) || ttl;
-    const at = Math.max(newest, ran);
-    return span && at > 0 ? judge(at, span, clock) : null;
-  };
 
   const compute = (): any[] => {
     const active = mgr.activeSession.value;
@@ -7952,18 +7944,6 @@ function ccupSessionCardsWeb(
     const states = new Map<string, any>();
     for (const x of feed.sessionStates.value || [])
       if (x?.sessionId) states.set(x.sessionId, x);
-    // The TTL the newest record here used, for a session with none of its
-    // own.
-    const clock = Date.now();
-    let ttl: number | undefined;
-    let ttlAt = -Infinity;
-    for (const s of mgr.sessions.value) {
-      const rec = s.promptCacheRecord.value;
-      if (rec && TTL[rec.ttl] && rec.anchorAt > ttlAt) {
-        ttl = TTL[rec.ttl];
-        ttlAt = rec.anchorAt;
-      }
-    }
     const rows: any[] = [];
     const known = new Set<string>();
     for (const s of mgr.sessions.value) {
@@ -7973,6 +7953,7 @@ function ccupSessionCardsWeb(
         continue;
       let waiting = false;
       let ended = false;
+      let ongoing = false;
       // Held here: it has a channel. The signal, since the session's own
       // claudeChannelId getter peeks, which an effect would not follow.
       const held = s.claudeChannelIdSignal.value !== undefined;
@@ -7980,39 +7961,40 @@ function ccupSessionCardsWeb(
         waiting =
           s.permissionRequests.value.length > 0 ||
           s.userDialogRequests.value.length > 0;
-        const work = s.busy.value || s.backgroundTaskIds.value.size > 0;
-        if (work || s === active) done.delete(s);
+        ongoing = s.busy.value || s.backgroundTaskIds.value.size > 0;
+        if (ongoing || s === active) done.delete(s);
         else if (worked.get(s)) done.add(s);
-        worked.set(s, work);
+        worked.set(s, ongoing);
         ended = done.has(s);
         note(id, promptAt(s));
       } else {
+        // Held elsewhere: the state an editor tab here reports, else what a
+        // terminal or another window holding it shows.
         const now = states.get(id)?.state;
-        if (seen.get(id) === "idle" && now && now !== "idle")
-          note(id, Date.now());
-        if (now) seen.set(id, now);
-        waiting =
-          now === "waiting_input" ||
-          (!tabs.has(id) && away.get(id)?.activity === "waiting");
-        // Running there, or just stopped (to wait on you, or done): a request
-        // went out about now. A wait alone dates from the request before it.
-        const running =
-          now === "running" || away.get(id)?.activity === "running";
-        if (running || wasRunning.has(id)) ranAt.set(id, clock);
-        if (running) wasRunning.add(id);
-        else wasRunning.delete(id);
+        const act = tabs.has(id) ? undefined : away.get(id)?.activity;
+        waiting = now === "waiting_input" || act === "waiting";
+        ongoing = now === "running" || waiting || act === "running";
+        // Leaving idle there: the turn your message starts.
+        const phase = ongoing ? "work" : now || act ? "idle" : "";
+        if (seen.get(id) === "idle" && phase === "work") note(id, Date.now());
+        if (phase) seen.set(id, phase);
       }
       const isNew = ended || unread.has(id);
-      const cache = cacheOf(s, id, held || s === active, clock, ttl);
+      const pending = s !== active && (waiting || isNew);
       rows.push({
         s,
         id,
         title: s.summary.value || "Untitled",
         active: s === active,
-        pending: s !== active && (waiting || isNew),
-        why: waiting ? "awaiting input" : isNew ? "turn finished" : "",
-        warm: !!cache?.warm,
-        cache,
+        pending,
+        ongoing,
+        why: pending
+          ? waiting
+            ? "awaiting input"
+            : "turn finished"
+          : ongoing
+            ? "running"
+            : "",
         tab: tabs.has(id),
         at: sent[id] || s.lastModifiedTime.value || 0,
         mod: s.lastModifiedTime.value || 0,
@@ -8238,7 +8220,7 @@ function ccupSessionCardsWeb(
   const paint = (b: any, r: any): void => {
     b.toggleAttribute("data-active", r.active);
     b.toggleAttribute("data-pending", r.pending);
-    b.toggleAttribute("data-warm", r.warm);
+    b.toggleAttribute("data-ongoing", r.ongoing);
     if (r.active) b.setAttribute("aria-current", "true");
     else b.removeAttribute("aria-current");
     // The tip is the full title, which the label may cut; the label read out
@@ -8268,7 +8250,7 @@ function ccupSessionCardsWeb(
           r.active,
           r.pending,
           r.why,
-          r.warm,
+          r.ongoing,
           r.tab,
         ]),
       ]);
@@ -8494,30 +8476,6 @@ function ccupSessionCardsWeb(
     if (!itemAt(e.relatedTarget)) hideTip();
   });
 
-  // A warm cache turns cold with nothing to signal it, so the strip wakes at
-  // the next expiry to repaint.
-  let wake = 0;
-  const arm = (): void => {
-    if (wake) g.clearTimeout(wake);
-    wake = 0;
-    let next = Infinity;
-    for (const r of rows)
-      if (r.warm && r.cache.until < next) next = r.cache.until;
-    if (next < Infinity)
-      wake = g.setTimeout(refresh, Math.max(1000, next - Date.now() + 250));
-  };
-  const refresh = (): void => {
-    wake = 0;
-    try {
-      rows = compute();
-    } catch {
-      rows = [];
-    }
-    api.rows = rows;
-    schedule();
-    arm();
-  };
-
   effect(() => {
     try {
       rows = compute();
@@ -8526,7 +8484,6 @@ function ccupSessionCardsWeb(
     }
     api.rows = rows;
     schedule();
-    arm();
   });
   try {
     new g.MutationObserver(mount).observe(doc.body, {
@@ -8611,9 +8568,9 @@ function scardSide(): ScardSide {
 // header's icon buttons, and between them the band of cards in the connected
 // tab row's background, groove included, so it stands apart from them,
 // scrolling sideways with no scrollbar of its own: cards with a leading
-// state circle (in the card's own color, clay for a session waiting on you,
-// filled while the session's prompt cache is warm and a hollow ring once it
-// is cold), the card on screen in the chat's background with its corners
+// state circle (in the card's own color, clay for a session that needs you,
+// filled while the session is at work and a hollow ring while it is not),
+// the card on screen in the chat's background with its corners
 // and shoulders and the look's line, its text in the input box's color (the
 // editor tab's white read as distracting, and the others' grey would not set
 // it apart), and the input box's lowered gap. The cards' corners take the
@@ -8660,9 +8617,9 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
     `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 var(--ccup-card-w,auto);width:var(--ccup-card-w,auto);height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +
     ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
-    ".ccup-card[data-warm] .ccup-card-dot{background:currentColor}" +
+    ".ccup-card[data-ongoing] .ccup-card-dot{background:currentColor}" +
     `.ccup-card[data-pending] .ccup-card-dot{border-color:${clay}}` +
-    `.ccup-card[data-pending][data-warm] .ccup-card-dot{background:${clay}}` +
+    `.ccup-card[data-pending][data-ongoing] .ccup-card-dot{background:${clay}}` +
     `.ccup-card:not([data-active])${HOVER}{${hover}}` +
     `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);color:var(--app-input-foreground,${grey});cursor:default${line}}` +
     ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +

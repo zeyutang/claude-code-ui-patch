@@ -11,7 +11,10 @@
 //   order     cards run from the session of your last message: the booted
 //             one by its newest prompt (not by the later activity the list
 //             reports for it), the others by the list's activity time, no
-//             Web session, and a prompt you send moves its session first
+//             Web session, and a prompt you send moves its session first, as
+//             does a session reported leaving idle in an editor tab or in a
+//             terminal, while a model change's echo, a slash command, and an
+//             interruption marker landing in a session leave it in place
 //   active    the session on screen is marked, never shows pending, and its
 //             text takes the input box's color
 //   buttons   both sit on the chat's own background, the card on screen's,
@@ -28,12 +31,12 @@
 //             out to assistive tech
 //   tip       the hover tip is the full title alone, where the card cuts it
 //   circle    each card leads with a circle in the card's color, clay for a
-//             session waiting on you, filled while its prompt cache is warm
-//             and a ring once cold
-//   warm      the session on screen reads its own record, as the footer
-//             clock does, a held one its live record, the rest their newest
-//             message at that record's TTL, and a card empties on its own at
-//             the expiry
+//             session that needs you, filled while the session is at work
+//             and a ring while it is not
+//   at work   a turn running here (on screen or behind it) or reported from
+//             an editor tab or a terminal fills the circle, one waiting on you
+//             mid-turn in clay, a finished one leaves a ring, and after a
+//             reload every card is a ring
 //   seamless  the card on screen is the chat's own background, joined to
 //             the chat above with no edge, its bottom corners rounded and the
 //             strip curving into it at the top, on the screen's pixels, and
@@ -188,10 +191,7 @@ const entry = (k) => ({ id: S[k], summary: TITLES[k], customTitle: TITLES[k],
   lastModified: ago(ACTIVITY[k]), lastActivity: ago(ACTIVITY[k]), archived: k === "Z",
   fileSize: 4096, gitBranch: "develop", isCurrentWorkspace: true });
 window.__listed = ["A", "B", "C", "D", "E", "F", "Z"];
-// A reply's usage: it read the conversation's cache and wrote to it, at
-// the one-hour TTL.
-const CACHED = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 100,
-  cache_creation_input_tokens: 10, cache_creation: { ephemeral_1h_input_tokens: 10, ephemeral_5m_input_tokens: 0 } };
+const USAGE = { input_tokens: 1, output_tokens: 1 };
 const msgs = (sid) => { const k = KEY[sid]; if (!k) return []; return [
   { type: "user", uuid: "a" + sid.slice(1), session_id: sid, parent_tool_use_id: null,
     timestamp: new Date(ago(PROMPT[k])).toISOString(), origin: { kind: "human" },
@@ -200,12 +200,13 @@ const msgs = (sid) => { const k = KEY[sid]; if (!k) return []; return [
     timestamp: new Date(ago(ACTIVITY[k])).toISOString(),
     message: { id: "msg_" + k, type: "message", role: "assistant", model: "claude-fable-5",
       content: [{ type: "text", text: "A reply in " + TITLES[k] + "." }], stop_reason: "end_turn",
-      usage: CACHED } } ]; };
+      usage: USAGE } } ]; };
 const deliver = (message) => window.dispatchEvent(
   new MessageEvent("message", { data: { type: "from-extension", message } }));
 window.__push = (request) =>
   deliver({ type: "request", channelId: "", requestId: "p" + Math.random(), request });
 const io = (channelId, message) => deliver({ type: "io_message", channelId, message, done: false });
+window.__io = io;
 // What the page posted, each session's channel, each running turn, and the
 // requests the host answers as unknown.
 window.__sent = []; window.__chan = {}; window.__lives = {}; window.__unknown = [];
@@ -229,7 +230,7 @@ window.__finish = (sid) => {
   delete window.__lives[ch];
   io(ch, { type: "assistant", uuid: "c" + L.uuid.slice(1), session_id: sid, parent_tool_use_id: null,
     message: { id: "msg_live", type: "message", role: "assistant", model: "claude-fable-5",
-      content: [{ type: "text", text: LIVE }], stop_reason: "end_turn", usage: CACHED } });
+      content: [{ type: "text", text: LIVE }], stop_reason: "end_turn", usage: USAGE } });
   io(ch, { type: "result", subtype: "success", is_error: false, duration_ms: 10, duration_api_ms: 10,
     num_turns: 1, result: LIVE, session_id: sid, total_cost_usd: 0,
     usage: { input_tokens: 1, output_tokens: 1 }, uuid: "d" + L.uuid.slice(1) });
@@ -440,9 +441,9 @@ export async function run(ctx) {
     )
       .map(([i, a, p]) => `${LETTER[i] ?? "?"}${a ? "*" : ""}${p ? "!" : ""}`)
       .join(" ");
-  // Each card's letter, + while its circle is filled (a warm prompt cache),
+  // Each card's letter, + while its circle is filled (the session at work),
   // - while it is a ring.
-  const warmth = async () =>
+  const fills = async () =>
     (
       await json(
         `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){` +
@@ -582,31 +583,22 @@ export async function run(ctx) {
       wide.map((i) => LETTER[i]).join(" "),
     );
 
-    // Warmth at boot: A, on screen, reads its own record as the footer clock
-    // does (its cache last used by the prompt 150 minutes ago, so cold),
-    // and the rest count from their newest message at that record's TTL
-    // (one hour): B, half an hour ago, warm.
-    const w0 = await warmth();
-    const rw = await json(
-      `(function(){var b=${cardEl("B")},d=b.firstChild,s=getComputedStyle(d),c=getComputedStyle(b);` +
-        `return{bg:s.backgroundColor,edge:s.borderTopColor,ink:c.color}})()`,
-    );
+    // At boot nothing runs, so every circle is a ring, the one on screen's
+    // included.
+    const w0 = await fills();
     check(
-      "warm: the session on screen by its own record, the rest by their newest message",
-      w0 === "B+ C- A- D- E- F-",
+      "at work: at boot no session runs, so every circle is a ring",
+      w0 === "B- C- A- D- E- F-",
       w0,
-    );
-    check(
-      "circle: filled in the card's own grey while its prompt cache is warm",
-      rw.bg === rw.ink && rw.edge === rw.ink && rw.ink === "rgb(157, 157, 157)",
-      JSON.stringify(rw),
     );
 
     // Pending from the host's feed: B awaits input in a tab, D and A unread.
+    // E runs in a surface the feed reports, first seen running there, so it
+    // keeps its place.
     await ctx.evaluate(
       `window.__push({type:"session_states_update",sessions:[{sessionId:"${S.A}",state:"idle",title:"x"},` +
-        `{sessionId:"${S.B}",state:"waiting_input",title:"${TITLES.B}"}],activeSessionId:"${S.A}",` +
-        `openSessionIds:["${S.B}","${S.C}"],unreadSessionKeys:["${S.D}","${S.A}"]})`,
+        `{sessionId:"${S.B}",state:"waiting_input",title:"${TITLES.B}"},{sessionId:"${S.E}",state:"running",title:"${TITLES.E}"}],` +
+        `activeSessionId:"${S.A}",openSessionIds:["${S.B}","${S.C}"],unreadSessionKeys:["${S.D}","${S.A}"]})`,
     );
     await ctx.sleep(200);
     const s1 = await strip();
@@ -615,8 +607,20 @@ export async function run(ctx) {
       s1 === "B! C A* D! E F",
       s1,
     );
-    // Circles: C idle and cold, A on screen and cold, B waiting and warm, D
-    // waiting and cold.
+    const re = await json(
+      `(function(){var b=${cardEl("E")},d=b.firstChild,s=getComputedStyle(d),c=getComputedStyle(b);` +
+        `return{bg:s.backgroundColor,edge:s.borderTopColor,ink:c.color,aria:b.getAttribute("aria-label")}})()`,
+    );
+    check(
+      "circle: filled in the card's own grey while the session is at work, its label saying so",
+      re.bg === re.ink &&
+        re.edge === re.ink &&
+        re.ink === "rgb(157, 157, 157)" &&
+        re.aria === `${TITLES.E} — running`,
+      JSON.stringify(re),
+    );
+    // Circles: C idle, A on screen and idle, B waiting on you mid-turn, D
+    // unread.
     const ring = (k) =>
       json(
         `(function(){var b=${cardEl(k)},d=b.firstChild,s=getComputedStyle(d),c=getComputedStyle(b);` +
@@ -629,7 +633,7 @@ export async function run(ctx) {
       await ring("D"),
     ];
     check(
-      "circle: a hollow ring in the card's grey once its prompt cache is cold",
+      "circle: a hollow ring in the card's grey while the session is not at work",
       rc.first === "ccup-card-dot" &&
         rc.w === "8px" &&
         rc.bg === "rgba(0, 0, 0, 0)" &&
@@ -644,7 +648,7 @@ export async function run(ctx) {
         `document.body.appendChild(d);var c=getComputedStyle(d).color;d.remove();return c})()`,
     );
     check(
-      "active: the session on screen in the input box's text color, a ring in it while cold",
+      "active: the session on screen in the input box's text color, a ring in it while idle",
       ra.bg === "rgba(0, 0, 0, 0)" &&
         ra.edge === ra.ink &&
         ra.ink === composer &&
@@ -653,7 +657,7 @@ export async function run(ctx) {
       JSON.stringify({ ra, composer }),
     );
     check(
-      "circle: clay while waiting on you, filled while warm and a ring once cold",
+      "circle: clay while it needs you, filled for a turn waiting on you and a ring for a finished one unseen",
       rb.bg === "rgb(217, 119, 87)" &&
         rb.edge === "rgb(217, 119, 87)" &&
         rd.bg === "rgba(0, 0, 0, 0)" &&
@@ -1176,15 +1180,69 @@ export async function run(ctx) {
     await ctx.evaluate(`${q(INPUT)}.focus()`);
     let mark = 0;
 
-    // Send a prompt in A: its turn starts and A moves first.
+    // Other surfaces: C, open in a tab, is reported idle and then running
+    // there (the turn a message starts), and so is F, which a terminal holds.
+    // Each moves first and fills while it runs, and F waiting on you in the
+    // terminal turns clay, still filled, until it is idle again.
+    const feed = (sessions, live) =>
+      ctx.evaluate(
+        `window.__push({type:"session_states_update",sessions:${JSON.stringify(sessions)},activeSessionId:"${S.A}",` +
+          `openSessionIds:["${S.B}","${S.C}"],unreadSessionKeys:["${S.D}"],liveElsewhereSessions:${JSON.stringify(live)}})`,
+      );
+    const tabC = (state) => [{ sessionId: S.C, state, title: TITLES.C }];
+    const termF = (activity) => [
+      { sessionId: S.F, holder: "terminal", activity, sameProject: true },
+    ];
+    const step = async (sessions, live) => {
+      await feed(sessions, live);
+      await ctx.sleep(150);
+      return { order: await strip(), fill: await fills() };
+    };
+    const o0 = await step(tabC("idle"), []);
+    const o1 = await step(tabC("running"), []);
+    await step(tabC("idle"), termF("idle"));
+    const o2 = await step(tabC("idle"), termF("running"));
+    const o3 = await step(tabC("idle"), termF("waiting"));
+    const o4 = await step(tabC("idle"), termF("idle"));
+    check(
+      "order: a session reported leaving idle in an editor tab moves first, filled while it runs",
+      !o0.order.startsWith("C") &&
+        o1.order.startsWith("C ") &&
+        o1.fill.includes("C+"),
+      JSON.stringify({ o0, o1 }),
+    );
+    check(
+      "order: so does one a terminal holds, filled while it runs there",
+      o2.order.startsWith("F C ") &&
+        o2.fill.includes("F+") &&
+        o2.fill.includes("C-"),
+      JSON.stringify(o2),
+    );
+    check(
+      "at work: waiting on you in a terminal turns the filled circle clay, a ring again once idle",
+      o3.order.startsWith("F! ") &&
+        o3.fill.includes("F+") &&
+        o4.order.startsWith("F ") &&
+        o4.fill.includes("F-"),
+      JSON.stringify({ o3, o4 }),
+    );
+
+    // Send a prompt in A: its turn starts, A moves first, and its circle
+    // fills while the turn runs.
     await send("Keep going.");
     const going = await until(`Object.keys(window.__lives).length===1`);
     await ctx.sleep(200);
     const s2 = await strip();
+    const w2 = await fills();
     check(
       "order: a prompt you send moves its session first",
       !!going && s2.startsWith("A*"),
       s2,
+    );
+    check(
+      "at work: the session on screen fills while its turn runs",
+      w2.startsWith("A+"),
+      w2,
     );
     const stored = await json(
       `(function(){try{return JSON.parse(localStorage.getItem("ccup-session-cards")).sent}catch(e){return null}})()`,
@@ -1203,8 +1261,9 @@ export async function run(ctx) {
     // box stays put. A keeps running in the background.
     const bar0 = await ctx.evaluate(`window.__bar0=${q(BAR)},true`);
     const top0 = (await box(`${q(BOX)}.querySelector("fieldset")`)).y;
-    // E sits past the cards' right edge here: the wheel over the strip, a
-    // vertical one as a mouse sends, scrolls it sideways into view.
+    // E sits past the cards' right edge here, the last card: the wheel over
+    // the strip, a vertical one as a mouse sends, scrolls it sideways into
+    // view (each tick moves 20px at this scale).
     const pastEdge = () =>
       json(
         `(function(){var b=${q(LIST)}.getBoundingClientRect(),e=${cardEl("E")}.getBoundingClientRect();return e.right>b.right+0.5})()`,
@@ -1212,7 +1271,7 @@ export async function run(ctx) {
     const sc0 = await ctx.evaluate(`${q(LIST)}.scrollLeft`);
     const hidden0 = await pastEdge();
     const bb = await box(q(LIST));
-    for (let i = 0; i < 20 && (await pastEdge()); i++) {
+    for (let i = 0; i < 60 && (await pastEdge()); i++) {
       await ctx.cdp("Input.dispatchMouseEvent", {
         type: "mouseWheel",
         x: bb.x + bb.w / 2,
@@ -1266,21 +1325,69 @@ export async function run(ctx) {
       JSON.stringify({ top0, top1, top2 }),
     );
 
+    // Order: rows that are not your messages land in E, on screen and behind
+    // A in order: a model change's echo (the picker's, unstamped), a slash
+    // command as typed and as the CLI echoes it (both stamped as yours), and
+    // an interruption marker. Each reaches E's messages with its time, and E
+    // keeps its place.
+    const before5 = await strip();
+    const echo = [
+      { c: "<local-command-stdout>Set model to Sonnet</local-command-stdout>" },
+      { c: [{ type: "text", text: "/model sonnet" }], human: true },
+      {
+        c: [
+          {
+            type: "text",
+            text: "<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args>high</command-args>",
+          },
+        ],
+        human: true,
+      },
+      { c: [{ type: "text", text: "[Request interrupted by user]" }] },
+    ].map((r, i) => ({
+      type: "user",
+      uuid: `f000000${i}-0000-4000-8000-000000000000`,
+      session_id: S.E,
+      parent_tool_use_id: null,
+      timestamp: new Date().toISOString(),
+      isReplay: true,
+      message: { role: "user", content: r.c },
+      ...(r.human ? { origin: { kind: "human" } } : {}),
+    }));
+    await ctx.evaluate(
+      `${JSON.stringify(echo)}.forEach(function(m){window.__io(window.__chan[${JSON.stringify(S.E)}],m)})`,
+    );
+    await ctx.sleep(300);
+    const landed = await json(
+      `(function(){var r=window.__ccupSessionCards.rows.find(function(x){return x.id===${JSON.stringify(S.E)}});` +
+        `return r.s.messages.value.filter(function(m){return/^f000000/.test(m.uuid||"")}).map(function(m){return typeof m.createdAt})})()`,
+    );
+    const after5 = await strip();
+    check(
+      "order: a model change's echo, a slash command, and an interruption marker leave the session in place",
+      landed.length === 4 &&
+        landed.every((t) => t === "number") &&
+        after5 === before5 &&
+        !after5.startsWith("E"),
+      JSON.stringify({ landed, before5, after5 }),
+    );
+
     // Held: A's turn ends while E is on screen.
     const s4 = await strip();
+    const w4 = await fills();
     await ctx.evaluate(`window.__finish(${JSON.stringify(S.A)})`);
     await ctx.sleep(300);
     const s5 = await strip();
-    const w5 = await warmth();
+    const w5 = await fills();
     check(
       "held: a turn ending in the background gives its session a dot",
       !s4.includes("A!") && s5.includes("A!"),
       `${s4} -> ${s5}`,
     );
     check(
-      "warm: a turn that used the cache fills a held session's circle, by its live record",
-      w5.includes("A+"),
-      w5,
+      "at work: a held session fills while its turn runs behind the one on screen, a ring once it ends",
+      w4.includes("A+") && w5.includes("A-"),
+      `${w4} -> ${w5}`,
     );
     await clickCard("A");
     await until(
@@ -1523,34 +1630,22 @@ export async function run(ctx) {
       mobile: false,
     });
 
-    // Expiry: D (never opened here, so it carries no record) has its newest
-    // message moved to four seconds inside the TTL, so its card fills, then
-    // empties on its own when the cache would expire.
-    const filled = `getComputedStyle(${cardEl("D")}.firstChild).backgroundColor!=="rgba(0, 0, 0, 0)"`;
-    await ctx.evaluate(
-      `ACTIVITY.D=60-4/60-(Date.now()-NOW)/60e3;window.__push({type:"session_store_changed"})`,
-    );
-    const warmD = await until(filled, 3000);
-    const rowD = await json(
-      `(function(){var r=window.__ccupSessionCards.rows.find(function(x){return x.id===${JSON.stringify(S.D)}});` +
-        `return r&&{mod:Date.now()-r.mod,rec:!!r.s.promptCacheRecord.value,cache:r.cache&&{warm:r.cache.warm,left:r.cache.until-Date.now()}}})()`,
-    );
-    await ctx.sleep(5500);
-    const coldD = await ctx.evaluate(`!(${filled})`);
-    check(
-      "warm: a card empties on its own when its cache expires",
-      !!warmD && coldD,
-      JSON.stringify({ warmD, coldD, rowD }),
-    );
-
-    // Reload: A's sent time keeps it ahead of its transcript's old prompt.
+    // Reload: A's sent time keeps it ahead of its transcript's old prompt,
+    // and nothing reads as at work, since a reload ends every turn the view
+    // ran.
     await boot();
     await ctx.sleep(400);
     const s8 = await strip();
+    const w8 = await fills();
     check(
       "reload: the stored time of a sent prompt keeps its place",
       s8.startsWith("A*"),
       s8,
+    );
+    check(
+      "at work: after a reload every circle is a ring",
+      !w8.includes("+"),
+      w8,
     );
 
     // Look: the line form (compact density, or no modern UI) draws the tab's

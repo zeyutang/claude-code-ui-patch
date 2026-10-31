@@ -83,7 +83,7 @@ Behavior
    │                                   #   (either button On: a question box dims the history like a
    │                                   #   permission box, and an open find bar lifts the dim)
    ├── chatSessionCards                # sidebar: recent session cards below the input box, if On
-   │                                   #   (filled while its cache is warm, clay when it needs you)
+   │                                   #   (filled while it is working, clay when it needs you)
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)
@@ -159,10 +159,11 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   Math in agent responses matches by its TeX source, as its raw markdown reads, so `\frac{a}{b}` finds that fraction while the symbols it renders do not match.
 - **`chatSessionCards` shows local sessions in the sidebar chat only.**
   The cards run from the session where you last sent a message, so a session working on its own keeps its place.
-  A session you have not opened in the sidebar since turning the setting on, nor sent to in an editor tab since, takes its place from its last activity instead.
+  Changing a session's model or effort, or running a slash command, does not count as a message.
+  A session you have not opened in the sidebar since turning the setting on, nor sent to in an editor tab or a terminal since, takes its place from its last activity instead.
   A click opens the session as the Session history list does, and one open in an editor tab gets that tab focused.
-  Each card's circle is filled while the session's prompt cache is still warm, as the cache timer in the input box reckons it, and a hollow ring once it has gone cold.
-  A session the sidebar has not opened, or one that has gone on in a tab or another window since, counts from its newest message instead.
+  Each card's circle is filled while the session is working, wherever it runs: in the sidebar, an editor tab, a terminal, or another window.
+  Working includes a turn waiting on you and a background agent the session started.
   The circle turns clay while a permission or question prompt waits or a finished turn is still unseen.
   The strip holds every session that is not archived and scrolls sideways like the editor's tabs, the mouse wheel included.
   A New session button stays at its left end, and a button at its right end hides the secondary side bar (where Claude Code puts the chat).

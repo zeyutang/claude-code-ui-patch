@@ -39,6 +39,10 @@
 //             strip curving into it at the top, on the screen's pixels, and
 //             beside a button it joins that button, its corner there square
 //             and no sliver of the strip between them
+//   edges     the cards flush with the band's ends square their corners on
+//             that side, whatever their state, so a hovered one shows no
+//             shade of the strip beside a button, while their inner corners
+//             stay rounded
 //   click     a session open in an editor tab asks the host to focus that
 //             tab, any other opens here, the strip staying the same element
 //             and the input box staying put
@@ -54,7 +58,9 @@
 //   reload    the time of a sent prompt survives a reload
 //   shares    at rest only whole cards show, one more for every 300px of the
 //             space between the buttons, each an equal share of it, the next
-//             card starting at the edge, at every width from 900px to 250px
+//             card starting at the edge, at every width from 900px to 250px,
+//             and a scrolled strip that changes width keeps its first card in
+//             view on the new boundary
 //   titles    each label carries its whole title, the browser cutting a long
 //             one with an ellipsis
 //   scroll    the strip holds every non-archived session, scrolls sideways
@@ -493,6 +499,18 @@ export async function run(ctx) {
       L.cards.every((c) => c.text === c.title);
     return { ok, K, per: +per.toFixed(2), first, n: L.cards.length };
   };
+  // The cards marked flush with the band's left and right ends, by session
+  // letter (more than one on a side would read "A,B").
+  const edgesNow = async () => {
+    const e = await json(
+      `(function(){var ids=function(s){return[].map.call(document.querySelectorAll(s),function(b){return b.dataset.id})};` +
+        `return{l:ids(${JSON.stringify(`${CARD}[data-edge-l]`)}),r:ids(${JSON.stringify(`${CARD}[data-edge-r]`)})}})()`,
+    );
+    return {
+      l: e.l.map((i) => LETTER[i]).join(),
+      r: e.r.map((i) => LETTER[i]).join(),
+    };
+  };
 
   try {
     // Mount and geometry.
@@ -673,16 +691,15 @@ export async function run(ctx) {
     // A, brought into view at boot, ends at the hide button: its right side
     // joins the button, the corner square, the blue line running to the edge.
     const hb = await box(q(HIDE));
-    const sides = await json(
-      `(function(){var L=${q(LIST)};return{l:L.hasAttribute("data-flush-l"),r:L.hasAttribute("data-flush-r")}})()`,
-    );
+    const sides = await edgesNow();
     // The cards' corners and shoulders take the input box's 8px radius, the
-    // buttons the header icon buttons' 4px.
+    // buttons the header icon buttons' 4px; C, first in view, squares its
+    // left corners against New session and keeps its right ones.
     const radii = await json(
       `(function(){var r=function(e,k){return getComputedStyle(e)[k]};var A=${cardEl("A")},C=${cardEl("C")},n=${q(NEW)};` +
         `return{token:getComputedStyle(A).getPropertyValue("--corner-radius-large").trim(),active:r(A,"borderBottomLeftRadius"),` +
-        `activeTop:r(A,"borderTopLeftRadius"),shoulder:getComputedStyle(A,"::before").width,idle:r(C,"borderTopLeftRadius"),` +
-        `button:r(n,"borderTopLeftRadius")}})()`,
+        `activeTop:r(A,"borderTopLeftRadius"),shoulder:getComputedStyle(A,"::before").width,idle:r(C,"borderTopRightRadius"),` +
+        `idleEdge:r(C,"borderTopLeftRadius")+" "+r(C,"borderBottomLeftRadius"),button:r(n,"borderTopLeftRadius")}})()`,
     );
     const [
       above,
@@ -738,10 +755,14 @@ export async function run(ctx) {
       JSON.stringify(radii),
     );
     check(
+      "edges: the first card in view squares its corners against New session, whatever its state",
+      sides.l === "C" && radii.idleEdge === "0px 0px",
+      JSON.stringify({ sides, idleEdge: radii.idleEdge }),
+    );
+    check(
       "seamless: beside the hide button it joins the button, its corner there square, no sliver of the strip between",
       Math.abs(a.r - hb.x) < 0.6 &&
-        sides.r &&
-        !sides.l &&
+        sides.r === "A" &&
         joinTop === CHAT &&
         joinCorner === CHAT &&
         joinLine === "rgb(0, 120, 212)" &&
@@ -830,18 +851,21 @@ export async function run(ctx) {
       );
     const nb = await box(q(NEW));
     const hb1 = await box(q(HIDE));
-    const [newRest, hideRest, newFoot, hideFoot, bandL, bandR] = await colorsAt(
-      [
+    const [newRest, hideRest, newFoot, hideFoot, bandL, bandR, bandTopR] =
+      await colorsAt([
         [nb.x + 1.5, nb.y + nb.h / 2],
         [hb1.r - 1.5, hb1.y + hb1.h / 2],
         [nb.x + nb.w / 2, nb.b + 0.5],
         [hb1.x + hb1.w / 2, hb1.b + 0.5],
         [nb.r + 0.5, nb.y + nb.h / 2],
         [hb1.x - 0.5, hb1.y + hb1.h / 2],
-      ],
-    );
-    const sides0 = await json(
-      `(function(){var L=${q(LIST)};return{l:L.hasAttribute("data-flush-l"),r:L.hasAttribute("data-flush-r")}})()`,
+        [hb1.x - 0.5, hb1.y + 0.5],
+      ]);
+    const sides0 = await edgesNow();
+    // A sits just past the right end, so its left shoulder would reach into
+    // C's corner there; out of view, it draws none.
+    const awayA = await ctx.evaluate(
+      `${cardEl("A")}.hasAttribute("data-away")&&getComputedStyle(${cardEl("A")},"::before").display==="none"`,
     );
     const hover = async (b) => {
       await ctx.cdp("Input.dispatchMouseEvent", {
@@ -875,9 +899,57 @@ export async function run(ctx) {
       }),
     );
     check(
-      "buttons: the band of cards starts right at each, the card on screen joining neither while out of view",
-      bandL === STRIP && bandR === STRIP && !sides0.l && !sides0.r,
+      "buttons: the band of cards starts right at each, B and C there while the card on screen is out of view",
+      bandL === STRIP &&
+        bandR === STRIP &&
+        sides0.l === "B" &&
+        sides0.r === "C",
       JSON.stringify({ bandL, bandR, sides0 }),
+    );
+    check(
+      "edges: the card on screen, just out of view, reaches no shoulder into the end card",
+      awayA && bandTopR === STRIP,
+      JSON.stringify({ awayA, bandTopR }),
+    );
+    // Edges: hovered, B (at the left end) and C (at the right) fill their
+    // outer corners with the hover color, no shade of the strip beside the
+    // button, while their inner corners stay rounded.
+    const hoverEdge = async (k, outer, inner) => {
+      const b = await box(cardEl(k));
+      await ctx.cdp("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        ...center(b),
+      });
+      await ctx.sleep(100);
+      const [ref, top, bottom, in1] = await colorsAt([
+        [outer(b) + (outer(b) < b.x + 1 ? 3 : -3), b.y + b.h / 2],
+        [outer(b), b.y + 0.5],
+        [outer(b), b.b - 0.5],
+        [inner(b), b.y + 0.5],
+      ]);
+      await away();
+      return { ref, top, bottom, in1 };
+    };
+    const edgeB = await hoverEdge(
+      "B",
+      (b) => b.x + 0.5,
+      (b) => b.r - 0.5,
+    );
+    const edgeC = await hoverEdge(
+      "C",
+      (b) => b.r - 0.5,
+      (b) => b.x + 0.5,
+    );
+    check(
+      "edges: a hovered card at either end fills its outer corners, its inner ones still rounded",
+      [edgeB, edgeC].every(
+        (e) =>
+          e.ref !== STRIP &&
+          e.top === e.ref &&
+          e.bottom === e.ref &&
+          e.in1 === STRIP,
+      ),
+      JSON.stringify({ edgeB, edgeC }),
     );
     // Icons: the line height less 2px above and below, the header's 20px at
     // the default tab height, both the same size.
@@ -1294,10 +1366,40 @@ export async function run(ctx) {
       await ctx.evaluate("window.__muts"),
     );
 
+    // A scrolled strip that gets wider keeps its first card in view, on the
+    // new boundary: one card in at 420px, then 640px.
+    await ctx.evaluate(
+      `${q(LIST)}.scrollLeft=parseFloat(${q(LIST)}.style.getPropertyValue("--ccup-card-w"))`,
+    );
+    await ctx.sleep(150);
+    const before0 = sharesOk(await layout());
+    await ctx.cdp("Emulation.setDeviceMetricsOverride", {
+      width: 640,
+      height: 700,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+    await ctx.sleep(250);
+    const after0 = sharesOk(await layout());
+    const edges0 = await edgesNow();
+    const order0 = await json(
+      `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){return b.dataset.id})`,
+    );
+    check(
+      "shares: a scrolled strip that changes width keeps its first card in view, on the new boundary",
+      before0.ok &&
+        before0.first === 1 &&
+        after0.ok &&
+        after0.first === 1 &&
+        after0.per !== before0.per &&
+        edges0.l === LETTER[order0[1]] &&
+        edges0.r === LETTER[order0[after0.K]],
+      JSON.stringify({ before0, after0, edges0 }),
+    );
+
     // Widths from a wide sidebar down to a narrow one (seven sessions by now):
-    // the title rule holds at each, and so does the edge rule, both its peek
-    // and its sliver turning up along the way. It ends at 250px, where the
-    // scroll checks below run.
+    // the share rule holds at each. It ends at 250px, where the scroll checks
+    // below run.
     const steps = {};
     const bad = [];
     for (let width = 900; width >= 250; width -= 10) {
@@ -1451,7 +1553,7 @@ export async function run(ctx) {
     const lead = await json(
       `(function(){var b=${cardEl("A")},n=${q(NEW)};return{first:b===b.parentNode.firstElementChild,` +
         `corner:getComputedStyle(b).borderBottomLeftRadius,before:getComputedStyle(b,"::before").display,` +
-        `side:b.parentNode.hasAttribute("data-flush-l"),` +
+        `side:b.hasAttribute("data-edge-l"),` +
         `gap:b.getBoundingClientRect().left-n.getBoundingClientRect().right}})()`,
     );
     const [leadTop, leadButton, leadCorner, leadLine, leadFoot] =

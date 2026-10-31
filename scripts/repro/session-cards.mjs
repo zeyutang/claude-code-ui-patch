@@ -37,12 +37,13 @@
 //   seamless  the card on screen is the chat's own background, joined to
 //             the chat above with no edge, its bottom corners rounded and the
 //             strip curving into it at the top, on the screen's pixels, and
-//             beside a button it joins that button, its corner there square
-//             and no sliver of the strip between them
-//   edges     the cards flush with the band's ends square their corners on
-//             that side, whatever their state, so a hovered one shows no
-//             shade of the strip beside a button, while their inner corners
-//             stay rounded
+//             beside a button it merges into the chat around the band's
+//             rounded end, no sliver of the strip between them
+//   edges     at rest the band of cards rounds off at both ends like the
+//             cards, the chat beyond its corners, so a hovered end card shows
+//             no shade of the strip beside a button; mid-scroll, an end that
+//             cuts through a card is square, and the card on screen just out
+//             of view reaches no shoulder into the end card
 //   click     a session open in an editor tab asks the host to focus that
 //             tab, any other opens here, the strip staying the same element
 //             and the input box staying put
@@ -75,8 +76,7 @@
 //             along the bottom of the card on screen (both built here, as
 //             the patcher would from window.density.layout); a compact tab
 //             height makes the cards and buttons 20px tall; the card on screen
-//             first joins New session, its corner there square and its blue
-//             line running to that edge
+//             first sits in the band's rounded end, the chat all around it
 //   editor    an editor tab (IS_SIDEBAR false) gets no strip
 //   empty     with no session to show the strip stays hidden and the input
 //             box keeps its native 16px
@@ -499,18 +499,13 @@ export async function run(ctx) {
       L.cards.every((c) => c.text === c.title);
     return { ok, K, per: +per.toFixed(2), first, n: L.cards.length };
   };
-  // The cards marked flush with the band's left and right ends, by session
-  // letter (more than one on a side would read "A,B").
-  const edgesNow = async () => {
-    const e = await json(
-      `(function(){var ids=function(s){return[].map.call(document.querySelectorAll(s),function(b){return b.dataset.id})};` +
-        `return{l:ids(${JSON.stringify(`${CARD}[data-edge-l]`)}),r:ids(${JSON.stringify(`${CARD}[data-edge-r]`)})}})()`,
+  // Which ends of the band cut through a card (square), and its own corner
+  // radius there.
+  const cutNow = () =>
+    json(
+      `(function(){var L=${q(LIST)},s=getComputedStyle(L);return{l:L.hasAttribute("data-cut-l"),r:L.hasAttribute("data-cut-r"),` +
+        `rl:s.borderTopLeftRadius+" "+s.borderBottomLeftRadius,rr:s.borderTopRightRadius+" "+s.borderBottomRightRadius}})()`,
     );
-    return {
-      l: e.l.map((i) => LETTER[i]).join(),
-      r: e.r.map((i) => LETTER[i]).join(),
-    };
-  };
 
   try {
     // Mount and geometry.
@@ -688,13 +683,15 @@ export async function run(ctx) {
     await ctx.sleep(150);
     const a = await box(cardEl("A"));
     const cIdle = await box(cardEl("C"));
-    // A, brought into view at boot, ends at the hide button: its right side
-    // joins the button, the corner square, the blue line running to the edge.
+    // A, brought into view at boot, ends at the hide button, where the band
+    // rounds off: the chat all around A's corner there, the blue line
+    // stopping short of it.
     const hb = await box(q(HIDE));
-    const sides = await edgesNow();
+    const lb = await box(q(LIST));
+    const cut0 = await cutNow();
     // The cards' corners and shoulders take the input box's 8px radius, the
-    // buttons the header icon buttons' 4px; C, first in view, squares its
-    // left corners against New session and keeps its right ones.
+    // buttons the header icon buttons' 4px; C, first in view, keeps all its
+    // corners, the band rounding off over them.
     const radii = await json(
       `(function(){var r=function(e,k){return getComputedStyle(e)[k]};var A=${cardEl("A")},C=${cardEl("C")},n=${q(NEW)};` +
         `return{token:getComputedStyle(A).getPropertyValue("--corner-radius-large").trim(),active:r(A,"borderBottomLeftRadius"),` +
@@ -714,6 +711,8 @@ export async function run(ctx) {
       joinLine,
       joinButton,
       joinFoot,
+      bandTL,
+      bandTLin,
     ] = await colorsAt([
       [a.x + a.w / 2, a.y - 3],
       [a.x + a.w / 2, a.y + 0.5],
@@ -727,6 +726,8 @@ export async function run(ctx) {
       [a.r - 0.5, a.b - 0.5],
       [a.r + 0.5, a.y + 0.5],
       [a.r + 0.5, a.b + 0.5],
+      [lb.x + 0.5, lb.y + 0.5],
+      [lb.x + 2.5, lb.y + 6],
     ]);
     const CHAT = "rgb(24, 24, 24)";
     const STRIP = "rgb(43, 43, 43)";
@@ -755,23 +756,27 @@ export async function run(ctx) {
       JSON.stringify(radii),
     );
     check(
-      "edges: the first card in view squares its corners against New session, whatever its state",
-      sides.l === "C" && radii.idleEdge === "0px 0px",
-      JSON.stringify({ sides, idleEdge: radii.idleEdge }),
+      "edges: at rest the band rounds off at both ends like the cards, the chat beyond its corners",
+      !cut0.l &&
+        !cut0.r &&
+        cut0.rl === "8px 8px" &&
+        cut0.rr === "8px 8px" &&
+        radii.idleEdge === "8px 8px" &&
+        bandTL === CHAT &&
+        bandTLin === STRIP,
+      JSON.stringify({ cut0, idleEdge: radii.idleEdge, bandTL, bandTLin }),
     );
     check(
-      "seamless: beside the hide button it joins the button, its corner there square, no sliver of the strip between",
+      "seamless: beside the hide button it merges into the chat around the band's rounded end, no sliver of the strip between",
       Math.abs(a.r - hb.x) < 0.6 &&
-        sides.r === "A" &&
         joinTop === CHAT &&
         joinCorner === CHAT &&
-        joinLine === "rgb(0, 120, 212)" &&
+        joinLine === CHAT &&
         joinButton === CHAT &&
         joinFoot === CHAT,
       JSON.stringify({
         ar: a.r,
         hx: hb.x,
-        sides,
         joinTop,
         joinCorner,
         joinLine,
@@ -859,9 +864,9 @@ export async function run(ctx) {
         [hb1.x + hb1.w / 2, hb1.b + 0.5],
         [nb.r + 0.5, nb.y + nb.h / 2],
         [hb1.x - 0.5, hb1.y + hb1.h / 2],
-        [hb1.x - 0.5, hb1.y + 0.5],
+        [hb1.x - 3, hb1.y + 3],
       ]);
-    const sides0 = await edgesNow();
+    const sides0 = await cutNow();
     // A sits just past the right end, so its left shoulder would reach into
     // C's corner there; out of view, it draws none.
     const awayA = await ctx.evaluate(
@@ -899,11 +904,8 @@ export async function run(ctx) {
       }),
     );
     check(
-      "buttons: the band of cards starts right at each, B and C there while the card on screen is out of view",
-      bandL === STRIP &&
-        bandR === STRIP &&
-        sides0.l === "B" &&
-        sides0.r === "C",
+      "buttons: the band of cards starts right at each, B and C at its ends while the card on screen is out of view",
+      bandL === STRIP && bandR === STRIP && !sides0.l && !sides0.r,
       JSON.stringify({ bandL, bandR, sides0 }),
     );
     check(
@@ -911,9 +913,9 @@ export async function run(ctx) {
       awayA && bandTopR === STRIP,
       JSON.stringify({ awayA, bandTopR }),
     );
-    // Edges: hovered, B (at the left end) and C (at the right) fill their
-    // outer corners with the hover color, no shade of the strip beside the
-    // button, while their inner corners stay rounded.
+    // Edges: hovered, B (at the left end) and C (at the right) round off
+    // with the band, the chat beyond their outer corners rather than a shade
+    // of the strip, while their inner corners show the strip as any card's.
     const hoverEdge = async (k, outer, inner) => {
       const b = await box(cardEl(k));
       await ctx.cdp("Input.dispatchMouseEvent", {
@@ -941,15 +943,48 @@ export async function run(ctx) {
       (b) => b.x + 0.5,
     );
     check(
-      "edges: a hovered card at either end fills its outer corners, its inner ones still rounded",
+      "edges: a hovered card at either end rounds off with the band, the chat beyond its outer corners",
       [edgeB, edgeC].every(
         (e) =>
           e.ref !== STRIP &&
-          e.top === e.ref &&
-          e.bottom === e.ref &&
+          e.ref !== CHAT &&
+          e.top === CHAT &&
+          e.bottom === CHAT &&
           e.in1 === STRIP,
       ),
       JSON.stringify({ edgeB, edgeC }),
+    );
+    // Mid-scroll, half a card in, both ends cut through a card (C on the
+    // left, D on the right, A whole between them) and stay square; back on
+    // a boundary they round off again.
+    const midAt = async (sl) => {
+      await ctx.evaluate(`${q(LIST)}.scrollLeft=${sl}`);
+      await ctx.sleep(150);
+      const L = await box(q(LIST));
+      const [tl, tr] = await colorsAt([
+        [L.x + 0.5, L.y + 0.5],
+        [L.r - 0.5, L.y + 0.5],
+      ]);
+      return { cut: await cutNow(), tl, tr };
+    };
+    const perMid = await ctx.evaluate(
+      `parseFloat(${q(LIST)}.style.getPropertyValue("--ccup-card-w"))`,
+    );
+    const mid = await midAt(perMid * 1.5);
+    const atRest = await midAt(0);
+    check(
+      "edges: mid-scroll an end cutting through a card is square, at rest it rounds off again",
+      mid.cut.l &&
+        mid.cut.r &&
+        mid.cut.rl === "0px 0px" &&
+        mid.cut.rr === "0px 0px" &&
+        mid.tl === STRIP &&
+        mid.tr === STRIP &&
+        !atRest.cut.l &&
+        !atRest.cut.r &&
+        atRest.tl === CHAT &&
+        atRest.tr === CHAT,
+      JSON.stringify({ perMid, mid, atRest }),
     );
     // Icons: the line height less 2px above and below, the header's 20px at
     // the default tab height, both the same size.
@@ -1381,20 +1416,17 @@ export async function run(ctx) {
     });
     await ctx.sleep(250);
     const after0 = sharesOk(await layout());
-    const edges0 = await edgesNow();
-    const order0 = await json(
-      `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){return b.dataset.id})`,
-    );
+    const cutAfter = await cutNow();
     check(
-      "shares: a scrolled strip that changes width keeps its first card in view, on the new boundary",
+      "shares: a scrolled strip that changes width keeps its first card in view, on the new boundary, its ends rounded",
       before0.ok &&
         before0.first === 1 &&
         after0.ok &&
         after0.first === 1 &&
         after0.per !== before0.per &&
-        edges0.l === LETTER[order0[1]] &&
-        edges0.r === LETTER[order0[after0.K]],
-      JSON.stringify({ before0, after0, edges0 }),
+        !cutAfter.l &&
+        !cutAfter.r,
+      JSON.stringify({ before0, after0, cutAfter }),
     );
 
     // Widths from a wide sidebar down to a narrow one (seven sessions by now):
@@ -1547,13 +1579,12 @@ export async function run(ctx) {
         lineCorner !== "rgb(0, 120, 212)",
       JSON.stringify({ line, lineMid, lineCorner }),
     );
-    // A, first since the send, sits right after the New session button and
-    // joins it: no shoulder and a square corner on that side, the blue line
-    // running to the edge, and nothing of the strip between the two.
+    // A, first since the send, sits right after the New session button, in
+    // the band's rounded end: the chat all around it there, nothing of the
+    // strip between the two, the blue line stopping short of the corner.
     const lead = await json(
       `(function(){var b=${cardEl("A")},n=${q(NEW)};return{first:b===b.parentNode.firstElementChild,` +
-        `corner:getComputedStyle(b).borderBottomLeftRadius,before:getComputedStyle(b,"::before").display,` +
-        `side:b.hasAttribute("data-edge-l"),` +
+        `corner:getComputedStyle(b).borderBottomLeftRadius,` +
         `gap:b.getBoundingClientRect().left-n.getBoundingClientRect().right}})()`,
     );
     const [leadTop, leadButton, leadCorner, leadLine, leadFoot] =
@@ -1568,16 +1599,14 @@ export async function run(ctx) {
         ]);
       })();
     check(
-      "look: the card on screen first joins New session, its corner there square and its blue line running to that edge",
+      "look: the card on screen first sits in the band's rounded end, the chat all around it",
       lead.first &&
         Math.abs(lead.gap) < 0.6 &&
-        lead.corner === "0px" &&
-        lead.before === "none" &&
-        lead.side &&
+        lead.corner === "8px" &&
         leadTop === CHAT &&
         leadButton === CHAT &&
         leadCorner === CHAT &&
-        leadLine === "rgb(0, 120, 212)" &&
+        leadLine === CHAT &&
         leadFoot === CHAT,
       JSON.stringify({
         lead,
@@ -1616,10 +1645,10 @@ export async function run(ctx) {
     );
     // There VS Code clips the webview to its 8px radius, so the strip's ends
     // keep 8px in, over the chat's background, and its corners stay square:
-    // the buttons' chat background at its ends, the band of cards square
-    // beside the hide button, and on the left the card on screen (A, first)
-    // joining New session with a square corner. The clip is emulated by a box
-    // over the whole view with those corners, its shadow painting what falls
+    // the buttons' chat background at its ends, and the band of cards
+    // rounding off at both of its own, the chat beyond its corners (A, the
+    // card on screen, first on the left). The clip is emulated by a box over
+    // the whole view with those corners, its shadow painting what falls
     // outside them in a color nothing else uses, and the view's own corner
     // shows that it took.
     const ends = await json(
@@ -1655,7 +1684,7 @@ export async function run(ctx) {
         endRight === CHAT &&
         pastEnd === CHAT &&
         bandLeft === CHAT &&
-        bandRight === STRIP,
+        bandRight === CHAT,
       JSON.stringify({
         ends,
         viewCorner,

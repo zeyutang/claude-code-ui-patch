@@ -8112,42 +8112,40 @@ function ccupSessionCardsWeb(
     if (i < first) list.scrollLeft = i * per;
     else if (i > first + k - 1) list.scrollLeft = (i - k + 1) * per;
   };
-  // The cards flush with the scroller's ends, where the buttons sit: each
-  // squares its corners on that side, so a hovered one shows no shade of
-  // the strip beside a button and the card on screen joins it. At rest the
-  // strip sits on card boundaries, so one card meets each end; mid-scroll,
-  // neither does. The card on screen out of view hides its shoulders, which
-  // would otherwise reach into the end card beside it.
-  let edgeL: any = null;
-  let edgeR: any = null;
+  // The band of cards rounds off at both ends like the cards, which at rest
+  // sit on card boundaries; mid-scroll, an end that cuts through a card
+  // stays square, which the scroller marks per end. The card on screen out
+  // of view hides its shoulders, which would otherwise reach into the end
+  // card beside it.
   let away: any = null;
-  const flag = (was: any, now: any, attr: string): any => {
-    if (now !== was) {
-      was?.removeAttribute(attr);
-      now?.setAttribute(attr, "");
-    }
-    return now;
-  };
   const edges = (): void => {
-    let l: any = null;
-    let r: any = null;
+    let cutL = false;
+    let cutR = false;
     let off: any = null;
     if (per > 0) {
       const rl = list.getBoundingClientRect();
-      const a = list.children[Math.round(list.scrollLeft / per)];
-      const b =
-        list.children[Math.round((list.scrollLeft + rl.width) / per) - 1];
-      if (a && Math.abs(a.getBoundingClientRect().left - rl.left) < 0.5) l = a;
-      if (b && Math.abs(b.getBoundingClientRect().right - rl.right) < 0.5)
-        r = b;
+      const n = list.children.length;
+      // A card straddles x, the scroller's offset of one of its ends.
+      const cut = (x: number): boolean => {
+        const i = Math.floor(x / per);
+        return i < n && x - i * per > 0.5 && (i + 1) * per - x > 0.5;
+      };
+      cutL = cut(list.scrollLeft);
+      cutR = cut(list.scrollLeft + rl.width);
       const act = list.querySelector(":scope > [data-active]");
       const ra = act?.getBoundingClientRect();
       if (ra && (ra.right < rl.left + 0.5 || ra.left > rl.right - 0.5))
         off = act;
     }
-    edgeL = flag(edgeL, l, "data-edge-l");
-    edgeR = flag(edgeR, r, "data-edge-r");
-    away = flag(away, off, "data-away");
+    if (list.hasAttribute("data-cut-l") !== cutL)
+      list.toggleAttribute("data-cut-l", cutL);
+    if (list.hasAttribute("data-cut-r") !== cutR)
+      list.toggleAttribute("data-cut-r", cutR);
+    if (off !== away) {
+      away?.removeAttribute("data-away");
+      off?.setAttribute("data-away", "");
+      away = off;
+    }
   };
 
   // The header's New session button (not this strip's), and its icon for
@@ -8606,33 +8604,31 @@ function scardSide(): ScardSide {
   }
 }
 
-// The strip's stylesheet: the connected tab row's background across the
-// sidebar's width, its two buttons square at a card's height, their icons
-// SCARD_ICON_INSET in from its top and bottom, on the chat's own background
-// (the card on screen's, painted under each as a layer of the strip's
-// background, groove included), so the band of cards between them stands
-// apart, with the ghost hover color and the 4px corners (the webview's
-// small radius) of the header's icon buttons, the cards scrolling sideways
-// between them with no
-// scrollbar of their own, cards with a leading state circle (in the card's
-// own color, clay for a session waiting on you, filled while the session's
-// prompt cache is warm and a hollow ring once it is cold), the card on
-// screen in the chat's background with its corners and shoulders and the
-// look's line, its text in the input box's color (the editor tab's white
-// read as distracting, and the others' grey would not set it apart), and the
-// input box's lowered gap. The cards' corners take the input box's own
-// radius (the webview's --corner-radius-large, 8px) and the shoulders the
-// same curve, drawn as masked squares in the chat's background just outside
-// the card's top corners, so they paint only where the strip meets the
-// chat. A card beside a button squares its corners on that side, so a
-// hovered one shows no shade of the strip there, and the card on screen
-// there (first more often than not) also has no shoulder on that side and
-// runs the look's line to the edge, joining the button with no sliver of
-// the strip between them; scrolled out of view, it has no shoulders at all,
-// since they would reach into the end card. The text takes the editor tab's size
+// The strip's stylesheet: on the chat's own background (the card on
+// screen's) across the sidebar's width, its two buttons square at a card's
+// height, their icons SCARD_ICON_INSET in from its top and bottom, with the
+// ghost hover color and the 4px corners (the webview's small radius) of the
+// header's icon buttons, and between them the band of cards in the connected
+// tab row's background, groove included, so it stands apart from them,
+// scrolling sideways with no scrollbar of its own: cards with a leading
+// state circle (in the card's own color, clay for a session waiting on you,
+// filled while the session's prompt cache is warm and a hollow ring once it
+// is cold), the card on screen in the chat's background with its corners
+// and shoulders and the look's line, its text in the input box's color (the
+// editor tab's white read as distracting, and the others' grey would not set
+// it apart), and the input box's lowered gap. The cards' corners take the
+// input box's own radius (the webview's --corner-radius-large, 8px) and the
+// shoulders the same curve, drawn as masked squares in the chat's background
+// just outside the card's top corners, so they paint only where the strip
+// meets the chat. The band rounds off at its ends the same way at rest, the
+// chat's background beyond its corners, so a hovered end card shows no shade
+// of the strip beside a button and the card on screen there merges into the
+// button's background; an end cutting through a card mid-scroll stays
+// square. Scrolled out of view, the card on screen has no shoulders, which
+// would reach into the end card. The text takes the editor tab's size
 // (fontSize.body1). At the default density the webview itself is clipped to
-// VS Code's large radius (cornerRadius.large), so there the strip's ends
-// stay that far in from the sides, which keeps its own corners square.
+// VS Code's large radius (cornerRadius.large), so there the strip's ends stay
+// that far in from the sides, clear of that clip.
 function scardCss(chat: string, look: ScardLook, tabH: number): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
@@ -8645,28 +8641,18 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
       : "width:100%;margin:0";
   const shoulder = (at: string) =>
     `radial-gradient(circle at ${at},transparent calc(var(--ccup-card-r) - .5px),#000 var(--ccup-card-r))`;
-  // The chat's background under a button at one end of the strip.
-  const under = (at: string) =>
-    `linear-gradient(var(--ccup-card-bg),var(--ccup-card-bg)) ${at}/${tabH}px 100% no-repeat`;
+  const strip =
+    "var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))";
   const line =
     look === "line"
       ? `;background-image:linear-gradient(${tab("activeBorderTop", "var(--vscode-focusBorder)")},${tab("activeBorderTop", "var(--vscode-focusBorder)")});background-repeat:no-repeat;background-position:50% 100%;background-size:calc(100% - 2 * var(--ccup-card-r)) 1px`
       : "";
-  // A card beside a button, on that side, and the card on screen there.
-  const edgeL = ".ccup-cards-scroll>.ccup-card[data-edge-l]";
-  const edgeR = ".ccup-cards-scroll>.ccup-card[data-edge-r]";
-  const flushL = `${edgeL}[data-active]`;
-  const flushR = `${edgeR}[data-active]`;
-  const flushLine =
-    look === "line"
-      ? `${flushL}{background-size:calc(100% - var(--ccup-card-r)) 1px;background-position:0 100%}` +
-        `${flushR}{background-size:calc(100% - var(--ccup-card-r)) 1px;background-position:100% 100%}` +
-        `${flushL}[data-edge-r]{background-size:100% 1px}`
-      : "";
   return (
-    `.ccup-cards{--ccup-card-r:var(--corner-radius-large,8px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;${ends};height:${tabH + groove}px;padding:0 0 ${groove}px;background:${under("left")},${under("right")},var(--vscode-editorGroupHeader-connectedTabsBackground,var(--vscode-editorGroupHeader-tabsBackground,transparent))}` +
+    `.ccup-cards{--ccup-card-r:var(--corner-radius-large,8px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;${ends};height:${tabH + groove}px;padding:0;background:var(--ccup-card-bg)}` +
     ".ccup-cards[hidden]{display:none}" +
-    `.ccup-cards-scroll{position:relative;display:flex;flex:1 1 auto;min-width:0;height:${tabH}px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none}` +
+    `.ccup-cards-scroll{position:relative;display:flex;flex:1 1 auto;min-width:0;height:${tabH + groove}px;border-radius:var(--ccup-card-r);overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:${strip}}` +
+    ".ccup-cards-scroll[data-cut-l]{border-top-left-radius:0;border-bottom-left-radius:0}" +
+    ".ccup-cards-scroll[data-cut-r]{border-top-right-radius:0;border-bottom-right-radius:0}" +
     ".ccup-cards-scroll::-webkit-scrollbar{display:none}" +
     `.ccup-cards-btn{position:relative;display:flex;align-items:center;justify-content:center;flex:none;width:${tabH}px;height:${tabH}px;box-sizing:border-box;margin:0;padding:0;border:none;border-radius:var(--corner-radius-small,4px);background:transparent;color:${grey};cursor:pointer;outline:none}` +
     `.ccup-cards-btn svg{display:block;width:${tabH - 2 * SCARD_ICON_INSET}px;height:${tabH - 2 * SCARD_ICON_INSET}px;pointer-events:none}` +
@@ -8682,10 +8668,7 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
     ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
     `.ccup-card[data-active]::before{right:100%;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
     `.ccup-card[data-active]::after{left:100%;-webkit-mask:${shoulder("100% 100%")};mask:${shoulder("100% 100%")}}` +
-    `${edgeL}{border-top-left-radius:0;border-bottom-left-radius:0}${flushL}::before{display:none}` +
-    `${edgeR}{border-top-right-radius:0;border-bottom-right-radius:0}${flushR}::after{display:none}` +
     ".ccup-card[data-active][data-away]::before,.ccup-card[data-active][data-away]::after{display:none}" +
-    flushLine +
     ".ccup-card:focus-visible,.ccup-cards-btn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
     `[data-ccup-cards] .inputContainer_${chat}{bottom:${SCARD_GAP}px}` +
     HOVER_TIP_CSS

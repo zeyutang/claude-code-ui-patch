@@ -676,6 +676,14 @@ export async function run(ctx) {
     const sides = await json(
       `(function(){var L=${q(LIST)};return{l:L.hasAttribute("data-flush-l"),r:L.hasAttribute("data-flush-r")}})()`,
     );
+    // The cards' corners and shoulders take the input box's 8px radius, the
+    // buttons the header icon buttons' 4px.
+    const radii = await json(
+      `(function(){var r=function(e,k){return getComputedStyle(e)[k]};var A=${cardEl("A")},C=${cardEl("C")},n=${q(NEW)};` +
+        `return{token:getComputedStyle(A).getPropertyValue("--corner-radius-large").trim(),active:r(A,"borderBottomLeftRadius"),` +
+        `activeTop:r(A,"borderTopLeftRadius"),shoulder:getComputedStyle(A,"::before").width,idle:r(C,"borderTopLeftRadius"),` +
+        `button:r(n,"borderTopLeftRadius")}})()`,
+    );
     const [
       above,
       joined,
@@ -693,9 +701,9 @@ export async function run(ctx) {
       [a.x + a.w / 2, a.y - 3],
       [a.x + a.w / 2, a.y + 0.5],
       [a.x - 1, a.y + 0.5],
-      [a.x - 1, a.y + 3.5],
+      [a.x - 1, a.y + 6.5],
       [a.x + 0.5, a.b - 0.5],
-      [a.x + 4, a.b - 1.5],
+      [a.x + 8, a.b - 1.5],
       [cIdle.x + cIdle.w / 2, cIdle.b + 0.5],
       [a.r - 0.5, a.y + 0.5],
       [a.r - 0.5, a.b - 2.5],
@@ -718,6 +726,16 @@ export async function run(ctx) {
         cornerIn === CHAT &&
         foot === STRIP,
       JSON.stringify({ shoulder, beside, cornerOut, cornerIn, foot }),
+    );
+    check(
+      "seamless: the cards' corners and shoulders match the input box's 8px, the buttons the header's 4px",
+      radii.token === "8px" &&
+        radii.active === "8px" &&
+        radii.activeTop === "0px" &&
+        radii.shoulder === "8px" &&
+        radii.idle === "8px" &&
+        radii.button === "4px",
+      JSON.stringify(radii),
     );
     check(
       "seamless: beside the hide button it joins the button, its corner there square, no sliver of the strip between",

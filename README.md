@@ -171,7 +171,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   Between the buttons the strip shows only whole cards, sharing the width equally, with as few cards as keep each at most 300 pixels wide.
   A title too long for its card ends in an ellipsis.
   Hovering a card shows its full title.
-  The strip runs along the sidebar's bottom edge in the editor tab row's size and shape, and the card of the session on screen joins the chat above it, as an editor tab joins its editor, with its title in the input box's text color.
+  The strip runs along the sidebar's bottom edge in the editor tab row's size, with cards rounded like the input box above them, and the card of the session on screen joins the chat above it, as an editor tab joins its editor, with its title in the input box's text color.
   At the default density its ends stop short of the sidebar's rounded corners, so its own corners stay square.
   The cards are as tall as `window.density.editorTabHeight` makes editor tabs, and when `window.density.layout` is compact, or without VS Code's modern UI, they keep a hairline below them and the card on screen also carries a blue line along its bottom edge.
 - **Last turn delete reaches the last turn only.**

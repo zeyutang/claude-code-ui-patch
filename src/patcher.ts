@@ -3492,7 +3492,7 @@ function ccupTurnRewindWeb(
   };
   const shut = (w: { tool: string } | { old: true }): string =>
     "tool" in w
-      ? `Could not delete the turn: it used ${w.tool}, which can leave changes behind.`
+      ? `Could not delete the turn: ${w.tool} may have made changes.`
       : `Could not delete the turn: it started more than ${secs} seconds ago.`;
   const states = (uuids: string[]): (number | string)[] => {
     const s = mgr.activeSession?.value;
@@ -3507,18 +3507,20 @@ function ccupTurnRewindWeb(
     // any entry the conversation does not hold.
     let last = uuids.length - 1;
     while (last >= 0 && (held.has(uuids[last]) || !at.has(uuids[last]))) last--;
+    // Each tip says, as the user sees it, why a click does nothing. The
+    // shared hover tip keeps to one line, so they stay short.
     return uuids.map((u, k) => {
-      if (held.has(u)) return "Not sent yet";
+      if (held.has(u)) return "Cannot delete because it is not sent yet";
       const j = at.get(u);
       if (j === undefined || msgs[j]?.type !== "user")
-        return "Not in this conversation";
-      if (k < last) return "Only the last turn can be deleted";
-      if (held.size > 0) return "A queued message waits to be sent";
+        return "Cannot delete because it is not in this conversation";
+      if (k < last) return "Cannot delete because later turns build on it";
+      if (held.size > 0) return "Cannot delete while a queued message waits";
       const w = windowOf(msgs, j);
       if ("ms" in w) return w.ms;
       return "tool" in w
-        ? `Used ${w.tool}, which can leave changes behind`
-        : `Started more than ${secs} seconds ago`;
+        ? `Cannot delete because ${w.tool} may have made changes`
+        : `Cannot delete after its first ${secs} seconds`;
     });
   };
   const run = async (uuid: string): Promise<boolean> => {
@@ -7746,7 +7748,7 @@ function promptHistBuild(c: string): string | undefined {
     `if(!b)continue;st=ss[i];x=typeof st==="number"&&st>0;` +
     `if(x){t=t?Math.min(t,st):st;if(b.hasAttribute("data-off")){b.removeAttribute("data-off");b.removeAttribute("aria-disabled")}}` +
     `else if(!b.hasAttribute("data-off")){disarm(b);b.setAttribute("data-off","");b.setAttribute("aria-disabled","true")}` +
-    `st=x?"Delete this turn":typeof st==="string"?st:"Cannot be deleted";if(b.getAttribute("data-tip")!==st)b.setAttribute("data-tip",st)}` +
+    `st=x?"Delete this turn":typeof st==="string"?st:"Cannot delete this turn";if(b.getAttribute("data-tip")!==st)b.setAttribute("data-tip",st)}` +
     `if(t)dT=setTimeout(que,t+50)}` +
     // The current entry: a clicked one while the view stays where its glide
     // put it, the last at the bottom, else the last header at or above the

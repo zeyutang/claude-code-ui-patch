@@ -532,7 +532,8 @@ export async function run(ctx) {
     const tipEarly = await hoverTip(delOf(1));
     check(
       "tip: a greyed-out button says why it does nothing",
-      tipEarly?.text === "Only the last turn can be deleted" && tipEarly.above,
+      tipEarly?.text === "Cannot delete because later turns build on it" &&
+        tipEarly.above,
       JSON.stringify(tipEarly),
     );
     await mouse("mouseMoved", { x: 5, y: 5 });
@@ -547,7 +548,7 @@ export async function run(ctx) {
     };
     check(
       "tip: a click on a greyed-out button shows its tip at once and arms nothing",
-      clicked.tip?.text === "Only the last turn can be deleted" &&
+      clicked.tip?.text === "Cannot delete because later turns build on it" &&
         clicked.state?.off &&
         !clicked.state.arm &&
         clicked.sent === 0,
@@ -735,7 +736,8 @@ export async function run(ctx) {
     const aged = await stateOf(PROMPTS.length - 3);
     check(
       "again: the new last entry, sent minutes ago, is greyed out for its age",
-      aged?.off === true && aged.tip === "Started more than 30 seconds ago",
+      aged?.off === true &&
+        aged.tip === "Cannot delete after its first 30 seconds",
       JSON.stringify(aged),
     );
     await ctx.shot("after");
@@ -864,7 +866,7 @@ export async function run(ctx) {
       t2.started &&
         open2?.off === false &&
         !!shut2 &&
-        tool2?.tip === "Used Edit, which can leave changes behind",
+        tool2?.tip === "Cannot delete because Edit may have made changes",
       JSON.stringify({ open2, tool2 }),
     );
     await endTurn();
@@ -891,7 +893,7 @@ export async function run(ctx) {
       t3.started &&
         before3?.off === false &&
         !!shut3 &&
-        after3?.tip === "Started more than 30 seconds ago",
+        after3?.tip === "Cannot delete after its first 30 seconds",
       JSON.stringify({ before3, after3 }),
     );
     await ctx.evaluate("window.__skew=0");
@@ -926,12 +928,13 @@ export async function run(ctx) {
       t4.started &&
         !!said4 &&
         race.notes[0] ===
-          "Could not delete the turn: it used Write, which can leave changes behind." &&
+          "Could not delete the turn: Write may have made changes." &&
         race.rewinds === 0 &&
         race.stop &&
         race.headers === t4.n + 1 &&
         race.state?.off === true &&
-        race.state.tip === "Used Write, which can leave changes behind" &&
+        race.state.tip ===
+          "Cannot delete because Write may have made changes" &&
         race.busy === false,
       JSON.stringify(race),
     );
@@ -962,7 +965,7 @@ export async function run(ctx) {
         !!held &&
         waiting.headers === qn &&
         waiting.last?.off === true &&
-        waiting.last.tip === "A queued message waits to be sent",
+        waiting.last.tip === "Cannot delete while a queued message waits",
       JSON.stringify(waiting),
     );
     await ctx.evaluate("window.__skew+=40000;window.__pickUp()");
@@ -983,7 +986,7 @@ export async function run(ctx) {
     const lateState = await stateOf(qn);
     check(
       "queue: 30 seconds after Claude started on it, its button greys out",
-      !!late && lateState?.tip === "Started more than 30 seconds ago",
+      !!late && lateState?.tip === "Cannot delete after its first 30 seconds",
       JSON.stringify(lateState),
     );
     await endTurn();

@@ -5941,12 +5941,23 @@ function mathSizeRoot(css: string): string | undefined {
 // The KaTeX fonts the install's own stylesheet loads, the math css line set
 // aside. Claude Code 2.1.301 and later ship them in this same webview/fonts
 // folder for their own math rendering, under the same 20 names and byte for
-// byte the bundled 0.19.0 set.
-const MATH_FONT_URL_RE = /url\(["']?fonts\/(KaTeX_[\w-]+\.woff2)["']?\)/g;
+// byte the bundled 0.19.0 set. 2.1.314 prefixes each source with ./ there.
+const MATH_FONT_URL_RE =
+  /url\(["']?(?:\.\/)?fonts\/(KaTeX_[\w-]+\.woff2)["']?\)/g;
 function nativeMathFonts(css: string | undefined): Set<string> {
   if (css === undefined) return new Set();
   const own = cssRemoveLine(css, MATH_CSS_MARKER);
   return new Set(Array.from(own.matchAll(MATH_FONT_URL_RE), (m) => m[1]));
+}
+
+// The fonts of the build's own stylesheet that its webview/fonts folder lacks
+// and the bundled set can put back.
+function mathFontsOwed(dir: string, css: string | undefined): string[] {
+  const native = nativeMathFonts(css);
+  const fonts = path.join(dir, "webview", "fonts");
+  return (mathAssets?.fontNames ?? []).filter(
+    (name) => native.has(name) && !fs.existsSync(path.join(fonts, name)),
+  );
 }
 
 // Copy the KaTeX woff2 fonts into <install>/webview/fonts when ON (skipping
@@ -5954,20 +5965,24 @@ function nativeMathFonts(css: string | undefined): Set<string> {
 // when OFF. Same atomic stage-and-rename as the bundle writes. Fonts the
 // build's own stylesheet loads belong to the build whatever the toggle says:
 // never overwritten or removed, and put back from the bundled set when
-// missing, since 1.6.0 removed them on 2.1.301 with the toggle off.
+// missing, since 1.6.0 removed them on 2.1.301 with the toggle off. A build
+// whose stylesheet carries KaTeX owns the whole folder, even when none of its
+// sources reads as one of these fonts: every pass removed all 20 on 2.1.314
+// while the pattern above missed its ./fonts/ form.
 function syncMathFonts(ext: ClaudeExt, on: boolean, changed: string[]): void {
   const dir = path.join(ext.dir, "webview", "fonts");
-  const native = nativeMathFonts(readFileSafe(ext, "webview/index.css"));
-  if (native.size) {
-    let restored = 0;
-    for (const name of mathAssets?.fontNames ?? []) {
-      const dst = path.join(dir, name);
-      if (!native.has(name) || fs.existsSync(dst)) continue;
-      fs.mkdirSync(dir, { recursive: true });
-      copyFileAtomic(path.join(mathAssets!.fontsDir, name), dst);
-      restored++;
+  const css = readFileSafe(ext, "webview/index.css");
+  if (css !== undefined && nativeMathCss(css)) {
+    const owed = mathFontsOwed(ext.dir, css);
+    if (!owed.length) return;
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of owed) {
+      copyFileAtomic(
+        path.join(mathAssets!.fontsDir, name),
+        path.join(dir, name),
+      );
     }
-    if (restored) changed.push(`math fonts restored x${restored}`);
+    changed.push(`math fonts restored x${owed.length}`);
     return;
   }
   if (on && mathAssets) {
@@ -12101,6 +12116,11 @@ interface TogglePoint {
   // no setting value to disagree with. Checked before the anchor, and it makes
   // the point report "native": satisfied, never "missing", never actionable.
   nativeOn?: (c: string) => boolean;
+  // Files of that build which an earlier version of this patch removed, and
+  // which a pass puts back (chatMath's fonts), checked in the install dir.
+  // Owed files read as a leftover, so activation applies and the webview is
+  // asked to reload.
+  nativeOwed?: (dir: string, read: BundleReader) => boolean;
   // Optional secondary CSS side-effect (a different file) applied when ON.
   cssFile?: string;
   cssMarker?: string; // comment tagging the appended rule
@@ -12187,6 +12207,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
     // 2.1.301 and later render math themselves; the sites above serve 2.1.300
     // and earlier.
     nativeOn: mathNative,
+    nativeOwed: (dir, read) =>
+      mathFontsOwed(dir, read("webview/index.css")).length > 0,
     cssFile: "webview/index.css",
     cssMarker: MATH_CSS_MARKER,
     cssBuild: mathCssBuild,
@@ -12443,11 +12465,13 @@ function toggleCurrentOn(content: string, t: TogglePoint): boolean | undefined {
 function toggleStateStr(
   read: (rel: string) => string | undefined,
   t: TogglePoint,
+  dir: string,
 ): string | undefined {
   // A build that ships the feature has no state of ours, except a leftover,
-  // whose own string makes stripping it ask the webview for a reload.
+  // whose own string makes the pass that clears it ask the webview for a
+  // reload.
   if (toggleNative(read, t))
-    return toggleLeftover(read, t) ? "leftover" : undefined;
+    return toggleLeftover(read, t, dir) ? "leftover" : undefined;
   const js = read(t.file);
   if (js === undefined || !togglePresent(js, t)) return undefined;
   const jsOn = toggleCurrentOn(js, t) ? "on" : "off";
@@ -12481,12 +12505,19 @@ function toggleNative(read: BundleReader, t: TogglePoint): boolean {
 // Whether a toggle the build now ships still carries what an earlier version
 // wrote: its own edits, or its css side-effect, which 1.6.0 went on writing on
 // Claude Code 2.1.301 beside the native KaTeX stylesheet. Apply strips both.
-function toggleLeftover(read: BundleReader, t: TogglePoint): boolean {
+// Files an earlier version removed from that build count too (nativeOwed),
+// and apply puts them back.
+function toggleLeftover(
+  read: BundleReader,
+  t: TogglePoint,
+  dir: string,
+): boolean {
   const js = read(t.file);
   if (js !== undefined && togglePresent(js, t) && toggleCurrentOn(js, t))
     return true;
   const css = t.cssFile && t.cssMarker ? read(t.cssFile) : undefined;
-  return css !== undefined && css.includes(t.cssMarker!);
+  if (css !== undefined && css.includes(t.cssMarker!)) return true;
+  return t.nativeOwed?.(dir, read) ?? false;
 }
 function toggleSet(content: string, t: TogglePoint, on: boolean): string {
   if (t.fnSet) return t.fnSet(content, on);
@@ -14229,12 +14260,13 @@ export function analyzeToggles(
     const wantOn = toggles[t.id];
     // Before the anchor: on a build that ships the feature the anchor is gone by
     // design, and reading that as "missing" would flag a healthy install.
-    // A leftover from before reads as drift instead, so a pass strips it.
+    // A leftover from before reads as drift instead, so a pass strips it, or
+    // puts back what an earlier version removed.
     if (toggleNative(read, t)) {
-      const status = toggleLeftover(read, t) ? "custom" : "native";
+      const status = toggleLeftover(read, t, ext.dir) ? "custom" : "native";
       return { ...base, status, wantOn };
     }
-    const cur = toggleStateStr(read, t);
+    const cur = toggleStateStr(read, t, ext.dir);
     if (cur === undefined) return { ...base, status: "missing", wantOn };
     if (cur === toggleWantStr(t, wantOn))
       return { ...base, status: "current", wantOn };
@@ -15085,7 +15117,7 @@ export class Patcher {
       );
     }
     for (const t of TOGGLE_POINTS) {
-      this.activationPx.set(t.id, toggleStateStr(read, t));
+      this.activationPx.set(t.id, toggleStateStr(read, t, this.ext.dir));
     }
     for (const ip of INJECT_POINTS) {
       this.activationPx.set(ip.id, injectStateStr(read(ip.file), ip));
@@ -15218,7 +15250,7 @@ export class Patcher {
     }
     for (const t of TOGGLE_POINTS) {
       if (isWebviewPoint(t.id))
-        this.activationPx.set(t.id, toggleStateStr(read, t));
+        this.activationPx.set(t.id, toggleStateStr(read, t, this.ext.dir));
     }
     for (const ip of INJECT_POINTS) {
       if (isWebviewPoint(ip.id))
@@ -15264,7 +15296,7 @@ export class Patcher {
       reconcile(p.id, content ? pointCurrentPx(content, p) : undefined);
     }
     for (const t of TOGGLE_POINTS) {
-      reconcile(t.id, toggleStateStr(read, t));
+      reconcile(t.id, toggleStateStr(read, t, this.ext.dir));
     }
     for (const ip of INJECT_POINTS) {
       reconcile(ip.id, injectStateStr(read(ip.file), ip));

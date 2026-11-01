@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- On Claude Code 2.1.314 and later, math in the chat draws with its own fonts again: `\neq` had shown as a box, and other symbols in a substitute font.
+
 ## 1.6.4
 
 - New `chatSessionCards` setting: along the bottom of the sidebar chat, below its input box, a strip of cards for your local sessions, the one where you last sent a message first, scrolling sideways through every session that is not archived.

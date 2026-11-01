@@ -285,6 +285,26 @@ function inventory(dir) {
   return counts;
 }
 
+// How many KaTeX fonts the copy's stylesheet loads, and which of them are not
+// on disk after the apply, read with a pattern of its own that takes any
+// relative source form. The copy starts without webview/fonts, so a font is
+// there only when the patcher read its source: the fonts of its own math css
+// line, or a build's own that it put back. A form it cannot read is one whose
+// fonts it never restores, and Claude Code 2.1.314's ./fonts/ was one whose
+// fonts it removed on every pass.
+function mathFontsOnDisk(dir) {
+  const css = readFileSync(join(dir, "webview", "index.css"), "utf8");
+  const named = new Set();
+  const src = /url\(\s*["']?([^"')]*KaTeX_[\w-]+\.woff2)[^)]*\)/g;
+  for (const [, url] of css.matchAll(src)) {
+    if (!/^[a-z][\w+.-]*:/i.test(url) && !url.startsWith("/")) named.add(url);
+  }
+  const missing = [...named].filter(
+    (url) => !existsSync(join(dir, "webview", url)),
+  );
+  return { named: named.size, missing };
+}
+
 function pointStates(P, ext) {
   const label = (kind) => (s) => ({ kind, ...s });
   return [
@@ -368,6 +388,7 @@ function auditInstall(P, install, expected) {
       landed: landed.size,
       counts,
       broken,
+      fonts: mathFontsOnDisk(work),
     };
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -444,7 +465,19 @@ for (const r of results) {
       (r.broken.length ? "FAIL" : "ok"),
   );
   for (const b of r.broken) console.log(`    ${b}`);
-  if (bad || r.stale.length || r.missing.length || r.broken.length) {
+  const { named, missing: gone } = r.fonts;
+  console.log(
+    pad(`  fonts      ${named - gone.length} of ${named} math fonts on disk`) +
+      (gone.length ? "FAIL" : "ok"),
+  );
+  for (const f of gone) console.log(`    not on disk: ${f}`);
+  if (
+    bad ||
+    r.stale.length ||
+    r.missing.length ||
+    r.broken.length ||
+    gone.length
+  ) {
     failed = true;
   }
 }

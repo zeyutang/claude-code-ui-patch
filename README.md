@@ -162,9 +162,9 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   Changing a session's model or effort, or running a slash command, does not count as a message.
   A session you have not opened in the sidebar since turning the setting on, nor sent to in an editor tab or a terminal since, takes its place from its last activity instead.
   A click opens the session as the Session history list does, and one open in an editor tab gets that tab focused.
-  Each card's circle is filled while the session is working, wherever it runs: in the sidebar, an editor tab, a terminal, or another window.
-  Working includes a turn waiting on you and a background agent the session started.
-  The circle turns clay while a permission or question prompt waits or a finished turn is still unseen.
+  Each card's circle breathes while the session is working, wherever it runs: in the sidebar, an editor tab, a terminal, or another window.
+  Working includes a background agent the session started.
+  The circle turns solid clay while a permission or question prompt waits on you, and solid green while a finished turn is still unseen, back to a ring once you open the session.
   The strip holds every session that is not archived and scrolls sideways like the editor's tabs, the mouse wheel included.
   A New session button stays at its left end, and a button at its right end hides the secondary side bar (where Claude Code puts the chat).
   That button's arrow points to the side of the window the secondary side bar is on.

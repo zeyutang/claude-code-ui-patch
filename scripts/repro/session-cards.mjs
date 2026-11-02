@@ -30,13 +30,16 @@
 //             unread mark, each mark the card, its reason in the label read
 //             out to assistive tech
 //   tip       the hover tip is the full title alone, where the card cuts it
-//   circle    each card leads with a circle in the card's color, clay for a
-//             session that needs you, filled while the session is at work
-//             and a ring while it is not
+//   circle    each card leads with a circle: a ring in the card's color while
+//             the session is idle, solid clay while a prompt or question waits
+//             on you, solid green while a turn that ended is unseen
 //   at work   a turn running here (on screen or behind it) or reported from
-//             an editor tab or a terminal fills the circle, one waiting on you
-//             mid-turn in clay, a finished one leaves a ring, and after a
-//             reload every card is a ring
+//             an editor tab or a terminal fills the circle and breathes it,
+//             1.5s a breath on its opacity alone, every breathing circle in
+//             step, a card that moves or remounts included; one waiting on you
+//             holds still (solid clay, or in the card's color on screen), a
+//             finished one turns green, and after a reload every card is a
+//             ring
 //   seamless  the card on screen is the chat's own background, joined to
 //             the chat above with no edge, its bottom corners rounded and the
 //             strip curving into it at the top, on the screen's pixels, and
@@ -51,8 +54,9 @@
 //             tab, any other opens here, the strip staying the same element
 //             and the input box staying put
 //   held      a turn that ends in a session this view holds while another
-//             is on screen gives it a dot until you open it, and so does a
-//             permission request arriving there
+//             is on screen turns its circle green until you open it, a grey
+//             ring once you move on, and a permission request arriving there
+//             turns it clay
 //   keys      the strip is one tab stop, arrows move between its buttons
 //             and cards (Home and End reaching the buttons), and Enter opens
 //             a card
@@ -236,9 +240,13 @@ window.__finish = (sid) => {
     usage: { input_tokens: 1, output_tokens: 1 }, uuid: crypto.randomUUID() });
   return true;
 };
-window.__permit = (sid) => deliver({ type: "request", channelId: window.__chan[sid], requestId: "q" + Math.random(),
-  request: { type: "tool_permission_request", toolName: "Bash", inputs: { command: "ls", description: "List" },
-    suggestions: [], toolUseId: "toolu_" + Math.random().toString(36).slice(2) } });
+// A permission prompt, and its withdrawal as the host cancels one.
+window.__permit = (sid) => { const requestId = "q" + Math.random();
+  deliver({ type: "request", channelId: window.__chan[sid], requestId,
+    request: { type: "tool_permission_request", toolName: "Bash", inputs: { command: "ls", description: "List" },
+      suggestions: [], toolUseId: "toolu_" + Math.random().toString(36).slice(2) } });
+  return requestId; };
+window.__unpermit = (requestId) => deliver({ type: "cancel_request", targetRequestId: requestId });
 const MODEL = { value: "default", label: "Default", resolvedModel: "claude-fable-5",
   supportsAutoMode: true, supportsFastMode: false, supportedEffortLevels: [] };
 window.acquireVsCodeApi = () => ({
@@ -309,6 +317,12 @@ const HEAD_NEW = 'button[aria-label="New session"]:not(.ccup-cards-btn)';
 const INPUT = '[aria-label="Message input"]';
 const HIDE_TIP = "Hide Secondary Side Bar";
 const RELOAD = "Reload the window to start using the side bar hide button.";
+// The circle's colors as computed: clay (Claude Code's orange) for a session
+// waiting on you, green (the transcript's dot for a tool call that succeeded)
+// for a turn that ended unseen; and the name of the breathing keyframes.
+const CLAY = "rgb(217, 119, 87)";
+const GREEN = "rgb(116, 201, 145)";
+const BREATH = "ccup-card-breathe";
 
 export async function run(ctx) {
   const dir = liveBundleDir();
@@ -429,29 +443,44 @@ export async function run(ctx) {
       });
     }
   };
-  // The cards as shown: session letter, then * for the one on screen and !
-  // for one whose circle shows it waiting.
+  // The cards as shown: session letter, then * for the one on screen, ! for a
+  // solid clay circle (waiting on you) and + for a solid green one (a turn
+  // that ended unseen).
   const LETTER = Object.fromEntries(Object.entries(S).map(([k, v]) => [v, k]));
   const strip = async () =>
     (
       await json(
-        `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){` +
-          `return[b.dataset.id,b.hasAttribute("data-active"),b.hasAttribute("data-pending")&&getComputedStyle(b.firstChild).borderTopColor==="rgb(217, 119, 87)"]})`,
+        `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){var c=getComputedStyle(b.firstChild).backgroundColor;` +
+          `return[b.dataset.id,b.hasAttribute("data-active"),c===${JSON.stringify(CLAY)}?"!":c===${JSON.stringify(GREEN)}?"+":""]})`,
       )
     )
-      .map(([i, a, p]) => `${LETTER[i] ?? "?"}${a ? "*" : ""}${p ? "!" : ""}`)
+      .map(([i, a, p]) => `${LETTER[i] ?? "?"}${a ? "*" : ""}${p}`)
       .join(" ");
-  // Each card's letter, + while its circle is filled (the session at work),
-  // - while it is a ring.
+  // Each card's letter, then its circle: - a ring, + filled and still, ~
+  // filled and breathing (? breathing unfilled, which should never show).
   const fills = async () =>
     (
       await json(
-        `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){` +
-          `return[b.dataset.id,getComputedStyle(b.firstChild).backgroundColor!=="rgba(0, 0, 0, 0)"]})`,
+        `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){var s=getComputedStyle(b.firstChild);` +
+          `return[b.dataset.id,s.backgroundColor!=="rgba(0, 0, 0, 0)",s.animationName===${JSON.stringify(BREATH)}]})`,
       )
     )
-      .map(([i, w]) => `${LETTER[i] ?? "?"}${w ? "+" : "-"}`)
+      .map(
+        ([i, w, br]) =>
+          `${LETTER[i] ?? "?"}${w ? (br ? "~" : "+") : br ? "?" : "-"}`,
+      )
       .join(" ");
+  // A card's breath: its keyframes' name, timing and properties, and where
+  // its cycle starts and stands.
+  const breath = (k) =>
+    json(
+      `(function(){var d=${cardEl(k)}.firstChild,s=getComputedStyle(d),a=d.getAnimations()[0];` +
+        `var kf=a?a.effect.getKeyframes():[],props={};kf.forEach(function(f){Object.keys(f).forEach(function(p){` +
+        `if(["offset","computedOffset","easing","composite"].indexOf(p)<0)props[p]=1})});` +
+        `return{name:s.animationName,dur:s.animationDuration,count:s.animationIterationCount,ease:s.animationTimingFunction,` +
+        `props:Object.keys(props),values:kf.map(function(f){return[f.offset,f.opacity]}),start:a?a.startTime:null,` +
+        `t:a?a.currentTime:null,now:document.timeline.currentTime}})()`,
+    );
   const shownTitle = () => ctx.evaluate(`${q(TITLE)}?.textContent ?? null`);
   const sent = () => json("window.__sent");
   const send = async (text) => {
@@ -603,8 +632,8 @@ export async function run(ctx) {
     await ctx.sleep(200);
     const s1 = await strip();
     check(
-      "pending: awaiting input and unread each mark the card, never the session on screen",
-      s1 === "B! C A* D! E F",
+      "pending: awaiting input marks the card clay and unread green, never the session on screen",
+      s1 === "B! C A* D+ E F",
       s1,
     );
     const re = await json(
@@ -657,12 +686,34 @@ export async function run(ctx) {
       JSON.stringify({ ra, composer }),
     );
     check(
-      "circle: clay while it needs you, filled for a turn waiting on you and a ring for a finished one unseen",
-      rb.bg === "rgb(217, 119, 87)" &&
-        rb.edge === "rgb(217, 119, 87)" &&
-        rd.bg === "rgba(0, 0, 0, 0)" &&
-        rd.edge === "rgb(217, 119, 87)",
+      "circle: solid clay while a turn waits on you, solid green for a finished one unseen",
+      rb.bg === CLAY &&
+        rb.edge === CLAY &&
+        rd.bg === GREEN &&
+        rd.edge === GREEN,
       JSON.stringify({ rb, rd }),
+    );
+    // The breath: E works with nothing asked of you, so its circle breathes,
+    // 1.5s a breath on its opacity alone (1 to .4 and back), counted from the
+    // document's start; idle, waiting, and finished circles hold still.
+    const bE = await breath("E");
+    check(
+      "breath: a working session's circle breathes, 1.5s a breath on its opacity alone, from the document's start",
+      bE.name === BREATH &&
+        bE.dur === "1.5s" &&
+        bE.count === "infinite" &&
+        bE.ease === "ease-in-out" &&
+        bE.props.join() === "opacity" &&
+        JSON.stringify(bE.values) === '[[0,"1"],[0.5,"0.4"],[1,"1"]]' &&
+        bE.start === 0,
+      JSON.stringify(bE),
+    );
+    const still = [];
+    for (const k of ["A", "B", "C", "D"]) still.push((await breath(k)).name);
+    check(
+      "breath: idle, waiting and finished circles hold still",
+      still.every((n) => n === "none"),
+      still.join(),
     );
     // Seamless, on the screen's pixels: around the card on screen (A) and in
     // the strip beside it.
@@ -1182,8 +1233,8 @@ export async function run(ctx) {
 
     // Other surfaces: C, open in a tab, is reported idle and then running
     // there (the turn a message starts), and so is F, which a terminal holds.
-    // Each moves first and fills while it runs, and F waiting on you in the
-    // terminal turns clay, still filled, until it is idle again.
+    // Each moves first and breathes while it runs, and F waiting on you in
+    // the terminal turns solid clay, still, until it is idle again.
     const feed = (sessions, live) =>
       ctx.evaluate(
         `window.__push({type:"session_states_update",sessions:${JSON.stringify(sessions)},activeSessionId:"${S.A}",` +
@@ -1205,21 +1256,21 @@ export async function run(ctx) {
     const o3 = await step(tabC("idle"), termF("waiting"));
     const o4 = await step(tabC("idle"), termF("idle"));
     check(
-      "order: a session reported leaving idle in an editor tab moves first, filled while it runs",
+      "order: a session reported leaving idle in an editor tab moves first, breathing while it runs",
       !o0.order.startsWith("C") &&
         o1.order.startsWith("C ") &&
-        o1.fill.includes("C+"),
+        o1.fill.includes("C~"),
       JSON.stringify({ o0, o1 }),
     );
     check(
-      "order: so does one a terminal holds, filled while it runs there",
+      "order: so does one a terminal holds, breathing while it runs there",
       o2.order.startsWith("F C ") &&
-        o2.fill.includes("F+") &&
+        o2.fill.includes("F~") &&
         o2.fill.includes("C-"),
       JSON.stringify(o2),
     );
     check(
-      "at work: waiting on you in a terminal turns the filled circle clay, a ring again once idle",
+      "at work: waiting on you in a terminal holds the circle still in solid clay, a ring again once idle",
       o3.order.startsWith("F! ") &&
         o3.fill.includes("F+") &&
         o4.order.startsWith("F ") &&
@@ -1228,7 +1279,7 @@ export async function run(ctx) {
     );
 
     // Send a prompt in A: its turn starts, A moves first, and its circle
-    // fills while the turn runs.
+    // breathes while the turn runs.
     await send("Keep going.");
     const going = await until(`Object.keys(window.__lives).length===1`);
     await ctx.sleep(200);
@@ -1240,10 +1291,60 @@ export async function run(ctx) {
       s2,
     );
     check(
-      "at work: the session on screen fills while its turn runs",
-      w2.startsWith("A+"),
+      "at work: the session on screen breathes while its turn runs",
+      w2.startsWith("A~"),
       w2,
     );
+    // In step: E reported running again (seen running before, so it keeps
+    // its place) breathes beside A, whose card just moved first, a move that
+    // starts its animation over; both breaths count from the document's
+    // start.
+    await feed(
+      [...tabC("idle"), { sessionId: S.E, state: "running", title: TITLES.E }],
+      termF("idle"),
+    );
+    await ctx.sleep(150);
+    const [stepA, stepE] = [await breath("A"), await breath("E")];
+    const wStep = await fills();
+    check(
+      "breath: every breathing circle keeps one beat, a card just moved first included",
+      stepA.name === BREATH &&
+        stepE.name === BREATH &&
+        stepA.start === 0 &&
+        stepE.start === 0 &&
+        wStep.includes("E~"),
+      JSON.stringify({
+        wStep,
+        A: [stepA.start, stepA.t],
+        E: [stepE.start, stepE.t],
+      }),
+    );
+    // On screen, a prompt waiting on you holds A's circle still, filled in
+    // its own color (never clay there), its label saying what it waits for;
+    // once the host withdraws the prompt, A breathes again, in step.
+    const rid = await ctx.evaluate(`window.__permit(${JSON.stringify(S.A)})`);
+    await ctx.sleep(300);
+    const holdA = await json(
+      `(function(){var b=${cardEl("A")},s=getComputedStyle(b.firstChild);` +
+        `return{name:s.animationName,bg:s.backgroundColor,ink:getComputedStyle(b).color,aria:b.getAttribute("aria-label")}})()`,
+    );
+    const sHold = await strip();
+    await ctx.evaluate(`window.__unpermit(${JSON.stringify(rid)})`);
+    await ctx.sleep(300);
+    const backA = await breath("A");
+    check(
+      "breath: the session on screen holds still while a prompt waits on you, filled in its own color, then breathes on in step",
+      holdA.name === "none" &&
+        holdA.bg === holdA.ink &&
+        holdA.ink !== CLAY &&
+        holdA.aria.endsWith("awaiting input") &&
+        /(^| )A\*( |$)/.test(sHold) &&
+        backA.name === BREATH &&
+        backA.start === 0,
+      JSON.stringify({ holdA, sHold, backA: [backA.name, backA.start] }),
+    );
+    await feed(tabC("idle"), termF("idle"));
+    await ctx.sleep(150);
     const stored = await json(
       `(function(){try{return JSON.parse(localStorage.getItem("ccup-session-cards")).sent}catch(e){return null}})()`,
     );
@@ -1298,6 +1399,9 @@ export async function run(ctx) {
     );
     const top1 = (await box(`${q(BOX)}.querySelector("fieldset")`)).y;
     mark = (await sent()).length;
+    await ctx.evaluate(
+      `window.__breathA=${cardEl("A")}.firstChild.getAnimations()[0]||null,true`,
+    );
     await clickCard("E");
     const switched = await until(
       `${q(TITLE)}&&${q(TITLE)}.textContent===${JSON.stringify(TITLES.E)}`,
@@ -1323,6 +1427,17 @@ export async function run(ctx) {
         )) &&
         Math.abs(top2 - top1) < 0.6,
       JSON.stringify({ top0, top1, top2 }),
+    );
+    // The switch remounts the chat and the strip moves back below it, which
+    // starts its animations over; A, still running behind E, keeps the beat.
+    const behind = await breath("A");
+    const restarted = await ctx.evaluate(
+      `window.__breathA!==${cardEl("A")}.firstChild.getAnimations()[0]`,
+    );
+    check(
+      "breath: a session running behind the one on screen breathes on, in step after the chat remounts",
+      behind.name === BREATH && behind.start === 0,
+      JSON.stringify({ restarted, start: behind.start, t: behind.t }),
     );
 
     // Order: rows that are not your messages land in E, on screen and behind
@@ -1380,13 +1495,13 @@ export async function run(ctx) {
     const s5 = await strip();
     const w5 = await fills();
     check(
-      "held: a turn ending in the background gives its session a dot",
-      !s4.includes("A!") && s5.includes("A!"),
+      "held: a turn ending in the background turns its circle solid green",
+      !/A[!+]/.test(s4) && s5.includes("A+"),
       `${s4} -> ${s5}`,
     );
     check(
-      "at work: a held session fills while its turn runs behind the one on screen, a ring once it ends",
-      w4.includes("A+") && w5.includes("A-"),
+      "at work: a held session breathes while its turn runs behind the one on screen, still once it ends",
+      w4.includes("A~") && w5.includes("A+"),
       `${w4} -> ${w5}`,
     );
     await clickCard("A");
@@ -1395,24 +1510,34 @@ export async function run(ctx) {
     );
     await ctx.sleep(300);
     const s6 = await strip();
+    const w6 = await fills();
     check(
-      "held: opening it clears the dot",
-      s6.includes("A*") && !s6.includes("A!"),
-      s6,
+      "held: opening it clears the green, a ring again",
+      s6.includes("A*") && !/A\*[!+]/.test(s6) && w6.includes("A-"),
+      `${s6} / ${w6}`,
     );
 
-    // Held: a permission request arrives in A while E is on screen.
+    // Held: once you move on, A's ring is the others' grey; then a
+    // permission request arrives in A while E is on screen.
     await clickCard("E");
     await until(
       `${q(TITLE)}&&${q(TITLE)}.textContent===${JSON.stringify(TITLES.E)}`,
     );
     await ctx.sleep(200);
+    const left = await ring("A");
+    check(
+      "held: once you move on, its circle is the others' hollow grey ring",
+      left.bg === "rgba(0, 0, 0, 0)" &&
+        left.edge === "rgb(157, 157, 157)" &&
+        left.ink === "rgb(157, 157, 157)",
+      JSON.stringify(left),
+    );
     await ctx.evaluate(`window.__permit(${JSON.stringify(S.A)})`);
     await ctx.sleep(300);
     const s7 = await strip();
     const why = await ctx.evaluate(`${cardEl("A")}.getAttribute("aria-label")`);
     check(
-      "held: a permission request in the background gives its session a dot",
+      "held: a permission request in the background turns its circle solid clay",
       s7.includes("A!") && why.endsWith("awaiting input"),
       `${s7} / ${why}`,
     );
@@ -1643,8 +1768,8 @@ export async function run(ctx) {
       s8,
     );
     check(
-      "at work: after a reload every circle is a ring",
-      !w8.includes("+"),
+      "at work: after a reload every circle is a still ring",
+      !/[+~?]/.test(w8),
       w8,
     );
 

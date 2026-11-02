@@ -7916,7 +7916,8 @@ export function promptHistWebview(
 // a message, a click does what picking that row in the dropdown does (a
 // session open in an editor tab gets that tab focused, any other one opens
 // here), and each card leads with a circle where a tab shows its file icon: a
-// ring, filled while the session is at work, and clay while it needs you.
+// ring while the session is idle, a breathing dot while it works, a clay dot
+// while it needs you, and a green one while a turn that ended is unseen.
 //
 // One fragment, /*ccup:scard*/.../*ccup:scardEnd*/, at the end of the webview
 // session manager's constructor (the class with doListSessions, one per
@@ -8019,6 +8020,10 @@ const SCARD_GAP = 8;
 // hover tint showing around it: the header's 20px icon size at the default
 // tab height, 16px when compact.
 const SCARD_ICON_INSET = 2;
+// One breath of a working session's circle: from full opacity down to .4
+// (the depth of Claude Code's own pending glyph) and back. Opacity alone, so
+// the compositor runs it with no work for the page's main thread.
+const SCARD_BREATH_MS = 1500;
 // The members the strip reads off a session, the manager, and the feed.
 const SCARD_SESSION_FIELDS = [
   "claudeChannelIdSignal",
@@ -8220,8 +8225,19 @@ function ccupSessionCardsWeb(
         if (seen.get(id) === "idle" && phase === "work") note(id, Date.now());
         if (phase) seen.set(id, phase);
       }
-      const isNew = ended || unread.has(id);
-      const pending = s !== active && (waiting || isNew);
+      // The circle, by the first of these that holds: a prompt or question
+      // waiting on you (solid clay), work that asks nothing of you (breathing),
+      // a turn that ended unseen (solid green), else a ring. The session on
+      // screen takes neither mark, what it asks being in front of you.
+      const working = ongoing && !waiting;
+      const pending =
+        s === active
+          ? ""
+          : waiting
+            ? "input"
+            : (ended || unread.has(id)) && !ongoing
+              ? "done"
+              : "";
       rows.push({
         s,
         id,
@@ -8229,13 +8245,14 @@ function ccupSessionCardsWeb(
         active: s === active,
         pending,
         ongoing,
-        why: pending
-          ? waiting
-            ? "awaiting input"
-            : "turn finished"
-          : ongoing
+        working,
+        why: waiting
+          ? "awaiting input"
+          : working
             ? "running"
-            : "",
+            : pending
+              ? "turn finished"
+              : "",
         tab: tabs.has(id),
         at: sent[id] || s.lastModifiedTime.value || 0,
         mod: s.lastModifiedTime.value || 0,
@@ -8370,6 +8387,20 @@ function ccupSessionCardsWeb(
       away = off;
     }
   };
+  // The breathing circles keep one beat, each breath counted from the
+  // document's start rather than from whenever its card began working or was
+  // last moved (a node moved in the document starts its animations over), so
+  // several breathe as one.
+  const beat = (): void => {
+    if (!list.querySelector(":scope > [data-working]")) return;
+    try {
+      for (const a of list.getAnimations({ subtree: true }))
+        if (a.animationName === "ccup-card-breathe" && a.startTime !== 0)
+          a.startTime = 0;
+    } catch {
+      // each keeps its own
+    }
+  };
 
   // The header's New session button (not this strip's), and its icon for
   // the strip's own once the header shows it.
@@ -8437,6 +8468,7 @@ function ccupSessionCardsWeb(
     host = t;
     t.appendChild(bar);
     mark(!bar.hidden);
+    beat();
   };
   const cardFor = (id: string): any => {
     let b = cards.get(id);
@@ -8460,8 +8492,12 @@ function ccupSessionCardsWeb(
   };
   const paint = (b: any, r: any): void => {
     b.toggleAttribute("data-active", r.active);
-    b.toggleAttribute("data-pending", r.pending);
+    // What waits for you: "input" (a prompt or question), "done" (a turn).
+    if (!r.pending) b.removeAttribute("data-pending");
+    else if (b.getAttribute("data-pending") !== r.pending)
+      b.setAttribute("data-pending", r.pending);
     b.toggleAttribute("data-ongoing", r.ongoing);
+    b.toggleAttribute("data-working", r.working);
     if (r.active) b.setAttribute("aria-current", "true");
     else b.removeAttribute("aria-current");
     // The tip is the full title, which the label may cut; the label read out
@@ -8492,6 +8528,7 @@ function ccupSessionCardsWeb(
           r.pending,
           r.why,
           r.ongoing,
+          r.working,
           r.tab,
         ]),
       ]);
@@ -8547,6 +8584,7 @@ function ccupSessionCardsWeb(
         revealed = now;
       }
       edges();
+      beat();
     } catch {
       // a render never breaks the chat
     }
@@ -8809,8 +8847,12 @@ function scardSide(): ScardSide {
 // header's icon buttons, and between them the band of cards in the connected
 // tab row's background, groove included, so it stands apart from them,
 // scrolling sideways with no scrollbar of its own: cards with a leading
-// state circle (in the card's own color, clay for a session that needs you,
-// filled while the session is at work and a hollow ring while it is not),
+// state circle (in the card's own color a hollow ring while the session is
+// idle, filled and breathing while it works with nothing asked of you, and
+// filled and still while the session on screen waits on you; solid clay while
+// a prompt or question waits on you, and solid green, the transcript's own
+// dot for a tool call that succeeded, while a turn that ended is unseen; the
+// breath moves opacity alone, which the compositor runs by itself),
 // the card on screen in the chat's background with its corners
 // and shoulders and the look's line, its text in the input box's color (the
 // editor tab's white read as distracting, and the others' grey would not set
@@ -8830,6 +8872,7 @@ function scardSide(): ScardSide {
 function scardCss(chat: string, look: ScardLook, tabH: number): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
+  const green = "#74c991"; // the transcript's dot for a tool call that succeeded
   const grey = tab("inactiveForeground", "var(--app-secondary-foreground)");
   const hover = `background:var(--app-ghost-button-hover-background);color:${tab("hoverForeground", "var(--app-primary-foreground)")}`;
   const groove = look === "line" ? 1 : 0;
@@ -8859,8 +8902,10 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
     ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
     ".ccup-card[data-ongoing] .ccup-card-dot{background:currentColor}" +
-    `.ccup-card[data-pending] .ccup-card-dot{border-color:${clay}}` +
-    `.ccup-card[data-pending][data-ongoing] .ccup-card-dot{background:${clay}}` +
+    "@keyframes ccup-card-breathe{0%,to{opacity:1}50%{opacity:.4}}" +
+    `.ccup-card[data-working] .ccup-card-dot{animation:${SCARD_BREATH_MS}ms ease-in-out infinite ccup-card-breathe}` +
+    `.ccup-card[data-pending=input] .ccup-card-dot{border-color:${clay};background:${clay}}` +
+    `.ccup-card[data-pending=done] .ccup-card-dot{border-color:${green};background:${green}}` +
     `.ccup-card:not([data-active])${HOVER}{${hover}}` +
     `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);color:var(--app-input-foreground,${grey});cursor:default${line}}` +
     ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +

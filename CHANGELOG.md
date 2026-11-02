@@ -3,6 +3,8 @@
 ## Unreleased
 
 - On Claude Code 2.1.314 and later, math in the chat draws with its own fonts again: `\neq` had shown as a box, and other symbols in a substitute font.
+- With `chatSessionCards` on, a card's circle breathes while its session is working, instead of staying filled.
+  A finished turn you have not seen shows a solid green circle instead of a clay ring, and a waiting permission or question prompt always shows a solid clay one.
 
 ## 1.6.4
 

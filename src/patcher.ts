@@ -8020,10 +8020,13 @@ const SCARD_GAP = 8;
 // hover tint showing around it: the header's 20px icon size at the default
 // tab height, 16px when compact.
 const SCARD_ICON_INSET = 2;
-// One breath of a working session's circle: from full opacity down to .4
-// (the depth of Claude Code's own pending glyph) and back. Opacity alone, so
-// the compositor runs it with no work for the page's main thread.
-const SCARD_BREATH_MS = 1500;
+// One breath of a working session's circle, ease-in-out over the period of
+// the running label ("Thinking…", "Running Bash…") on a Focus view fold row
+// (focusFoldPulse, 2.1.317), but from full opacity down to .4 and back
+// rather than the label's .55, since this is a dot (the depth of Claude
+// Code's own pending glyph). Opacity alone, so the compositor runs it with no
+// work for the page's main thread.
+const SCARD_BREATH_MS = 1600;
 // The members the strip reads off a session, the manager, and the feed.
 const SCARD_SESSION_FIELDS = [
   "claudeChannelIdSignal",

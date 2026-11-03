@@ -34,12 +34,13 @@
 //             the session is idle, solid clay while a prompt or question waits
 //             on you, solid green while a turn that ended is unseen
 //   at work   a turn running here (on screen or behind it) or reported from
-//             an editor tab or a terminal fills the circle and breathes it,
-//             1.5s a breath on its opacity alone, every breathing circle in
-//             step, a card that moves or remounts included; one waiting on you
-//             holds still (solid clay, or in the card's color on screen), a
-//             finished one turns green, and after a reload every card is a
-//             ring
+//             an editor tab or a terminal fills the circle and breathes it on
+//             its opacity alone, with the timing and keyframe offsets the live
+//             stylesheet gives the native running label ("Thinking…") but down
+//             to .4, a dot's depth, every breathing circle in step, a card
+//             that moves or remounts included; one waiting on you holds still
+//             (solid clay, or in the card's color on screen), a finished one
+//             turns green, and after a reload every card is a ring
 //   seamless  the card on screen is the chat's own background, joined to
 //             the chat above with no edge, its bottom corners rounded and the
 //             strip curving into it at the top, on the screen's pixels, and
@@ -693,20 +694,31 @@ export async function run(ctx) {
         rd.edge === GREEN,
       JSON.stringify({ rb, rd }),
     );
-    // The breath: E works with nothing asked of you, so its circle breathes,
-    // 1.5s a breath on its opacity alone (1 to .4 and back), counted from the
-    // document's start; idle, waiting, and finished circles hold still.
+    // The breath: E works with nothing asked of you, so its circle breathes
+    // on its opacity alone, counted from the document's start, in the time
+    // the native running label of a Focus view fold row ("Thinking…") takes:
+    // its timing and keyframe offsets are read off a probe carrying that
+    // label's class, so a native retune fails here. The dot dips deeper than
+    // the label, to .4. Idle, waiting, and finished circles hold still.
     const bE = await breath("E");
+    const label = await json(
+      `(function(){var p=document.createElement("label");p.className=${JSON.stringify(cls("runningLabel"))};` +
+        `document.body.appendChild(p);var s=getComputedStyle(p),a=p.getAnimations()[0],kf=a?a.effect.getKeyframes():[];` +
+        `var r={dur:s.animationDuration,count:s.animationIterationCount,ease:s.animationTimingFunction,` +
+        `values:kf.map(function(f){return[f.offset,f.opacity]})};p.remove();return r})()`,
+    );
+    const offsets = (v) => JSON.stringify(v.map((x) => x[0]));
     check(
-      "breath: a working session's circle breathes, 1.5s a breath on its opacity alone, from the document's start",
+      "breath: a working session's circle breathes in the native Thinking label's time, down to .4, on its opacity alone, from the document's start",
       bE.name === BREATH &&
-        bE.dur === "1.5s" &&
-        bE.count === "infinite" &&
-        bE.ease === "ease-in-out" &&
-        bE.props.join() === "opacity" &&
+        bE.dur === label.dur &&
+        bE.count === label.count &&
+        bE.ease === label.ease &&
+        offsets(bE.values) === offsets(label.values) &&
         JSON.stringify(bE.values) === '[[0,"1"],[0.5,"0.4"],[1,"1"]]' &&
+        bE.props.join() === "opacity" &&
         bE.start === 0,
-      JSON.stringify(bE),
+      JSON.stringify({ circle: bE, label }),
     );
     const still = [];
     for (const k of ["A", "B", "C", "D"]) still.push((await breath(k)).name);

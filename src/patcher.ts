@@ -5016,6 +5016,184 @@ export function diffEdFreeWebview(web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Shell here-documents (always on): the chat colors a fenced bash, sh, zsh or
+// shell block with the Monaco `shell` grammar bundled into the webview
+// (monaco.editor.colorize). Its heredoc state has one rule, which colors the
+// opener (`<<'EOF'`) and enters no state for the body, so the body is lexed as
+// shell code: an apostrophe in its prose opens a single-quoted string that
+// runs on to the next apostrophe, lines below included, and words such as `in`
+// and `for` read as keywords. Claude Code bundles Monaco 0.52.2, and the rule
+// is unchanged upstream through 0.57.0.
+//
+// Two fragments, /*ccup:heredoc:<site>*/.../*ccup:heredocEnd*/, add the body.
+// At the head of the heredoc state, two rules take a `<<-` or a `<<` opener
+// whose word starts with a letter or an underscore (so an arithmetic `1 << 2`
+// stays native), color it as the native rule does, and push a state whose
+// name carries the word and its quote character. After the heredoc state come
+// the states that push leads to: the rest of the opener's line lexes as
+// before, the next line's start switches to the body, and the body is text up
+// to the line holding the word alone (after any tabs, for `<<-`), with its `$`
+// expansions colored as variables when the word is unquoted, the one case in
+// which bash expands them. The native rule stays last, for the here-string
+// `<<<`.
+//
+// The grammar is ignoreCase, so Monarch lowercases the word it carries in the
+// state name and matches the closing line regardless of case, where bash
+// compares exactly. A second opener on the opener's line is colored but not
+// tracked, so only the first body reads as text, and a variable shifted in
+// `(( x << y ))` opens a body. A here-document inside `$(...)` stays native:
+// the grammar reads a double-quoted `"$(...)"` as one string and a bare
+// `$(...)` as one variable span, neither of which reaches the heredoc state.
+//
+// Found by structure (src/derive.ts): the object literal carrying
+// tokenPostfix ".shell" whose root state includes the heredoc state, whose
+// heredoc state holds only the native rule (its regex source and its five
+// tokens), and which defines none of the states this point adds.
+// ---------------------------------------------------------------------------
+const HEREDOC_RULES = "/*ccup:heredoc:rules*/";
+const HEREDOC_STATES = "/*ccup:heredoc:states*/";
+const HEREDOC_END = "/*ccup:heredocEnd*/";
+const HEREDOC_FRAG_RE =
+  /\/\*ccup:heredoc:[-\w]+\*\/[\s\S]*?\/\*ccup:heredocEnd\*\//g;
+const HEREDOC_FILE = "webview/index.js";
+// How far ahead of its tokenPostfix the grammar object may start (43 chars on
+// 2.1.317).
+const HEREDOC_REACH = 4000;
+// The native heredoc rule: its regex source and its tokens, one per group.
+const HEREDOC_NATIVE_SRC = "(<<[-<]?)(\\s*)(['\"`]?)([\\w\\-]+)(['\"`]?)";
+const HEREDOC_NATIVE_TOKENS = [
+  "constants",
+  "white",
+  "string.heredoc.delimiter",
+  "string.heredoc",
+  "string.heredoc.delimiter",
+];
+
+// An opener with operator `op`: the word may be quoted with ' or ", or
+// escaped with a leading backslash, either of which keeps bash from expanding
+// the body.
+function heredocOpener(op: string): string {
+  return String.raw`/(${op})(\s*)(['"\\]?)([A-Za-z_][\w\-]*)(['"]?)/`;
+}
+// The native rule's tokens, the word's group taking the action `word`.
+function heredocTokens(word: string): string {
+  const t = HEREDOC_NATIVE_TOKENS.map((s) => JSON.stringify(s));
+  t[3] = word;
+  return `[${t.join(",")}]`;
+}
+// Pushed by an opener: <state>.<word>.<quote>, so $S2 is the word and $S3 the
+// quote character, empty for an unquoted word. It rides the word's group,
+// which is never empty: Monarch drops the groups still pending when a line
+// ends, so on the empty closing-quote group of a `<<EOF` ending its line the
+// push would be lost.
+function heredocPush(state: string): string {
+  return `{token:"string.heredoc",next:"@${state}.$4.$3"}`;
+}
+
+// The rules ahead of the native one.
+const HEREDOC_RULES_TEXT =
+  `[${heredocOpener("<<-")},${heredocTokens(heredocPush("ccupHereOpenTabs"))}],` +
+  `[${heredocOpener("<<")},${heredocTokens(heredocPush("ccupHereOpen"))}],`;
+
+// The states after the heredoc state. A rule starting with ^ is tried only at
+// a line's start, so on the opener's line, which the push leaves mid-line, the
+// zero-width switch waits for the next line (Monarch accepts an empty match
+// when the state changes). The rest of that line lexes as root does, except
+// that a second opener is colored without a push and a closed quote is one
+// string token: the native string states end in @popall, which would drop the
+// here-document.
+const HEREDOC_STATES_TEXT =
+  `,ccupHereOpen:[[/^/,{token:"",switchTo:"@ccupHereBody.$S2.$S3"}],{include:"@ccupHereLine"}]` +
+  `,ccupHereOpenTabs:[[/^/,{token:"",switchTo:"@ccupHereBodyTabs.$S2.$S3"}],{include:"@ccupHereLine"}]` +
+  `,ccupHereLine:[[${heredocOpener("<<-?")},${heredocTokens('"string.heredoc"')}],` +
+  String.raw`[/'[^']*'|"(?:[^"\\]|\\.)*"/,"string"],{include:"@root"}]` +
+  `,ccupHereBody:[[/^$S2$/,{token:"string.heredoc.delimiter",next:"@pop"}],{include:"@ccupHereText"}]` +
+  String.raw`,ccupHereBodyTabs:[[/^\t*$S2$/,{token:"string.heredoc.delimiter",next:"@pop"}],{include:"@ccupHereText"}]` +
+  String.raw`,ccupHereText:[[/\\[\\$]/,"string.heredoc"],` +
+  String.raw`[/\$(?:\{[^}]*\}|\([^)]*\)|\w+|[*@#?$!\-])/,{cases:{"$S3":"string.heredoc","@default":"variable"}}],` +
+  String.raw`[/[^\\$]+/,"string.heredoc"],[/./,"string.heredoc"]]`;
+const HEREDOC_STATE_NAMES = [
+  "ccupHereOpen",
+  "ccupHereOpenTabs",
+  "ccupHereLine",
+  "ccupHereBody",
+  "ccupHereBodyTabs",
+  "ccupHereText",
+];
+
+const isObjLit = (n: N | null | undefined): boolean =>
+  !!n && n.type === "ObjectExpression";
+
+// The shell grammar and the two insertions, or null.
+function heredocFind(c: string): { unit: N; edits: Edit[] } | null {
+  const sites: { unit: N; edits: Edit[] }[] = [];
+  for (const g of unitsWith(c, '".shell"', "{", isObjLit, HEREDOC_REACH)) {
+    if (!isStr(propOf(g, "tokenPostfix")?.value, ".shell")) continue;
+    const tok = propOf(g, "tokenizer")?.value;
+    if (!isObjLit(tok)) continue;
+    const root = propOf(tok, "root")?.value;
+    const hd = propOf(tok, "heredoc");
+    if (
+      root?.type !== "ArrayExpression" ||
+      hd?.value.type !== "ArrayExpression" ||
+      !root.elements.some(
+        (r: N | null) =>
+          isObjLit(r) && isStr(propOf(r!, "include")?.value, "@heredoc"),
+      ) ||
+      HEREDOC_STATE_NAMES.some((k) => propOf(tok, k))
+    )
+      continue;
+    const rules: (N | null)[] = hd.value.elements;
+    const rule = rules.length === 1 ? rules[0] : null;
+    if (rule?.type !== "ArrayExpression" || rule.elements.length !== 2)
+      continue;
+    const [re, act] = rule.elements as (N | null)[];
+    if (
+      re?.type !== "Literal" ||
+      re.regex?.pattern !== HEREDOC_NATIVE_SRC ||
+      re.regex.flags !== "" ||
+      act?.type !== "ArrayExpression" ||
+      act.elements.length !== HEREDOC_NATIVE_TOKENS.length ||
+      !HEREDOC_NATIVE_TOKENS.every((t, i) => isStr(act.elements[i], t))
+    )
+      continue;
+    sites.push({
+      unit: g,
+      edits: [
+        {
+          pos: hd.value.start + 1,
+          text: `${HEREDOC_RULES}${HEREDOC_RULES_TEXT}${HEREDOC_END}`,
+        },
+        {
+          pos: hd.end,
+          text: `${HEREDOC_STATES}${HEREDOC_STATES_TEXT}${HEREDOC_END}`,
+        },
+      ],
+    });
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The native webview bundle with the fragments in, or null when the site is
+// missing or the edits would not parse.
+const heredocBuild = sdelMemo((native) => {
+  const site = heredocFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, site.edits);
+  return unitsReparse(out, site.edits, [[site.unit, isObjLit]]) ? out : null;
+});
+function heredocPatch(native: string): string | null {
+  return heredocBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its site is gone. scripts/repro's heredoc.mjs serves this, so
+// it runs exactly what the patcher writes and doubles as the drift canary.
+export function heredocWebview(web: string): string | null {
+  return heredocBuild(web.replace(HEREDOC_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
 // Session open landing (always on): the chat leaves room under the transcript
 // for the input box it overlays with a spacer as tall as the box, from a
 // height state that its ResizeObserver on the box keeps. The chat remounts on
@@ -12801,6 +12979,15 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: RIO_FILE,
     frags: RIO_FRAG_RE,
     patch: revealIfOpenPatch,
+  },
+  {
+    kind: "inline",
+    id: "heredoc",
+    label: "shell here-documents",
+    file: HEREDOC_FILE,
+    frags: HEREDOC_FRAG_RE,
+    patch: heredocPatch,
+    inert: (native) => !native.includes('".shell"'),
   },
 ];
 

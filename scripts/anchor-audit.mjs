@@ -24,7 +24,9 @@
 // newest first, and diffs the newest one's marker counts against the version
 // before it. That comparison is the sharpest signal available and it is why an
 // .obsolete leftover from an update is worth auditing rather than skipping: it
-// is the last build known to work. Exits nonzero on any finding.
+// is the last build known to work. The hover gate, owed once per native :hover,
+// is checked against each install's own stylesheet instead (see HOVER_KEY).
+// Exits nonzero on any finding.
 //
 // It exercises out/patcher.js, so compile first if src/ has moved on.
 //
@@ -305,6 +307,33 @@ function mathFontsOnDisk(dir) {
   return { named: named.size, missing };
 }
 
+// The hover gate (hiddenCursorHover) owes one marker per :hover of the native
+// stylesheet rather than one per anchor, so its count follows the build: 2.1.317
+// dropped the image thumbnail's remove button and its two :hover rules, and the
+// count fell from 232 to 230 with nothing missed. It is checked against the
+// native stylesheet of its own install instead of against the previous build.
+const HOVER_KEY = "webview/index.css /*ccup:nohover*/";
+
+// The :hover pseudo-classes a native stylesheet holds in its selectors, counted
+// apart from the patcher's tokenizer so the two cross-check: comments, strings,
+// and at-rule preludes such as @media (hover:hover) left out, and so is a :hover
+// after a pseudo-element in the same compound, which the gate leaves alone.
+function gateableHovers(css) {
+  const bare = css
+    .replace(/\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/g, "")
+    .replace(/@[^{};]*([{;])/g, "$1");
+  let n = 0;
+  for (const m of bare.matchAll(/:hover(?![-\w])/g)) {
+    const from = Math.max(
+      ...[" ", ">", "+", "~", ",", "(", "{", "}"].map((c) =>
+        bare.lastIndexOf(c, m.index - 1),
+      ),
+    );
+    if (!bare.slice(from + 1, m.index).includes("::")) n++;
+  }
+  return n;
+}
+
 function pointStates(P, ext) {
   const label = (kind) => (s) => ({ kind, ...s });
   return [
@@ -331,6 +360,9 @@ function auditInstall(P, install, expected) {
     P.restorePatch(ext, {});
     const states = pointStates(P, ext);
     const unpatchable = states.filter((s) => s.status === "missing");
+    const owedHovers = gateableHovers(
+      readFileSync(join(work, "webview", "index.css"), "utf8"),
+    );
 
     P.applyPatch(ext, P.readSizes(), P.readToggles(), {});
     const applied = pointStates(P, ext);
@@ -389,6 +421,7 @@ function auditInstall(P, install, expected) {
       counts,
       broken,
       fonts: mathFontsOnDisk(work),
+      hovers: { owed: owedHovers, gated: counts.get(HOVER_KEY) ?? 0 },
     };
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -405,6 +438,8 @@ function regressions(older, newer) {
     // Not drift when the newer build ships the feature itself: the marker is
     // absent because nothing needed injecting.
     if (newer.exempt.has(key.split(" ")[1])) continue;
+    // Owed per native :hover, so checked per install instead.
+    if (key === HOVER_KEY) continue;
     if (now < was) lost.push({ key, was, now });
   }
   return lost;
@@ -460,6 +495,12 @@ for (const r of results) {
       (r.missing.length ? "FAIL" : "ok"),
   );
   for (const m of r.missing) console.log(`    never landed: ${m}`);
+  const { owed, gated } = r.hovers;
+  const hoversOff = gated !== owed;
+  console.log(
+    pad(`  hovers     ${gated} gated of ${owed} native :hover`) +
+      (hoversOff ? "FAIL" : "ok"),
+  );
   console.log(
     `  syntax     patched bundle parses`.padEnd(46) +
       (r.broken.length ? "FAIL" : "ok"),
@@ -475,6 +516,7 @@ for (const r of results) {
     bad ||
     r.stale.length ||
     r.missing.length ||
+    hoversOff ||
     r.broken.length ||
     gone.length
   ) {

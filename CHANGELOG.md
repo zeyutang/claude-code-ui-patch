@@ -5,6 +5,9 @@
 - On Claude Code 2.1.314 and later, math in the chat draws with its own fonts again: `\neq` had shown as a box, and other symbols in a substitute font.
 - With `chatSessionCards` on, a card's circle breathes while its session is working, instead of staying filled.
   A finished turn you have not seen shows a solid green circle instead of a clay ring, and a waiting permission or question prompt always shows a solid clay one.
+- With `chatSessionCards` on, cards slide to their new places: a card that moves first passes over the others, and a new session's card slides in from the left end, pushing the others right.
+  Scrolling the cards with the mouse wheel settles on a whole card as soon as the wheel slows, instead of pausing and then gliding on after the wheel stops.
+  Clicking a card while the cards are scrolled no longer shifts them back by a card.
 - In a shell code block in the chat, a here-document, such as a commit message after `<<'EOF'`, is colored as a string through its closing line, apart from the `$` expansions of an unquoted one such as `<<EOF`.
   Its body had been colored as shell code: an apostrophe colored everything up to the next apostrophe as a string, and words such as `in` and `for` as keywords.
   Always applied, no setting.

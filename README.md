@@ -171,6 +171,8 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   That button's arrow points to the side of the window the secondary side bar is on.
   Both buttons sit on the chat's own background, so the band of cards between them stands apart.
   Between the buttons the strip shows only whole cards, sharing the width equally, with as few cards as keep each at most 300 pixels wide.
+  Scrolled with the mouse wheel, it settles on a whole card as soon as the wheel slows.
+  Cards slide to their new places: a card that moves first passes over the others, and a new session's card slides in from the left end, pushing the others right.
   A title too long for its card ends in an ellipsis.
   Hovering a card shows its full title.
   The strip runs along the sidebar's bottom edge in the editor tab row's size, with cards rounded like the input box above them, and the card of the session on screen joins the chat above it, as an editor tab joins its editor, with its title in the input box's text color.

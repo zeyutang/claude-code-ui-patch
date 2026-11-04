@@ -8151,10 +8151,14 @@ export function promptHistWebview(
 // At rest that space shows whole cards only, as many as its width allows at
 // SCARD_CARD_MAX each (one more for every SCARD_CARD_MAX pixels), every card
 // an equal share of it with its title cut to fit by an ellipsis; revealing a
-// card and the wheel both come to rest on card boundaries. Each card is a
-// button with its whole title in a hover tip and its state in the accessible
-// name, the strip is a toolbar (one tab stop, arrow keys between its
-// buttons), and a press keeps focus where it was, as the jump buttons do.
+// card and the wheel both come to rest on card boundaries, the wheel's glide
+// there setting off as soon as the wheel eases off. Cards that change places
+// slide to their new ones: a card moving first passes over the ones it
+// overtakes, which make way, and a new session's card slides in from the
+// strip's left end, pushing the others right. Each card is a button with its
+// whole title in a hover tip and its state in the accessible name, the strip
+// is a toolbar (one tab stop, arrow keys between its buttons), and a press
+// keeps focus where it was, as the jump buttons do.
 //
 // The strip lives in the session body (sessionBody_<hash>), the flex column
 // holding the chat, which a session switch keeps: the chat inside it remounts
@@ -8205,6 +8209,14 @@ const SCARD_ICON_INSET = 2;
 // Code's own pending glyph). Opacity alone, so the compositor runs it with no
 // work for the page's main thread.
 const SCARD_BREATH_MS = 1600;
+// A card's slide to a new place, about the length of Claude Code's own
+// transform transitions (.15s to .2s), quick to start and easing into place,
+// so a card moving first reads as a jump.
+const SCARD_SLIDE_MS = 220;
+const SCARD_SLIDE_EASE = "cubic-bezier(.2,0,0,1)";
+// How long the wheel goes without a step before its turn is over (and the
+// cards glide on to the next boundary, as they do as soon as it eases off).
+const SCARD_WHEEL_REST_MS = 80;
 // The members the strip reads off a session, the manager, and the feed.
 const SCARD_SESSION_FIELDS = [
   "claudeChannelIdSignal",
@@ -8235,6 +8247,9 @@ interface ScardCfg {
   cap: number;
   max: number;
   cardMax: number; // the widest a card gets, in px
+  slideMs: number; // a card's slide to a new place
+  slideEase: string;
+  restMs: number; // the wheel's pause that ends a turn
   side: ScardSide; // the secondary side bar's side of the window
   hideReq: string; // the host request that hides it
   hideNote: string; // the notice while the host lacks that request
@@ -8359,6 +8374,9 @@ function ccupSessionCardsWeb(
   // Web session a tab shows) asks once.
   const asked = new Set<string>();
   let relistAt = 0;
+  // Whether the list had been read when the rows were last computed: until
+  // then cards arrive as the view boots, and none slides.
+  let listed = false;
 
   const compute = (): any[] => {
     const active = mgr.activeSession.value;
@@ -8443,6 +8461,7 @@ function ccupSessionCardsWeb(
       (id) => !known.has(id) && !asked.has(id),
     );
     const loaded = mgr.localSessionsLoaded?.value !== false;
+    listed = loaded;
     if (loaded && fresh.length && Date.now() - relistAt > 5000) {
       for (const id of fresh) asked.add(id);
       relistAt = Date.now();
@@ -8519,6 +8538,11 @@ function ccupSessionCardsWeb(
   let shown = "";
   let raf = 0;
   let host: any = null;
+  // The cards' order and the width they were laid out at, last render, and
+  // whether the list had been read then.
+  let placed = "";
+  let laidW = 0;
+  let steady = false;
 
   // The card on screen, and where it sat, when the strip last brought it into
   // view, a whole card at a time so the strip rests on card boundaries; per
@@ -8537,7 +8561,8 @@ function ccupSessionCardsWeb(
   // sit on card boundaries; mid-scroll, an end that cuts through a card
   // stays square, which the scroller marks per end. The card on screen out
   // of view hides its shoulders, which would otherwise reach into the end
-  // card beside it.
+  // card beside it. Both read the layout (a card i sits at i * per), which a
+  // card's slide to a new place leaves as it is.
   let away: any = null;
   const edges = (): void => {
     let cutL = false;
@@ -8554,9 +8579,12 @@ function ccupSessionCardsWeb(
       cutL = cut(list.scrollLeft);
       cutR = cut(list.scrollLeft + rl.width);
       const act = list.querySelector(":scope > [data-active]");
-      const ra = act?.getBoundingClientRect();
-      if (ra && (ra.right < rl.left + 0.5 || ra.left > rl.right - 0.5))
-        off = act;
+      if (act) {
+        const x =
+          Array.prototype.indexOf.call(list.children, act) * per -
+          list.scrollLeft;
+        if (x + per < 0.5 || x > rl.width - 0.5) off = act;
+      }
     }
     if (list.hasAttribute("data-cut-l") !== cutL)
       list.toggleAttribute("data-cut-l", cutL);
@@ -8580,6 +8608,67 @@ function ccupSessionCardsWeb(
           a.startTime = 0;
     } catch {
       // each keeps its own
+    }
+  };
+  // Cards that change places (the cards reordered, or one arriving or
+  // leaving, at the same width) slide there from where they showed, the
+  // card on screen's reveal included, all on one curve: one moving ahead in
+  // the order, as a card moving first does, over the others, in the strip's
+  // own color unless it is the card on screen, while the ones in its way
+  // make room. A new card first in the strip comes from just before the
+  // card that was first, sliding in with the others it pushes right, so
+  // they stay side by side; one landing further in fades in. Cards away
+  // from the view on one side the whole way stay put. Transforms and
+  // opacity alone, so the compositor runs them, over the new layout.
+  const flights = new Map<any, any>();
+  const fly = (was: Map<string, number>, rank: Map<string, number>): void => {
+    try {
+      const rl = list.getBoundingClientRect();
+      const at = rows.map((r, i) => {
+        const b = cards.get(r.id);
+        const now = b.getBoundingClientRect();
+        const ahead = (rank.get(r.id) ?? -1) > i;
+        return { b, x0: was.get(r.id), x1: now.left, w: now.width, ahead };
+      });
+      const lead = at.findIndex((c) => c.x0 !== undefined);
+      for (let i = lead - 1; i >= 0; i--) at[i].x0 = at[i + 1].x0! - at[i].w;
+      for (const { b, x0, x1, w, ahead } of at) {
+        let frames: any[];
+        let over = false;
+        if (x0 === undefined) {
+          if (x1 + w <= rl.left + 0.5 || x1 >= rl.right - 0.5) continue;
+          frames = [{ opacity: 0 }, { opacity: 1 }];
+        } else {
+          const dx = x0 - x1;
+          if (
+            Math.abs(dx) < 0.5 ||
+            Math.max(x0, x1) + w <= rl.left + 0.5 ||
+            Math.min(x0, x1) >= rl.right - 0.5
+          )
+            continue;
+          frames = [
+            { transform: `translateX(${dx}px)` },
+            { transform: "none" },
+          ];
+          over = ahead;
+        }
+        if (b.hasAttribute("data-flying") !== over)
+          b.toggleAttribute("data-flying", over);
+        const a = b.animate(frames, {
+          duration: cfg.slideMs,
+          easing: cfg.slideEase,
+        });
+        flights.set(b, a);
+        const land = (): void => {
+          if (flights.get(b) !== a) return;
+          flights.delete(b);
+          b.removeAttribute("data-flying");
+        };
+        a.addEventListener("finish", land);
+        a.addEventListener("cancel", land);
+      }
+    } catch {
+      // the cards stand in their new places
     }
   };
 
@@ -8638,7 +8727,13 @@ function ccupSessionCardsWeb(
     if (host && host.hasAttribute("data-ccup-cards") !== on)
       host.toggleAttribute("data-ccup-cards", on);
   };
-  // Last in the session body, wherever that is now.
+  // Last in the session body, wherever that is now. A move starts the
+  // scroller over at its start, so the next render puts the cards back
+  // where they last scrolled to (before it reveals anything), in the frame
+  // before paint: read from the scroll events, not the scroller, which would
+  // force a layout here, as React commits the chat a switch remounts.
+  let scrolled = 0;
+  let kept = 0;
   const mount = (): void => {
     if (host === bar.parentNode && host?.isConnected && !bar.nextSibling)
       return;
@@ -8647,9 +8742,11 @@ function ccupSessionCardsWeb(
     if (!sheet.isConnected) doc.head.appendChild(sheet);
     if (host && host !== t) host.removeAttribute("data-ccup-cards");
     host = t;
+    if (scrolled) kept = scrolled;
     t.appendChild(bar);
     mark(!bar.hidden);
     beat();
+    if (kept) schedule();
   };
   const cardFor = (id: string): any => {
     let b = cards.get(id);
@@ -8693,10 +8790,16 @@ function ccupSessionCardsWeb(
   };
   const render = (): void => {
     raf = 0;
+    const settled = steady && listed;
+    steady = listed;
     try {
       const some = rows.length > 0;
       if (bar.hidden === some) bar.hidden = !some;
       mount();
+      if (kept) {
+        list.scrollLeft = kept;
+        kept = 0;
+      }
       mark(some);
       if (some && !ownIcon) takeIcon();
       const w = some ? list.getBoundingClientRect().width : 0;
@@ -8715,6 +8818,22 @@ function ccupSessionCardsWeb(
       ]);
       if (key === shown) return;
       shown = key;
+      // Where each card shows (mid-slide too) when the cards change order or
+      // number at the same width, for their slides to the new places; a new
+      // width lays them out anew at once.
+      const ids = rows.map((r) => r.id).join(" ");
+      let was: Map<string, number> | null = null;
+      let rank: Map<string, number> | null = null;
+      if (ids !== placed && w > 0 && w === laidW && settled && cards.size) {
+        was = new Map();
+        for (const [id, b] of cards)
+          was.set(id, b.getBoundingClientRect().left);
+        rank = new Map(placed.split(" ").map((id, i) => [id, i]));
+        hideTip();
+      }
+      if (was || w !== laidW) for (const a of [...flights.values()]) a.cancel();
+      placed = ids;
+      laidW = w;
       // Every card, in order: the strip scrolls through the ones it cannot
       // show at once.
       const keep = new Set(rows.map((r) => r.id));
@@ -8765,6 +8884,7 @@ function ccupSessionCardsWeb(
         revealed = now;
       }
       edges();
+      if (was && rank) fly(was, rank);
       beat();
     } catch {
       // a render never breaks the chat
@@ -8865,14 +8985,38 @@ function ccupSessionCardsWeb(
     reveal(all[j]);
   });
   // The wheel over the strip scrolls the cards sideways, either axis, as over
-  // the editor's tabs, and once it stops they glide on to the next card
-  // boundary in the direction it went, so a card scrolled into view stays
-  // whole; with nothing to scroll the wheel passes.
+  // the editor's tabs, and they glide on to the next card boundary in the
+  // direction it went, so a card scrolled into view stays whole. A turn of
+  // the wheel is its steps one way, each within cfg.restMs of the last. The
+  // glide sets off as soon as the turn eases off (a step down to a third of
+  // its largest, as a wheel smoothed into a stream of steps, or a flick on
+  // a trackpad, coasts out) or stops (no step for cfg.restMs), and takes the
+  // place of the rest of the turn: its smaller steps are let go, so the
+  // cards come to rest without creeping on behind the wheel, while a larger
+  // one (the wheel turned again) scrolls on from where the cards are. With
+  // nothing to scroll the wheel passes.
   let settle = 0;
-  let glide: number | null = null;
-  list.addEventListener("scrollend", () => {
-    glide = null;
-  });
+  let turn = 0; // the turn's direction
+  let turnAt = -Infinity;
+  let peak = 0;
+  let steps = 0;
+  let gliding = false;
+  const glide = (): void => {
+    if (settle) g.clearTimeout(settle);
+    settle = 0;
+    gliding = true;
+    if (!per) return;
+    const at = list.scrollLeft / per;
+    const to = Math.max(
+      0,
+      Math.min(
+        list.scrollWidth - list.clientWidth,
+        (turn > 0 ? Math.ceil(at - 0.02) : Math.floor(at + 0.02)) * per,
+      ),
+    );
+    if (Math.abs(to - list.scrollLeft) > 0.5)
+      list.scrollTo({ left: to, behavior: "smooth" });
+  };
   bar.addEventListener(
     "wheel",
     (e: any) => {
@@ -8884,32 +9028,32 @@ function ccupSessionCardsWeb(
       if (!d) return;
       e.preventDefault();
       hideTip();
-      // From the boundary a settle is gliding to, if one is, so a wheel tick
-      // landing mid-glide loses no ground.
-      const max = list.scrollWidth - list.clientWidth;
-      const from = glide ?? list.scrollLeft;
-      glide = null;
-      list.scrollLeft = Math.max(0, Math.min(max, from + d));
       const dir = d > 0 ? 1 : -1;
-      if (settle) g.clearTimeout(settle);
-      settle = g.setTimeout(() => {
-        settle = 0;
-        if (!per) return;
-        const at = list.scrollLeft / per;
-        const to =
-          (dir > 0 ? Math.ceil(at - 0.02) : Math.floor(at + 0.02)) * per;
-        if (Math.abs(to - list.scrollLeft) > 0.5) {
-          glide = Math.max(
-            0,
-            Math.min(list.scrollWidth - list.clientWidth, to),
-          );
-          list.scrollTo({ left: to, behavior: "smooth" });
-        }
-      }, 140);
+      const m = Math.abs(d);
+      if (dir !== turn || e.timeStamp - turnAt > cfg.restMs) {
+        turn = dir;
+        peak = 0;
+        steps = 0;
+        gliding = false;
+      }
+      turnAt = e.timeStamp;
+      if (gliding && m < peak / 2) return;
+      gliding = false;
+      peak = Math.max(peak, m);
+      steps += 1;
+      // Setting the offset stops a glide where it is.
+      const max = list.scrollWidth - list.clientWidth;
+      list.scrollLeft = Math.max(0, Math.min(max, list.scrollLeft + d));
+      if (steps >= 3 && m <= peak / 3) glide();
+      else {
+        if (settle) g.clearTimeout(settle);
+        settle = g.setTimeout(glide, cfg.restMs);
+      }
     },
     { passive: false },
   );
   list.addEventListener("scroll", () => {
+    scrolled = list.scrollLeft;
     hideTip();
     edges();
   });
@@ -9046,10 +9190,12 @@ function scardSide(): ScardSide {
 // of the strip beside a button and the card on screen there merges into the
 // button's background; an end cutting through a card mid-scroll stays
 // square. Scrolled out of view, the card on screen has no shoulders, which
-// would reach into the end card. The text takes the editor tab's size
-// (fontSize.body1). At the default density the webview itself is clipped to
-// VS Code's large radius (cornerRadius.large), so there the strip's ends stay
-// that far in from the sides, clear of that clip.
+// would reach into the end card. A card sliding ahead of others to a new
+// place goes over them, in the strip's own color unless it is the card on
+// screen, so their titles never show through it. The text takes the editor
+// tab's size (fontSize.body1). At the default density the webview itself is
+// clipped to VS Code's large radius (cornerRadius.large), so there the
+// strip's ends stay that far in from the sides, clear of that clip.
 function scardCss(chat: string, look: ScardLook, tabH: number): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
@@ -9088,6 +9234,8 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
     `.ccup-card[data-pending=input] .ccup-card-dot{border-color:${clay};background:${clay}}` +
     `.ccup-card[data-pending=done] .ccup-card-dot{border-color:${green};background:${green}}` +
     `.ccup-card:not([data-active])${HOVER}{${hover}}` +
+    ".ccup-card[data-flying]{z-index:1}" +
+    `.ccup-card[data-flying]:not([data-active]){background-color:${strip}}` +
     `.ccup-card[data-active]{border-radius:0 0 var(--ccup-card-r) var(--ccup-card-r);background-color:var(--ccup-card-bg);color:var(--app-input-foreground,${grey});cursor:default${line}}` +
     ".ccup-card[data-active]::before,.ccup-card[data-active]::after{content:'';position:absolute;top:0;width:var(--ccup-card-r);height:var(--ccup-card-r);background:var(--ccup-card-bg);pointer-events:none}" +
     `.ccup-card[data-active]::before{right:100%;-webkit-mask:${shoulder("0 100%")};mask:${shoulder("0 100%")}}` +
@@ -9224,6 +9372,9 @@ function sessionCardsBuild(
       cap: SCARD_STORE_CAP,
       max: SCARD_MAX,
       cardMax: SCARD_CARD_MAX,
+      slideMs: SCARD_SLIDE_MS,
+      slideEase: SCARD_SLIDE_EASE,
+      restMs: SCARD_WHEEL_REST_MS,
       side,
       hideReq: SHIDE_REQ,
       hideNote: SHIDE_RELOAD_NOTE,

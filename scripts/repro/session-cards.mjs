@@ -53,7 +53,8 @@
 //             of view reaches no shoulder into the end card
 //   click     a session open in an editor tab asks the host to focus that
 //             tab, any other opens here, the strip staying the same element
-//             and the input box staying put
+//             and the input box staying put, and a card clicked in a
+//             scrolled strip leaves the strip where it was
 //   held      a turn that ends in a session this view holds while another
 //             is on screen turns its circle green until you open it, a grey
 //             ring once you move on, and a permission request arriving there
@@ -75,6 +76,17 @@
 //   scroll    the strip holds every non-archived session, scrolls sideways
 //             under the wheel, and brings the card on screen into view when
 //             it changes
+//   wheel     the glide on to a card boundary sets off as soon as the wheel
+//             eases off: a smoothed notch rests on the next card within
+//             100ms of its last step, creeping no further, a lone step
+//             glides on within 125ms, and a second notch right after the
+//             first scrolls on to the card after
+//   slide     cards that change places slide there from where they showed:
+//             a card moving first goes over every card it crosses, all the
+//             way, the ones in its way making room, and a new session's card
+//             arrives first once the session starts, sliding in from just
+//             before the card that was first and pushing the others right,
+//             side by side
 //   settle    an idle strip mutates nothing
 //   look      the strip follows VS Code's layout density: at the default
 //             density no groove, the cards on the view's bottom edge, no
@@ -206,6 +218,21 @@ const msgs = (sid) => { const k = KEY[sid]; if (!k) return []; return [
     message: { id: "msg_" + k, type: "message", role: "assistant", model: "claude-fable-5",
       content: [{ type: "text", text: "A reply in " + TITLES[k] + "." }], stop_reason: "end_turn",
       usage: USAGE } } ]; };
+// Each card's slide as the strip starts it, held at its start while __hold
+// is set, for the scenario to read.
+window.__flights = []; window.__hold = false;
+const animate0 = Element.prototype.animate;
+Element.prototype.animate = function (frames, opts) {
+  const a = animate0.call(this, frames, opts);
+  if (this.classList && this.classList.contains("ccup-card")) {
+    window.__flights.push({ id: this.dataset.id, a, frames });
+    if (window.__hold) a.pause();
+  }
+  return a;
+};
+// Sessions started here (a launch that resumes none gets a fresh id, which
+// the CLI reports on the first prompt), listed from then on.
+window.__minted = []; window.__extra = [];
 const deliver = (message) => window.dispatchEvent(
   new MessageEvent("message", { data: { type: "from-extension", message } }));
 window.__push = (request) =>
@@ -217,7 +244,15 @@ window.__io = io;
 window.__sent = []; window.__chan = {}; window.__lives = {}; window.__unknown = [];
 const LIVE = "Working on it.";
 const live = (msg) => {
-  const ch = msg.channelId, m = msg.message, sid = Object.keys(window.__chan).find((s) => window.__chan[s] === ch);
+  const ch = msg.channelId, m = msg.message;
+  let sid = Object.keys(window.__chan).find((s) => window.__chan[s] === ch);
+  if (!sid) {
+    sid = crypto.randomUUID();
+    window.__chan[sid] = ch; window.__minted.push(sid);
+    window.__extra.push({ id: sid, summary: "A new session", customTitle: "A new session",
+      lastModified: Date.now(), lastActivity: Date.now(), archived: false, fileSize: 4096,
+      gitBranch: "develop", isCurrentWorkspace: true });
+  }
   window.__lives[ch] = { sid };
   setTimeout(() => {
     io(ch, { type: "system", subtype: "init", session_id: sid, model: "claude-fable-5",
@@ -276,7 +311,7 @@ window.acquireVsCodeApi = () => ({
         break;
       case "list_sessions_request":
         resp = { type: "list_sessions_response",
-          sessions: EMPTY ? [] : window.__listed.map(entry), folderKey: "k" };
+          sessions: EMPTY ? [] : [...window.__listed.map(entry), ...window.__extra], folderKey: "k" };
         break;
       case "list_remote_sessions":
         resp = { type: "list_remote_sessions_response", sessions: [{ id: S.W, summary: TITLES.W,
@@ -537,6 +572,85 @@ export async function run(ctx) {
       `(function(){var L=${q(LIST)},s=getComputedStyle(L);return{l:L.hasAttribute("data-cut-l"),r:L.hasAttribute("data-cut-r"),` +
         `rl:s.borderTopLeftRadius+" "+s.borderBottomLeftRadius,rr:s.borderTopRightRadius+" "+s.borderBottomRightRadius}})()`,
     );
+  // Where each card shows, from the scroller's left edge, a slide's
+  // transform included, and the cards' order.
+  const spots = () =>
+    json(
+      `(function(){var L=${q(LIST)}.getBoundingClientRect(),o={};[].forEach.call(document.querySelectorAll(${JSON.stringify(CARD)}),` +
+        `function(b){o[b.dataset.id]=b.getBoundingClientRect().left-L.left});return o})()`,
+    );
+  const ids = () =>
+    json(
+      `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){return b.dataset.id})`,
+    );
+  // The slides the strip starts from here on are held at their start; then
+  // each card's place there, whether it goes over the others (its flag,
+  // stacking and fill) and its first frame, and once they land, each card's
+  // place and whether any still goes over the others.
+  const holdSlides = () =>
+    ctx.evaluate(`window.__hold=true;window.__flights.length=0;true`);
+  const landSlides = async () => {
+    const start = await json(
+      `(function(){var L=${q(LIST)}.getBoundingClientRect();return window.__flights.map(function(f){` +
+        `var b=document.querySelector(${JSON.stringify(CARD)}+'[data-id="'+f.id+'"]'),s=getComputedStyle(b);` +
+        `return{id:f.id,x:b.getBoundingClientRect().left-L.left,over:b.hasAttribute("data-flying"),z:s.zIndex,` +
+        `bg:s.backgroundColor,from:f.frames[0].transform||"opacity "+f.frames[0].opacity}})})()`,
+    );
+    await ctx.evaluate(
+      `window.__flights.forEach(function(f){f.a.finish()});window.__hold=false;true`,
+    );
+    await ctx.sleep(50);
+    return {
+      start,
+      end: await spots(),
+      over: await ctx.evaluate(`!!document.querySelector("[data-flying]")`),
+    };
+  };
+  // Whether a card stayed out of view on one side the whole way, from x0 to
+  // x1 in a scroller W wide, cards w wide.
+  const offSide = (x0, x1, w, W) =>
+    Math.max(x0, x1) + w <= 0.5 || Math.min(x0, x1) >= W - 0.5;
+  // A wheel played in the page at exact intervals (each a step of the given
+  // deltas, synthetic events reaching the strip's listener as real ones do),
+  // from the strip's start, and the scroller's offset at every frame.
+  const wheelRun = async (deltas, gap) =>
+    (
+      await ctx.cdp("Runtime.evaluate", {
+        awaitPromise: true,
+        returnByValue: true,
+        expression:
+          `new Promise(function(done){var L=${q(LIST)},D=${JSON.stringify(deltas)},rec=[],wh=[],i=0,stop=0;L.scrollLeft=0;` +
+          `setTimeout(function(){(function f(t){rec.push([t,L.scrollLeft]);if(!stop)requestAnimationFrame(f)})(performance.now());` +
+          `(function tick(){L.dispatchEvent(new WheelEvent("wheel",{deltaY:D[i],deltaMode:0,bubbles:true,cancelable:true}));` +
+          `wh.push([performance.now(),L.scrollLeft]);i++;if(i<D.length)setTimeout(tick,${gap});` +
+          `else setTimeout(function(){stop=1;done({rec:rec,wh:wh})},900)})()},300)})`,
+      })
+    ).result.value;
+  // A run's last step (when, and the offset it left), where the strip came
+  // to rest and how long after that step, the first frame after it that
+  // moved, and the furthest it went.
+  const wheelSum = (r) => {
+    const [last, atLast] = r.wh[r.wh.length - 1];
+    const end = r.rec[r.rec.length - 1][1];
+    let i = r.rec.length - 1;
+    while (i > 0 && Math.abs(r.rec[i - 1][1] - end) < 0.01) i--;
+    const moved = r.rec.find(
+      ([t, v]) => t > last && Math.abs(v - atLast) > 0.01,
+    );
+    return {
+      atLast: +atLast.toFixed(1),
+      end: +end.toFixed(1),
+      rest: Math.round(r.rec[i][0] - last),
+      glide: moved ? Math.round(moved[0] - last) : null,
+      max: +Math.max(...r.rec.map(([, v]) => v)).toFixed(1),
+    };
+  };
+  // A notch of a smoothed wheel: n steps easing out, total px in all.
+  const notch = (total, n) => {
+    const w = Array.from({ length: n }, (_, i) => (1 - i / n) ** 2);
+    const s = w.reduce((a, b) => a + b, 0);
+    return w.map((x) => (x * total) / s);
+  };
 
   try {
     // Mount and geometry.
@@ -1150,6 +1264,72 @@ export async function run(ctx) {
     );
     await backToA();
 
+    // A new session's card arrives once the session starts (its first
+    // prompt sent), first and on screen: it slides in from just before the
+    // card that was first, pushing the others right, side by side, each
+    // from where it showed (here with the strip scrolled two cards in, so
+    // the reveal of the new card rides the same slide). Its turn ends
+    // there, then A is back on screen.
+    await click(center(await box(q(NEW))));
+    await until(
+      `!window.__ccupSessionCards.rows.some(function(r){return r.active})&&!!${q(INPUT)}`,
+    );
+    await ctx.sleep(300);
+    await ctx.evaluate(
+      `${q(LIST)}.scrollLeft=2*parseFloat(${q(LIST)}.style.getPropertyValue("--ccup-card-w"))`,
+    );
+    await ctx.sleep(100);
+    const pre3 = await spots();
+    const order3 = await ids();
+    const W3 = (await box(q(LIST))).w;
+    await holdSlides();
+    await send("Start something new.");
+    const born = await until(
+      `window.__minted.length===1&&!!document.querySelector(${JSON.stringify(CARD)}+'[data-id="'+window.__minted[0]+'"]')`,
+      5000,
+    );
+    const N = await ctx.evaluate(`window.__minted[0]`);
+    LETTER[N] = "N";
+    await until(
+      `window.__flights.some(function(f){return f.id===window.__minted[0]})`,
+      3000,
+    );
+    const push = await landSlides();
+    const after3 = await ids();
+    const s3n = await strip();
+    const per3 = await ctx.evaluate(
+      `parseFloat(${q(LIST)}.style.getPropertyValue("--ccup-card-w"))`,
+    );
+    const pN = push.start.find((f) => f.id === N);
+    const pOld = push.start.filter((f) => f.id !== N);
+    const dx3 = pOld.map((f) => push.end[f.id] - f.x);
+    check(
+      "slide: a new session's card arrives first and on screen once it starts, sliding in from just before the card that was first",
+      !!born &&
+        after3[0] === N &&
+        s3n.startsWith("N*") &&
+        !!pN &&
+        pN.from.startsWith("translateX(") &&
+        Math.abs(pN.x - (pre3[order3[0]] - per3)) < 1 &&
+        Math.abs(push.end[N]) < 1,
+      JSON.stringify({ s3n, pN, pre: pre3[order3[0]], per3, end: push.end[N] }),
+    );
+    check(
+      "slide: it pushes the others right, side by side with it, each from where it showed, the rest staying put",
+      pOld.length > 0 &&
+        pOld.every((f) => Math.abs(f.x - pre3[f.id]) < 1 && !f.over) &&
+        dx3.every((d) => d > 0 && Math.abs(d - dx3[0]) < 1) &&
+        Math.abs(push.end[N] - pN.x - dx3[0]) < 1 &&
+        order3
+          .filter((i) => !push.start.some((f) => f.id === i))
+          .every((i) => offSide(pre3[i], push.end[i], per3, W3)) &&
+        !push.over,
+      JSON.stringify({ pOld, dx3, end: push.end }),
+    );
+    await ctx.evaluate(`window.__finish(window.__minted[0])`);
+    await ctx.sleep(300);
+    await backToA();
+
     // Hide: the host is asked to hide the secondary side bar, and a host
     // that answers the request as unknown gets the reload notice (here from
     // the keyboard).
@@ -1264,7 +1444,38 @@ export async function run(ctx) {
     const o0 = await step(tabC("idle"), []);
     const o1 = await step(tabC("running"), []);
     await step(tabC("idle"), termF("idle"));
-    const o2 = await step(tabC("idle"), termF("running"));
+    // F moves first with the strip back at its start: its card jumps across
+    // from the far end while the reveal of the card on screen (A, pushed a
+    // place along) shifts the others left, and F goes over every card it
+    // crosses, all the way, the others under it.
+    await ctx.evaluate(`${q(LIST)}.scrollLeft=0`);
+    await ctx.sleep(100);
+    await holdSlides();
+    await feed(tabC("idle"), termF("running"));
+    await until(
+      `window.__flights.some(function(f){return f.id===${JSON.stringify(S.F)}})`,
+      3000,
+    );
+    const crossF = await json(
+      `(function(){var L=${q(LIST)}.getBoundingClientRect(),F=${cardEl("F")},all=[].slice.call(document.querySelectorAll(${JSON.stringify(CARD)})),` +
+        `seen=0,top=0;for(var t=0;t<=220;t+=5){window.__flights.forEach(function(f){f.a.currentTime=t});` +
+        `var r=F.getBoundingClientRect(),x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;if(x<L.left+4||x>L.right-4)continue;` +
+        `if(!all.some(function(b){var q=b.getBoundingClientRect();return b!==F&&x>q.left&&x<q.right}))continue;` +
+        `seen++;var e=document.elementFromPoint(x,y);if(e&&e.closest(${JSON.stringify(CARD)})===F)top++}` +
+        `window.__flights.forEach(function(f){f.a.currentTime=0});return{seen:seen,top:top}})()`,
+    );
+    const slidF = await landSlides();
+    await ctx.sleep(150);
+    const o2 = { order: await strip(), fill: await fills() };
+    check(
+      "slide: a card moving first goes over every card it crosses, all the way, while a reveal shifts the others",
+      crossF.seen > 3 &&
+        crossF.top === crossF.seen &&
+        slidF.start.some((f) => f.id === S.F && f.over) &&
+        slidF.start.filter((f) => f.id !== S.F).every((f) => !f.over) &&
+        slidF.start.some((f) => f.id !== S.F && slidF.end[f.id] < f.x),
+      JSON.stringify({ crossF, slidF: slidF.start }),
+    );
     const o3 = await step(tabC("idle"), termF("waiting"));
     const o4 = await step(tabC("idle"), termF("idle"));
     check(
@@ -1291,9 +1502,55 @@ export async function run(ctx) {
     );
 
     // Send a prompt in A: its turn starts, A moves first, and its circle
-    // breathes while the turn runs.
+    // breathes while the turn runs. A jumps there: it slides from where it
+    // showed, over the cards in its way, which make room, every card that
+    // moves starting where it showed (the strip scrolled to A here, so its
+    // reveal rides the same slides), and none still goes over the others
+    // once they land.
+    const pre2 = await spots();
+    const order2 = await ids();
+    const W2 = (await box(q(LIST))).w;
+    const per2 = await ctx.evaluate(
+      `parseFloat(${q(LIST)}.style.getPropertyValue("--ccup-card-w"))`,
+    );
+    await holdSlides();
     await send("Keep going.");
     const going = await until(`Object.keys(window.__lives).length===1`);
+    await until(
+      `window.__flights.some(function(f){return f.id===${JSON.stringify(S.A)}})`,
+      3000,
+    );
+    const jump = await landSlides();
+    const jA = jump.start.find((f) => f.id === S.A);
+    const passed = jump.start.filter((f) => f.id !== S.A);
+    check(
+      "slide: a card moving first jumps there from where it showed, over the cards in its way",
+      order2.indexOf(S.A) > 0 &&
+        !!jA &&
+        Math.abs(jA.x - pre2[S.A]) < 1 &&
+        jA.over &&
+        jA.z === "1" &&
+        jA.bg !== "rgba(0, 0, 0, 0)" &&
+        Math.abs(jump.end[S.A]) < 1,
+      JSON.stringify({ order2, jA, pre: pre2[S.A], end: jump.end[S.A] }),
+    );
+    check(
+      "slide: the cards it passes make room, each from where it showed, the rest staying put, none over the others once landed",
+      passed.length > 0 &&
+        passed.every(
+          (f) =>
+            Math.abs(f.x - pre2[f.id]) < 1 && !f.over && jump.end[f.id] > f.x,
+        ) &&
+        order2
+          .filter((i) => !jump.start.some((f) => f.id === i))
+          .every(
+            (i) =>
+              Math.abs(jump.end[i] - pre2[i]) < 1 ||
+              offSide(pre2[i], jump.end[i], per2, W2),
+          ) &&
+        !jump.over,
+      JSON.stringify({ passed, pre2, end: jump.end }),
+    );
     await ctx.sleep(200);
     const s2 = await strip();
     const w2 = await fills();
@@ -1408,6 +1665,36 @@ export async function run(ctx) {
       "scroll: the wheel over the strip scrolls it sideways to a card past its edge, coming to rest on a card boundary",
       hidden0 && sc1 > sc0 && aligned && !(await pastEdge()) && chatTop === 0,
       JSON.stringify({ hidden0, sc0, sc1, per1, aligned, chatTop }),
+    );
+    // The glide to the boundary sets off as soon as the wheel eases off: a
+    // notch of a smoothed wheel (a third of a card in 30 steps easing out,
+    // 8ms apart) brings the strip to rest on the next card within 100ms of
+    // its last step, the steps it let go moving it no further; a lone step
+    // glides on within 125ms; and a second notch right after the first
+    // scrolls on to the card after.
+    const wNotch = wheelSum(await wheelRun(notch(per1 / 3, 30), 8));
+    const wLone = wheelSum(await wheelRun([20], 8));
+    const wTwo = wheelSum(
+      await wheelRun([...notch(per1 * 0.6, 30), ...notch(per1 * 0.6, 30)], 8),
+    );
+    check(
+      "wheel: a smoothed notch rests on the next card within 100ms of its last step, creeping no further",
+      Math.abs(wNotch.end - per1) < 1 &&
+        wNotch.rest <= 100 &&
+        wNotch.max <= wNotch.end + 0.5,
+      JSON.stringify({ per1, wNotch }),
+    );
+    check(
+      "wheel: a lone step glides on to the next card within 125ms",
+      Math.abs(wLone.end - per1) < 1 &&
+        wLone.glide !== null &&
+        wLone.glide <= 125,
+      JSON.stringify(wLone),
+    );
+    check(
+      "wheel: a second notch right after the first scrolls on to the card after",
+      Math.abs(wTwo.end - 2 * per1) < 1 && wTwo.max <= wTwo.end + 0.5,
+      JSON.stringify(wTwo),
     );
     const top1 = (await box(`${q(BOX)}.querySelector("fieldset")`)).y;
     mark = (await sent()).length;
@@ -1602,6 +1889,40 @@ export async function run(ctx) {
     );
     check("keys: Enter opens the focused card's session", !!keyed);
 
+    // A card clicked in the left slot of a scrolled strip leaves the strip
+    // where it was: the chat its session remounts moves the strip back below
+    // it, which starts the scroller over, and the reveal from there would
+    // show the card in the right slot instead (a card here that opens here,
+    // not one open in a tab, with a card after it).
+    const perK = await ctx.evaluate(
+      `parseFloat(${q(LIST)}.style.getPropertyValue("--ccup-card-w"))`,
+    );
+    const orderK = await ids();
+    const slotK = orderK.findIndex(
+      (i, n) =>
+        n >= 1 &&
+        n <= orderK.length - 2 &&
+        i !== S.B &&
+        i !== S.C &&
+        !orderK.slice(0, 1).includes(i),
+    );
+    const pickK = orderK[slotK];
+    await ctx.evaluate(`${q(LIST)}.scrollLeft=${slotK * perK}`);
+    await ctx.sleep(150);
+    const slBefore = await ctx.evaluate(`${q(LIST)}.scrollLeft`);
+    await click(center(await box(q(`${CARD}[data-id="${pickK}"]`))));
+    const pickedK = await until(
+      `!!${q(`${CARD}[data-id="${pickK}"][data-active]`)}`,
+      3000,
+    );
+    await ctx.sleep(300);
+    const slAfter = await ctx.evaluate(`${q(LIST)}.scrollLeft`);
+    check(
+      "click: a card clicked in a scrolled strip leaves the strip where it was",
+      !!pickedK && slBefore > 0 && Math.abs(slAfter - slBefore) < 0.6,
+      JSON.stringify({ slot: slotK, slBefore, slAfter }),
+    );
+
     // Relist: G shows up in the feed before any list read has it.
     mark = (await sent()).length;
     await ctx.evaluate(
@@ -1673,9 +1994,9 @@ export async function run(ctx) {
       JSON.stringify({ before0, after0, cutAfter }),
     );
 
-    // Widths from a wide sidebar down to a narrow one (seven sessions by now):
-    // the share rule holds at each. It ends at 250px, where the scroll checks
-    // below run.
+    // Widths from a wide sidebar down to a narrow one (eight sessions by now,
+    // the one started here included): the share rule holds at each. It ends
+    // at 250px, where the scroll checks below run.
     const steps = {};
     const bad = [];
     for (let width = 900; width >= 250; width -= 10) {
@@ -1702,7 +2023,7 @@ export async function run(ctx) {
     const all = await strip();
     check(
       "scroll: the strip holds every non-archived local session",
-      all.split(" ").length === 7 &&
+      all.split(" ").length === 8 &&
         !all.includes("Z") &&
         !all.includes("W") &&
         (await ctx.evaluate(`${q(LIST)}.scrollWidth>${q(LIST)}.clientWidth`)),

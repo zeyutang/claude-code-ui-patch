@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.5
 
 - On Claude Code 2.1.314 and later, math in the chat draws with its own fonts again: `\neq` had shown as a box, and other symbols in a substitute font.
 - With `chatSessionCards` on, a card's circle breathes while its session is working, instead of staying filled.

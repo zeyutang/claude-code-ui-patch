@@ -7,6 +7,8 @@
 - With `chatPromptHistoryButton` on, `/compact`, `/model` and `/effort` echoes and messages with no text, such as an attachment sent alone, start folded, and opening their fold keeps them in view for that conversation.
 - With `chatSessionCards` on, a new session gets its card once you send it a message or Claude starts working in it, so a window that opens on a new session no longer shows an "Untitled" card for it.
   Leaving a new session with an unsent message in its input box gives it an "Untitled" card that takes you back to that message.
+- With `chatSessionCards` on, the cards are as tall as the attachment chips in the input box, following `chat.fontSize` rather than the editor tab height.
+  The New session and hide buttons at the strip's ends take the jump buttons' size and rounded corners.
 - Text in a permission or question box, such as a question, an option, or the URL a permission asks to fetch, can now be selected and copied.
   Dragging across an option's text selects it without choosing the option, and a click still chooses it.
   Always applied, no setting.

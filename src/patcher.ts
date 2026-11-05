@@ -8962,16 +8962,19 @@ const SCARD_STORE_CAP = 200;
 // 18 to 42 title characters at 13px past its 32px of padding and circle.
 const SCARD_MAX = 100;
 const SCARD_CARD_MAX = 300;
-// A card's height, an editor tab's: window.density.editorTabHeight's default
-// and compact. The strip spans the sidebar's whole width and sits on its
-// bottom edge, SCARD_GAP below the input box.
-const SCARD_TAB_H = 24;
-const SCARD_TAB_H_COMPACT = 20;
+// A card's height, Claude Code's own for an attachment card in the input box
+// (an image or a file above the text): the chat's font size and 11px more,
+// so the cards follow chat.fontSize as those do (24px at the default 13px).
+// The strip spans the sidebar's whole width and sits on its bottom edge,
+// SCARD_GAP below the input box.
+const SCARD_CARD_H = "calc(var(--vscode-chat-font-size,13px) + 11px)";
 const SCARD_GAP = 8;
-// How far a button's icon stays in from the strip's top and bottom, its
-// hover tint showing around it: the header's 20px icon size at the default
-// tab height, 16px when compact.
-const SCARD_ICON_INSET = 2;
+// The strip's two buttons take the jump buttons' geometry (.ccup-nav-btn): a
+// square of SCARD_BTN with SCARD_BTN_R corners, which their hover tint shows,
+// around an icon of SCARD_BTN_ICON.
+const SCARD_BTN = 26;
+const SCARD_BTN_R = 5;
+const SCARD_BTN_ICON = 20;
 // One breath of a working session's circle, ease-in-out over the period of
 // the running label ("Thinking…", "Running Bash…") on a Focus view fold row
 // (focusFoldPulse, 2.1.317), but from full opacity down to .4 and back
@@ -9925,24 +9928,23 @@ function ccupSessionCardsWeb(
 // editor tab of VS Code's modern UI is cut from the editor's: no edge between
 // the card and the chat above it, rounded corners on its far (bottom) side,
 // and the strip curving into it where they meet, with the editor tab row's
-// geometry (the small corner radius, no groove left of the first card, the
-// tab height and text size). The look follows window.density.layout, which
-// applies under the modern UI (workbench.experimental.modernUI). At the
-// default density the cards reach the bottom of the view ("seamless"), where
-// VS Code's floating panel then leaves its own few pixels of padding, outside
-// the webview. At the compact density the cards keep a hairline groove below
-// them and the card on screen carries the tab's blue accent line, along its
-// bottom edge rather than the top, since the strip sits below the chat rather
-// than above it ("line"); the classic tabs, without the modern UI, do the
-// same. The card height follows window.density.editorTabHeight, and the hide
-// button's arrow workbench.sideBar.location. These settings are read, never
+// geometry (no groove left of the first card, the text size). The look
+// follows window.density.layout, which applies under the modern UI
+// (workbench.experimental.modernUI). At the default density the cards reach
+// the bottom of the view ("seamless"), where VS Code's floating panel then
+// leaves its own few pixels of padding, outside the webview. At the compact
+// density the cards keep a hairline groove below them and the card on screen
+// carries the tab's blue accent line, along its bottom edge rather than the
+// top, since the strip sits below the chat rather than above it ("line");
+// the classic tabs, without the modern UI, do the same. The hide button's
+// arrow follows workbench.sideBar.location. These settings are read, never
 // written, at patch time, so a change to any of them re-applies (see
-// Patcher.register) and asks for a webview refresh.
+// Patcher.register) and asks for a webview refresh. The card height needs
+// neither, being the webview's own CSS (SCARD_CARD_H).
 export type ScardLook = "seamless" | "line";
 export type ScardSide = "left" | "right";
 export const SCARD_LOOK_KEYS = [
   "window.density.layout",
-  "window.density.editorTabHeight",
   "workbench.experimental.modernUI",
   "workbench.sideBar.location",
 ];
@@ -9955,17 +9957,6 @@ function scardLook(): ScardLook {
       : "line";
   } catch {
     return "line"; // outside VS Code: the repro scenarios pass a look
-  }
-}
-function scardTabH(): number {
-  try {
-    return vscode.workspace
-      .getConfiguration()
-      .get<string>("window.density.editorTabHeight") === "compact"
-      ? SCARD_TAB_H_COMPACT
-      : SCARD_TAB_H;
-  } catch {
-    return SCARD_TAB_H;
   }
 }
 // The secondary side bar's side of the window, across from the primary one.
@@ -9982,11 +9973,12 @@ function scardSide(): ScardSide {
 }
 
 // The strip's stylesheet: on the chat's own background (the card on
-// screen's) across the sidebar's width, its two buttons square at a card's
-// height, their icons SCARD_ICON_INSET in from its top and bottom, with the
-// ghost hover color and the 4px corners (the webview's small radius) of the
-// header's icon buttons, and between them the band of cards in the connected
-// tab row's background, groove included, so it stands apart from them,
+// screen's) across the sidebar's width, its two buttons in the jump buttons'
+// geometry (SCARD_BTN) with the ghost hover color of the header's icon
+// buttons, centered on the band of cards, or flush with its bottom while
+// the band is the shorter of the two, and between them the band of cards,
+// each an attachment card's height (SCARD_CARD_H), in the connected tab
+// row's background, groove included, so it stands apart from them,
 // scrolling sideways with no scrollbar of its own: cards with a leading
 // state circle (in the card's own color a hollow ring while the session is
 // idle, filled and breathing while it works with nothing asked of you, and
@@ -10012,13 +10004,20 @@ function scardSide(): ScardSide {
 // tab's size (fontSize.body1). At the default density the webview itself is
 // clipped to VS Code's large radius (cornerRadius.large), so there the
 // strip's ends stay that far in from the sides, clear of that clip.
-function scardCss(chat: string, look: ScardLook, tabH: number): string {
+function scardCss(chat: string, look: ScardLook): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
   const clay = "var(--app-claude-orange,#d97757)";
   const green = "#74c991"; // the transcript's dot for a tool call that succeeded
   const grey = tab("inactiveForeground", "var(--app-secondary-foreground)");
   const hover = `background:var(--app-ghost-button-hover-background);color:${tab("hoverForeground", "var(--app-primary-foreground)")}`;
   const groove = look === "line" ? 1 : 0;
+  // The band's height, a card's and the groove below it, as a sum and as a
+  // length; a button stands half the difference above the band's bottom.
+  const sum = groove
+    ? `var(--ccup-card-h) + ${groove}px`
+    : "var(--ccup-card-h)";
+  const band = groove ? `calc(${sum})` : sum;
+  const lift = `max(0px,(${sum} - ${SCARD_BTN}px) / 2)`;
   const ends =
     look === "seamless"
       ? "width:calc(100% - 2 * var(--vscode-cornerRadius-large,8px));margin:0 var(--vscode-cornerRadius-large,8px)"
@@ -10032,16 +10031,16 @@ function scardCss(chat: string, look: ScardLook, tabH: number): string {
       ? `;background-image:linear-gradient(${tab("activeBorderTop", "var(--vscode-focusBorder)")},${tab("activeBorderTop", "var(--vscode-focusBorder)")});background-repeat:no-repeat;background-position:50% 100%;background-size:calc(100% - 2 * var(--ccup-card-r)) 1px`
       : "";
   return (
-    `.ccup-cards{--ccup-card-r:var(--corner-radius-large,8px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));position:relative;display:flex;flex:none;box-sizing:border-box;${ends};height:${tabH + groove}px;padding:0;background:var(--ccup-card-bg)}` +
+    `.ccup-cards{--ccup-card-r:var(--corner-radius-large,8px);--ccup-card-bg:var(--app-root-background,var(--app-primary-background));--ccup-card-h:${SCARD_CARD_H};position:relative;display:flex;flex:none;box-sizing:border-box;${ends};height:${band};padding:0;background:var(--ccup-card-bg)}` +
     ".ccup-cards[hidden]{display:none}" +
-    `.ccup-cards-scroll{position:relative;display:flex;flex:1 1 auto;min-width:0;height:${tabH + groove}px;border-radius:var(--ccup-card-r);overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:${strip}}` +
+    `.ccup-cards-scroll{position:relative;display:flex;flex:1 1 auto;min-width:0;height:${band};border-radius:var(--ccup-card-r);overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;background:${strip}}` +
     ".ccup-cards-scroll[data-cut-l]{border-top-left-radius:0;border-bottom-left-radius:0}" +
     ".ccup-cards-scroll[data-cut-r]{border-top-right-radius:0;border-bottom-right-radius:0}" +
     ".ccup-cards-scroll::-webkit-scrollbar{display:none}" +
-    `.ccup-cards-btn{position:relative;display:flex;align-items:center;justify-content:center;flex:none;width:${tabH}px;height:${tabH}px;box-sizing:border-box;margin:0;padding:0;border:none;border-radius:var(--corner-radius-small,4px);background:transparent;color:${grey};cursor:pointer;outline:none}` +
-    `.ccup-cards-btn svg{display:block;width:${tabH - 2 * SCARD_ICON_INSET}px;height:${tabH - 2 * SCARD_ICON_INSET}px;pointer-events:none}` +
+    `.ccup-cards-btn{position:relative;display:flex;align-items:center;justify-content:center;flex:none;align-self:flex-end;width:${SCARD_BTN}px;height:${SCARD_BTN}px;box-sizing:border-box;margin:0 0 ${lift};padding:0;border:none;border-radius:${SCARD_BTN_R}px;background:transparent;color:${grey};cursor:pointer;outline:none}` +
+    `.ccup-cards-btn svg{display:block;width:${SCARD_BTN_ICON}px;height:${SCARD_BTN_ICON}px;pointer-events:none}` +
     `.ccup-cards-btn${HOVER}{${hover}}` +
-    `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 var(--ccup-card-w,auto);width:var(--ccup-card-w,auto);height:${tabH}px;box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:${tabH}px;text-align:left;cursor:pointer;outline:none}` +
+    `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 var(--ccup-card-w,auto);width:var(--ccup-card-w,auto);height:var(--ccup-card-h);box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:var(--ccup-card-h);text-align:left;cursor:pointer;outline:none}` +
     ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
     ".ccup-card[data-ongoing] .ccup-card-dot{background:currentColor}" +
@@ -10160,22 +10159,16 @@ const sessionCardsSite = (() => {
 let scardBuilt: {
   native: string;
   look: ScardLook;
-  tabH: number;
   side: ScardSide;
   out: string | null;
 }[] = [];
 function sessionCardsBuild(
   native: string,
   look: ScardLook,
-  tabH: number,
   side: ScardSide,
 ): string | null {
   const hit = scardBuilt.find(
-    (b) =>
-      b.native === native &&
-      b.look === look &&
-      b.tabH === tabH &&
-      b.side === side,
+    (b) => b.native === native && b.look === look && b.side === side,
   );
   if (hit) return hit.out;
   const site = sessionCardsSite(native);
@@ -10183,7 +10176,7 @@ function sessionCardsBuild(
   if (site) {
     const cfg: ScardCfg = {
       body: site.body,
-      css: scardCss(site.chat, look, tabH),
+      css: scardCss(site.chat, look),
       store: SCARD_STORE,
       cap: SCARD_STORE_CAP,
       max: SCARD_MAX,
@@ -10204,7 +10197,7 @@ function sessionCardsBuild(
     const o = applyEdits(native, [edit]);
     if (unitsReparse(o, [edit], [[site.unit, isClass]])) out = o;
   }
-  scardBuilt = [{ native, look, tabH, side, out }, ...scardBuilt].slice(0, 2);
+  scardBuilt = [{ native, look, side, out }, ...scardBuilt].slice(0, 2);
   return out;
 }
 const scardStrip = (c: string): string => c.replace(SCARD_FRAG_RE, "");
@@ -10218,7 +10211,7 @@ function sessionCardsPresent(c: string): boolean {
 // nothing to remove.
 function sessionCardsCurrentOn(c: string): boolean | undefined {
   const native = scardStrip(c);
-  const want = sessionCardsBuild(native, scardLook(), scardTabH(), scardSide());
+  const want = sessionCardsBuild(native, scardLook(), scardSide());
   if (native !== c) return want === null || want === c;
   return want === null ? undefined : false;
 }
@@ -10226,20 +10219,18 @@ function sessionCardsSet(c: string, on: boolean): string {
   const native = scardStrip(c);
   if (!on) return native;
   // sites gone: leave the file as it is
-  return sessionCardsBuild(native, scardLook(), scardTabH(), scardSide()) ?? c;
+  return sessionCardsBuild(native, scardLook(), scardSide()) ?? c;
 }
 
-// The webview bundle with the strip in for a look, card height, and side bar
-// side, or null when a site is gone. scripts/repro's session-cards.mjs serves
-// this, so it runs exactly what an apply writes and doubles as the drift
-// canary.
+// The webview bundle with the strip in for a look and side bar side, or null
+// when a site is gone. scripts/repro's session-cards.mjs serves this, so it
+// runs exactly what an apply writes and doubles as the drift canary.
 export function sessionCardsWebview(
   js: string,
   look: ScardLook = "line",
-  tabH: number = SCARD_TAB_H,
   side: ScardSide = "right",
 ): string | null {
-  return sessionCardsBuild(scardStrip(js), look, tabH, side);
+  return sessionCardsBuild(scardStrip(js), look, side);
 }
 
 // ---------------------------------------------------------------------------

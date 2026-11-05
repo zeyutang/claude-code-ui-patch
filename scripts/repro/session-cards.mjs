@@ -5,9 +5,15 @@
 // checks assert:
 //   mount     the strip is the session body's last child, across the view's
 //             whole width on its bottom edge, the input box 8px above it,
-//             its cards an editor tab (24px) tall in its 13px text over a 1px
-//             groove, the New session button square at its left end and the
-//             hide button at its right, the cards scrolling between them
+//             its cards an attachment card's height (24px at the stub's 13px
+//             chat font) in the editor tab's 13px text over a 1px groove, the
+//             New session button at its left end and the hide button at its
+//             right, each the jump buttons' 26px square flush with the
+//             strip's bottom while the strip is the shorter, the cards
+//             scrolling between them
+//   height    a card is as tall as Claude Code's own attachment card in the
+//             input box, at the stub's chat font size and a larger one, where
+//             the buttons stay 26px and center on the band
 //   order     cards run from the session of your last message: the booted
 //             one by its newest prompt (not by the later activity the list
 //             reports for it), the others by the list's activity time, no
@@ -19,7 +25,9 @@
 //             text takes the input box's color
 //   buttons   both sit on the chat's own background, the card on screen's,
 //             groove included, the band of cards starting right at each, the
-//             ghost hover under the pointer, each with its own tip; New
+//             ghost hover under the pointer, each with its own tip, and both
+//             in the jump buttons' geometry as the patcher writes their rule
+//             (square, corners, and icon); New
 //             session presses the header's own button (by click or key, once
 //             each) and wears its icon, or with no header creates the session
 //             itself; the hide button asks the host to hide the secondary
@@ -101,9 +109,9 @@
 //             under the rounded clip VS Code puts on the webview there
 //             (emulated), and when compact the 1px groove and the blue line
 //             along the bottom of the card on screen (both built here, as
-//             the patcher would from window.density.layout); a compact tab
-//             height makes the cards and buttons 20px tall; the card on screen
-//             first sits in the band's rounded end, the chat all around it
+//             the patcher would from window.density.layout); the card on
+//             screen first sits in the band's rounded end, the chat all
+//             around it
 //   editor    an editor tab (IS_SIDEBAR false) gets no strip
 //   empty     with no session to show the strip stays hidden and the input
 //             box keeps its native 16px
@@ -387,8 +395,33 @@ export async function run(ctx) {
   const serve = {
     line: P.sessionCardsWebview(native, "line"),
     seamless: P.sessionCardsWebview(native, "seamless"),
-    line20: P.sessionCardsWebview(native, "line", 20),
-    lineLeft: P.sessionCardsWebview(native, "line", 24, "left"),
+    lineLeft: P.sessionCardsWebview(native, "line", "left"),
+  };
+  // Claude Code's attachment card (an image or file above the input box's
+  // text), whose height the cards take; and the jump buttons' rule as the
+  // patcher writes it, whose geometry the strip's buttons take.
+  const PILL = native.match(
+    /pill:"(pill_[-\w]+)",icon:"icon_[-\w]+",thumbIcon:"thumbIcon_[-\w]+"/,
+  )?.[1];
+  const patcherJs = readFileSync(
+    join(
+      dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+      "out",
+      "patcher.js",
+    ),
+    "utf8",
+  );
+  const navRule = (sel) =>
+    patcherJs.match(
+      new RegExp(`${sel.replace(/[.]/g, "\\.")}\\{([^}"]*)\\}`),
+    )?.[1] ?? "";
+  const navPx = (rule, prop) =>
+    rule.match(new RegExp(`(?:^|;)${prop}:([\\d.]+)px`))?.[1];
+  const nav = {
+    w: navPx(navRule(".ccup-nav-btn"), "width"),
+    h: navPx(navRule(".ccup-nav-btn"), "height"),
+    r: navPx(navRule(".ccup-nav-btn"), "border-radius"),
+    icon: navPx(navRule(".ccup-nav-btn svg"), "width"),
   };
   let look = "line";
   const cls = (key) =>
@@ -679,7 +712,7 @@ export async function run(ctx) {
         `var L=${q(LIST)},rl=L.getBoundingClientRect(),n=${q(NEW)}.getBoundingClientRect(),h=${q(HIDE)}.getBoundingClientRect();` +
         `return{last:b.parentNode.matches(${JSON.stringify(BODY)})&&!b.nextSibling,h:rb.height,ch:c0.height,top:c0.top-rb.top,gap:rb.top-rf.bottom,` +
         `edge:innerHeight-rb.bottom,left:rb.left,right:innerWidth-rb.right,first:c0.left-rl.left+L.scrollLeft,` +
-        `nl:n.left-rb.left,nw:n.width,nh:n.height,ntop:n.top-rb.top,hr:rb.right-h.right,hw:h.width,hh:h.height,` +
+        `nl:n.left-rb.left,nw:n.width,nh:n.height,nbot:rb.bottom-n.bottom,hr:rb.right-h.right,hw:h.width,hh:h.height,hbot:rb.bottom-h.bottom,` +
         `between:Math.abs(rl.left-n.right)<0.6&&Math.abs(h.left-rl.right)<0.6&&L.parentNode===b,` +
         `size:getComputedStyle(c[0].lastChild).fontSize,marked:b.parentNode.hasAttribute("data-ccup-cards"),n:c.length}})()`,
     );
@@ -696,21 +729,59 @@ export async function run(ctx) {
         Math.abs(g.gap - 8) < 0.6,
     );
     check(
-      "mount: cards an editor tab tall in its text size, over a 1px groove",
+      "mount: cards an attachment card's height at the stub's 13px chat font, in the editor tab's text size, over a 1px groove",
       g.ch === 24 && Math.abs(g.top) < 0.6 && g.h === 25 && g.size === "13px",
     );
     check(
-      "mount: New session square at the strip's left end, the hide button at its right, the cards scrolling between from the first",
+      "mount: New session at the strip's left end, the hide button at its right, both 26px squares flush with its bottom, the cards scrolling between from the first",
       Math.abs(g.nl) < 0.6 &&
         Math.abs(g.hr) < 0.6 &&
-        g.nw === 24 &&
-        g.nh === 24 &&
-        g.hw === 24 &&
-        g.hh === 24 &&
-        Math.abs(g.ntop) < 0.6 &&
+        g.nw === 26 &&
+        g.nh === 26 &&
+        g.hw === 26 &&
+        g.hh === 26 &&
+        Math.abs(g.nbot) < 0.6 &&
+        Math.abs(g.hbot) < 0.6 &&
         g.between &&
         Math.abs(g.first) < 0.6,
       JSON.stringify(g),
+    );
+    // Height: a card is as tall as Claude Code's own attachment card, a probe
+    // of its class measured beside the strip, at the stub's chat font size
+    // and at the user's larger one, where the band outgrows the buttons and
+    // they stand centered on it.
+    const tall = async (px) => {
+      await ctx.evaluate(
+        px
+          ? `document.documentElement.style.setProperty("--vscode-chat-font-size","${px}px")`
+          : `document.documentElement.style.removeProperty("--vscode-chat-font-size")`,
+      );
+      await ctx.sleep(100);
+      return json(
+        `(function(){var p=document.createElement("div");p.className=${JSON.stringify(PILL)};document.body.appendChild(p);` +
+          `var ph=p.getBoundingClientRect().height;p.remove();var b=${q(BAR)}.getBoundingClientRect(),c=${q(CARD)}.getBoundingClientRect(),` +
+          `n=${q(NEW)}.getBoundingClientRect(),h=${q(HIDE)}.getBoundingClientRect();` +
+          `return{pill:ph,card:c.height,bar:b.height,n:[n.width,n.height,n.top-b.top,b.bottom-n.bottom],` +
+          `h:[h.width,h.height,h.top-b.top,b.bottom-h.bottom],gap:b.top-${q(BOX)}.querySelector("fieldset").getBoundingClientRect().bottom}})()`,
+      );
+    };
+    const t13 = await tall(0);
+    const t15 = await tall(15.25);
+    await tall(0);
+    const centered = (x) =>
+      x[0] === 26 && x[1] === 26 && x[2] > 0 && Math.abs(x[2] - x[3]) < 0.1;
+    check(
+      "height: a card is as tall as Claude Code's attachment card at either chat font size, the buttons centered on the taller band",
+      !!PILL &&
+        t13.pill === 24 &&
+        t13.card === t13.pill &&
+        Math.abs(t15.pill - 26.25) < 0.01 &&
+        t15.card === t15.pill &&
+        Math.abs(t15.bar - (t15.pill + 1)) < 0.01 &&
+        centered(t15.n) &&
+        centered(t15.h) &&
+        Math.abs(t15.gap - 8) < 0.6,
+      JSON.stringify({ PILL, t13, t15 }),
     );
     const L0 = await layout();
     const sh0 = sharesOk(L0);
@@ -888,7 +959,7 @@ export async function run(ctx) {
     const lb = await box(q(LIST));
     const cut0 = await cutNow();
     // The cards' corners and shoulders take the input box's 8px radius, the
-    // buttons the header icon buttons' 4px; C, first in view, keeps all its
+    // buttons the jump buttons' 5px; C, first in view, keeps all its
     // corners, the band rounding off over them.
     const radii = await json(
       `(function(){var r=function(e,k){return getComputedStyle(e)[k]};var A=${cardEl("A")},C=${cardEl("C")},n=${q(NEW)};` +
@@ -944,14 +1015,15 @@ export async function run(ctx) {
       JSON.stringify({ shoulder, beside, cornerOut, cornerIn, foot }),
     );
     check(
-      "seamless: the cards' corners and shoulders match the input box's 8px, the buttons the header's 4px",
+      "seamless: the cards' corners and shoulders match the input box's 8px, the buttons the jump buttons' 5px",
       radii.token === "8px" &&
         radii.active === "8px" &&
         radii.activeTop === "0px" &&
         radii.shoulder === "8px" &&
         radii.idle === "8px" &&
-        radii.button === "4px",
-      JSON.stringify(radii),
+        nav.r === "5" &&
+        radii.button === `${nav.r}px`,
+      JSON.stringify({ radii, nav }),
     );
     check(
       "edges: at rest the band rounds off at both ends like the cards, the chat beyond its corners",
@@ -1054,15 +1126,19 @@ export async function run(ctx) {
       );
     const nb = await box(q(NEW));
     const hb1 = await box(q(HIDE));
+    // The groove's row and the band's top right corner, from the strip's
+    // own boxes (the buttons reach past the band's top while it is shorter).
+    const bar1 = await box(q(BAR));
+    const lb1 = await box(q(LIST));
     const [newRest, hideRest, newFoot, hideFoot, bandL, bandR, bandTopR] =
       await colorsAt([
         [nb.x + 1.5, nb.y + nb.h / 2],
         [hb1.r - 1.5, hb1.y + hb1.h / 2],
-        [nb.x + nb.w / 2, nb.b + 0.5],
-        [hb1.x + hb1.w / 2, hb1.b + 0.5],
+        [nb.x + nb.w / 2, bar1.b - 0.5],
+        [hb1.x + hb1.w / 2, bar1.b - 0.5],
         [nb.r + 0.5, nb.y + nb.h / 2],
         [hb1.x - 0.5, hb1.y + hb1.h / 2],
-        [hb1.x - 3, hb1.y + 3],
+        [lb1.r - 3, lb1.y + 3],
       ]);
     const sides0 = await cutNow();
     // A sits just past the right end, so its left shoulder would reach into
@@ -1184,16 +1260,21 @@ export async function run(ctx) {
         atRest.tr === CHAT,
       JSON.stringify({ perMid, mid, atRest }),
     );
-    // Icons: the line height less 2px above and below, the header's 20px at
-    // the default tab height, both the same size.
+    // Buttons: the jump buttons' square and icon, as the patcher writes their
+    // rule, the icon centered (3px in from the top and bottom).
     const icons = await json(
       `[${JSON.stringify(NEW)},${JSON.stringify(HIDE)}].map(function(s){var b=document.querySelector(s).getBoundingClientRect(),` +
-        `i=document.querySelector(s+" svg").getBoundingClientRect();return[i.width,i.height,i.top-b.top,b.bottom-i.bottom]})`,
+        `i=document.querySelector(s+" svg").getBoundingClientRect();return[b.width,b.height,i.width,i.height,i.top-b.top,b.bottom-i.bottom]})`,
     );
     check(
-      "buttons: icons 20px at the default tab height, 2px in from the top and bottom",
-      icons.every((i) => i.join() === "20,20,2,2"),
-      JSON.stringify(icons),
+      "buttons: the jump buttons' 26px square around their 20px icon, centered",
+      nav.w === "26" &&
+        nav.h === "26" &&
+        nav.icon === "20" &&
+        icons.every(
+          (i) => i.join() === `${nav.w},${nav.h},${nav.icon},${nav.icon},3,3`,
+        ),
+      JSON.stringify({ icons, nav }),
     );
     // The hide button's arrow points right, to the edge a secondary side bar
     // on the right sits on (VS Code's default): above the arrowhead only its
@@ -2482,24 +2563,6 @@ export async function run(ctx) {
       }),
     );
     await ctx.shot("session-cards-seamless");
-    await fetch(base + "__look/line20");
-    await boot();
-    await ctx.sleep(400);
-    const short = await json(
-      `(function(){var b=${q(BAR)}.getBoundingClientRect(),c=${cardEl("A")}.getBoundingClientRect(),` +
-        `n=${q(NEW)}.getBoundingClientRect(),h=${q(HIDE)}.getBoundingClientRect(),` +
-        `ni=${q(`${NEW} svg`)}.getBoundingClientRect(),hi=${q(`${HIDE} svg`)}.getBoundingClientRect();` +
-        `return{h:b.height,ch:c.height,n:[n.width,n.height],x:[h.width,h.height],icons:[ni.width,ni.height,hi.width,hi.height]}})()`,
-    );
-    check(
-      "look: a compact editor tab height makes the cards and buttons 20px tall, their icons 16px",
-      short.ch === 20 &&
-        short.h === 21 &&
-        short.n.join() === "20,20" &&
-        short.x.join() === "20,20" &&
-        short.icons.join() === "16,16,16,16",
-      JSON.stringify(short),
-    );
     // A secondary side bar on the left (the primary moved right): the arrow
     // points left, its bar near the button's left side, with the same tip.
     await fetch(base + "__look/lineLeft");

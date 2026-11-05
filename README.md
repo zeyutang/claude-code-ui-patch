@@ -96,6 +96,7 @@ Behavior
 Always applied                         # no setting; installing this patch is the opt-in
    ├── permission focus ring           # focused permission/question box gets the input box's ring
    ├── question answer box reveal      # typing keeps the "Other" box's border and padding in view
+   ├── permission text selection       # permission/question box: select and copy its text
    ├── expanded prompt header          # "Show more" keeps the prompt on top in its own scroller
    ├── hidden cursor                   # macOS: a cursor hidden by typing hovers nothing until moved
    ├── session delete button           # session list rows: move a conversation to the Trash

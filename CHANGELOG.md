@@ -4,6 +4,9 @@
 
 - With `chatSessionCards` on, a new session gets its card once you send it a message or Claude starts working in it, so a window that opens on a new session no longer shows an "Untitled" card for it.
   Leaving a new session with an unsent message in its input box gives it an "Untitled" card that takes you back to that message.
+- Text in a permission or question box, such as a question, an option, or the URL a permission asks to fetch, can now be selected and copied.
+  Dragging across an option's text selects it without choosing the option, and a click still chooses it.
+  Always applied, no setting.
 
 ## 1.6.5
 

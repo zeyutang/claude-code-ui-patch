@@ -1614,6 +1614,151 @@ function questionRevealBuild(c: string): string | undefined {
   return `${QUESTION_REVEAL_MARKER}.questionsContainer_${qHash}{scroll-padding:${pad}px 0 ${pad}px}`;
 }
 
+// Permission and question card text (always on, two halves): the card that
+// stands in for the input box while a tool waits for permission or a question
+// waits for an answer (.permissionRequestContainer_<h>) inherits the app
+// root's user-select:none, and none of its text opts back in the way the
+// transcript's messages do, so nothing in it can be selected or copied: a
+// question (which may spell out a command to run first), the options and their
+// previews, the permission header, the URL or query a permission names. The
+// CSS half (cardTextCss) sets user-select:text on those text blocks.
+//
+// That alone still selects nothing in most of them. A press on text with no
+// focusable box of its own focuses the card itself (tabIndex 0), whose onFocus
+// hands focus straight on to its default button or first option, and when a
+// focus handler moves focus during a press, Blink skips the press's selection
+// start. The JS half (cardText) holds that handoff for a press on the card's
+// text: it stops the card's own focusin at the document element, above React's
+// root listener, so the press goes on to start a selection. A press that ends
+// without selecting anything (a plain click) gets back the selection it found,
+// then the handoff it held (blur, then refocus the card), so the card still
+// decides where a click leaves focus. A caret in the permission feedback box or
+// the question's "Other" box comes back where it was, and putting it back
+// focuses that box, so typing goes on there rather than into the card, whose
+// digit keys answer it. After a drag that selected text, focus stays on the
+// card, whose key handler still takes its shortcuts.
+//
+// An option is a clickable row (role radio or checkbox, onClick picks it), and
+// a drag inside one ends in a click on that row, which would pick the option
+// and, on a single-select question that is not the last, move on to the next.
+// The JS half follows Chromium's rule for a <label>: a single click that ends
+// a press begun on an option's text and leaves text selected in that row does
+// not pick it, while a plain click, a click on the radio, and double clicks
+// still do.
+//
+// An always-on fix rather than a knob: text the card shows for reading has no
+// reason to resist copying. Anchors: the class maps (JS half) and the rules
+// (CSS half) of the question and permission modules. The card, the question
+// text, and an option's row, label, and description are required, the other
+// text blocks are taken where the build has them, and either half skips on its
+// own when its anchors are gone.
+const CARD_TEXT_MARKER = "/*ccup:cardText*/";
+const CARD_TEXT_CSS_MARKER = "/*ccup:cardTextCss*/";
+// The JS half's once-only guard on window.
+const CARD_TEXT_FLAG = "__ccupCardText";
+// Each module's anchor key, whose hash the module's other classes share.
+const CARD_Q = "questionTextLarge";
+const CARD_P = "permissionRequestContainer";
+// The card's text blocks: [module, class key, required].
+const CARD_TEXT_BLOCKS: [string, string, boolean][] = [
+  [CARD_Q, "questionTextLarge", true],
+  [CARD_Q, "optionLabel", true],
+  [CARD_Q, "optionDescription", true],
+  [CARD_Q, "previewPane", false],
+  [CARD_P, "permissionRequestHeader", false],
+  [CARD_P, "permissionRequestInput", false],
+  [CARD_P, "permissionRequestDescription", false],
+  [CARD_P, "skillNote", false],
+];
+
+interface CardTextNames {
+  card: string; // the card's class
+  row: string; // an option row's class
+  text: string[]; // the text blocks' classes
+}
+
+// The card's class names, given where a file names a module's hash (hash) and
+// whether it carries a class (has), or undefined when a required one is gone.
+function cardTextNames(
+  hash: (key: string) => string | undefined,
+  has: (key: string, h: string) => boolean,
+): CardTextNames | undefined {
+  const q = hash(CARD_Q);
+  const p = hash(CARD_P);
+  if (!q || !p || !has("option", q)) return undefined;
+  const text: string[] = [];
+  for (const [mod, key, required] of CARD_TEXT_BLOCKS) {
+    const h = mod === CARD_Q ? q : p;
+    if (has(key, h)) text.push(`${key}_${h}`);
+    else if (required) return undefined;
+  }
+  return { card: `${CARD_P}_${p}`, row: `option_${q}`, text };
+}
+
+// Both halves read their file with their own line out, so what they find is
+// the build's alone.
+function cardTextCssBuild(css: string): string | undefined {
+  const c = cssRemoveLine(css, CARD_TEXT_CSS_MARKER);
+  const n = cardTextNames(
+    (key) => c.match(new RegExp(`\\.${key}_([-\\w]+)\\{`))?.[1],
+    (key, h) => new RegExp(`\\.${key}_${h}(?![-\\w])`).test(c),
+  );
+  if (!n) return undefined; // anchor gone: leave native
+  const sel = n.text.map((t) => `.${t}`).join(",");
+  return `${CARD_TEXT_CSS_MARKER}${sel}{user-select:text}`;
+}
+
+function cardTextJsBuild(js: string): string | undefined {
+  const c = cssRemoveLine(js, CARD_TEXT_MARKER);
+  const n = cardTextNames(
+    (key) => c.match(new RegExp(`[,{]${key}:"${key}_([-\\w]+)"`))?.[1],
+    (key, h) => new RegExp(`[,{]${key}:"${key}_${h}"`).test(c),
+  );
+  if (!n) return undefined; // anchor gone: leave native
+  const text = JSON.stringify(n.text.map((t) => `.${t}`).join(","));
+  const code =
+    `(function(){try{` +
+    `if(window.${CARD_TEXT_FLAG})return;window.${CARD_TEXT_FLAG}=1;` +
+    `var C=".${n.card}",T=${text},O=".${n.row}",d=document.documentElement,h=null,held=null,pre=null,pr=null;` +
+    `function el(x){return x&&x.nodeType!==1?x.parentElement:x}` +
+    // A left press on the card's text: arm the hold for this press alone, and
+    // note the selection it finds and the option row it starts in.
+    `addEventListener("mousedown",function(e){h=held=pre=pr=null;` +
+    `var t=el(e.target),c=!e.button&&t&&t.closest&&t.closest(T)&&t.closest(C),s;if(!c)return;` +
+    `h=c;pr=t.closest(O);s=getSelection();pre=s&&s.rangeCount?[s.anchorNode,s.anchorOffset,s.focusNode,s.focusOffset]:0;` +
+    `setTimeout(function(){h=null})},!0);` +
+    // The card taking focus from that press: React never hears of it, so the
+    // card hands nothing on.
+    `d.addEventListener("focusin",function(e){if(h&&e.target===h){held=h;h=null;e.stopPropagation()}},!0);` +
+    `d.addEventListener("click",function(e){` +
+    `var t=el(e.target),s=getSelection(),sel=!!s&&!s.isCollapsed,c=held,p=pre,r=pr;held=h=pre=pr=null;` +
+    // A plain click: the selection as it was, and the handoff the card held.
+    `if(c&&!sel){try{if(p&&p[0].isConnected&&p[2].isConnected)s.setBaseAndExtent(p[0],p[1],p[2],p[3]);else s.removeAllRanges()}catch(x){}` +
+    `if(document.activeElement===c){c.blur();c.focus()}}` +
+    // A single click that ends selecting in an option's text: the row never
+    // hears of it.
+    `if(e.detail===1&&sel&&r&&t&&r.contains(t)&&(r.contains(s.anchorNode)||r.contains(s.focusNode)))e.stopPropagation()` +
+    `},!0)` +
+    `}catch(e){}})();`;
+  return `${CARD_TEXT_MARKER}${code}`;
+}
+
+// The webview bundle and stylesheet as an apply writes them, both halves in,
+// or null when an anchor of either is gone. scripts/repro's card-text.mjs
+// serves this, so it runs exactly what the patcher writes.
+export function cardTextWebview(
+  js: string,
+  css: string,
+): { js: string; css: string } | null {
+  const jsLine = cardTextJsBuild(js);
+  const cssLine = cardTextCssBuild(css);
+  if (jsLine === undefined || cssLine === undefined) return null;
+  return {
+    js: cssApplyLine(js, CARD_TEXT_MARKER, jsLine),
+    css: cssApplyLine(css, CARD_TEXT_CSS_MARKER, cssLine),
+  };
+}
+
 // Expanded prompt header (always on, two halves): every user message is the
 // sticky header of its turn (.message_<h>.stickyHeader_<h>, position:sticky;
 // top:0), its content clamped at 250px behind a "Show more" button. "Show
@@ -13031,6 +13176,22 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: "webview/index.css",
     marker: QUESTION_REVEAL_MARKER,
     build: questionRevealBuild,
+  },
+  {
+    kind: "line",
+    id: "cardTextCss",
+    label: "permission text selection",
+    file: "webview/index.css",
+    marker: CARD_TEXT_CSS_MARKER,
+    build: cardTextCssBuild,
+  },
+  {
+    kind: "line",
+    id: "cardText",
+    label: "permission text press guard",
+    file: "webview/index.js",
+    marker: CARD_TEXT_MARKER,
+    build: cardTextJsBuild,
   },
   {
     kind: "line",

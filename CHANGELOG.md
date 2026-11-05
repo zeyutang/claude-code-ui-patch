@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- With `chatSessionCards` on, a new session gets its card once you send it a message or Claude starts working in it, so a window that opens on a new session no longer shows an "Untitled" card for it.
+  Leaving a new session with an unsent message in its input box gives it an "Untitled" card that takes you back to that message.
+
 ## 1.6.5
 
 - On Claude Code 2.1.314 and later, math in the chat draws with its own fonts again: `\neq` had shown as a box, and other symbols in a substitute font.

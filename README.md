@@ -167,6 +167,8 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   Working includes a background agent the session started.
   The circle turns solid clay while a permission or question prompt waits on you, and solid green while a finished turn is still unseen, back to a ring once you open the session.
   The strip holds every session that is not archived and scrolls sideways like the editor's tabs, the mouse wheel included.
+  A new session gets its card once you send it a message or Claude starts working in it.
+  Leaving a new session with an unsent message in its input box gives it an "Untitled" card that takes you back to that message, until you empty the box and leave it again.
   A New session button stays at its left end, and a button at its right end hides the secondary side bar (where Claude Code puts the chat).
   That button's arrow points to the side of the window the secondary side bar is on.
   Both buttons sit on the chat's own background, so the band of cards between them stands apart.

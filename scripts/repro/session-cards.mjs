@@ -87,6 +87,13 @@
 //             arrives first once the session starts, sliding in from just
 //             before the card that was first and pushing the others right,
 //             side by side
+//   blank     a new session that Claude Code names before any prompt gets no
+//             card, nor does a model change's echo in it, until its first
+//             prompt brings the card in first
+//   draft     a new session you move off with a message left unsent gets an
+//             Untitled card, first, none while you type; back on it the same
+//             card shows the draft in the box, emptied and left it goes, and
+//             sent from it the same card stays
 //   settle    an idle strip mutates nothing
 //   look      the strip follows VS Code's layout density: at the default
 //             density no groove, the cards on the view's bottom edge, no
@@ -231,8 +238,11 @@ Element.prototype.animate = function (frames, opts) {
   return a;
 };
 // Sessions started here (a launch that resumes none gets a fresh id, which
-// the CLI reports on the first prompt), listed from then on.
-window.__minted = []; window.__extra = [];
+// the CLI reports on the first prompt), listed from then on. While __early
+// is a list, such a launch is named at once instead, by a system message
+// the CLI sends before any prompt (as it does for some accounts, an org's
+// command list landing after its startup), and listed from its first prompt.
+window.__minted = []; window.__extra = []; window.__early = null;
 const deliver = (message) => window.dispatchEvent(
   new MessageEvent("message", { data: { type: "from-extension", message } }));
 window.__push = (request) =>
@@ -249,10 +259,11 @@ const live = (msg) => {
   if (!sid) {
     sid = crypto.randomUUID();
     window.__chan[sid] = ch; window.__minted.push(sid);
+  }
+  if (!KEY[sid] && !window.__extra.some((e) => e.id === sid))
     window.__extra.push({ id: sid, summary: "A new session", customTitle: "A new session",
       lastModified: Date.now(), lastActivity: Date.now(), archived: false, fileSize: 4096,
       gitBranch: "develop", isCurrentWorkspace: true });
-  }
   window.__lives[ch] = { sid };
   setTimeout(() => {
     io(ch, { type: "system", subtype: "init", session_id: sid, model: "claude-fable-5",
@@ -290,6 +301,12 @@ window.acquireVsCodeApi = () => ({
   setState() {},
   postMessage(msg) {
     if (msg && msg.type === "launch_claude" && msg.resume) window.__chan[msg.resume] = msg.channelId;
+    if (msg && msg.type === "launch_claude" && !msg.resume && window.__early) {
+      const sid = crypto.randomUUID(), ch = msg.channelId;
+      window.__chan[sid] = ch; window.__early.push(sid);
+      setTimeout(() => io(ch, { type: "system", subtype: "commands_changed", commands: [],
+        session_id: sid, uuid: crypto.randomUUID() }), 30);
+    }
     if (msg && msg.type !== "request") window.__sent.push({ type: msg.type, channelId: msg.channelId, resume: msg.resume });
     if (msg && msg.type === "io_message" && msg.message && msg.message.type === "user") live(msg);
     if (!msg || msg.type !== "request") return;
@@ -2087,6 +2104,222 @@ export async function run(ctx) {
       deviceScaleFactor: 2,
       mobile: false,
     });
+
+    // Blank: a new session that Claude Code names before any prompt (the
+    // view takes a session's id from the first system message the CLI sends
+    // it, here one the stub sends at launch) holds no conversation yet, so it
+    // gets no card, nor does a model change's echo landing in it; its first
+    // prompt brings its card in, first and on screen, sliding in. Last before
+    // the reload, which forgets the session again.
+    await ctx.evaluate(`window.__early=[];true`);
+    await click(center(await box(q(NEW))));
+    const named = await until(
+      `window.__early.length===1&&window.__sent.some(function(m){return m.type==="request:update_session_state"&&m.sessionId===window.__early[0]})`,
+      5000,
+    );
+    const M = await ctx.evaluate(`window.__early[0]`);
+    LETTER[M] = "M";
+    await ctx.sleep(300);
+    const blank = () =>
+      json(
+        `({card:!!document.querySelector(${JSON.stringify(`${CARD}[data-id="${M}"]`)}),` +
+          `rows:window.__ccupSessionCards.rows.filter(function(r){return r.id===${JSON.stringify(M)}||r.active}).length})`,
+      );
+    const b1 = await blank();
+    const sb1 = await strip();
+    check(
+      "blank: a new session named before any prompt gets no card",
+      !!named && !b1.card && b1.rows === 0 && !sb1.includes("*"),
+      JSON.stringify({ named: !!named, ...b1, strip: sb1 }),
+    );
+    const modelEcho = {
+      type: "user",
+      uuid: "f1000000-0000-4000-8000-000000000000",
+      session_id: M,
+      parent_tool_use_id: null,
+      timestamp: new Date().toISOString(),
+      isReplay: true,
+      message: {
+        role: "user",
+        content:
+          "<local-command-stdout>Set model to Sonnet</local-command-stdout>",
+      },
+    };
+    await ctx.evaluate(
+      `window.__io(window.__chan[${JSON.stringify(M)}],${JSON.stringify(modelEcho)});true`,
+    );
+    await ctx.sleep(300);
+    const b2 = await blank();
+    check(
+      "blank: a model change's echo landing in it adds no card",
+      !b2.card && b2.rows === 0,
+      JSON.stringify(b2),
+    );
+    await ctx.evaluate(`window.__flights.length=0;true`);
+    await send("Begin the session named early.");
+    const begun = await until(
+      `!!document.querySelector(${JSON.stringify(`${CARD}[data-id="${M}"]`)})`,
+      5000,
+    );
+    await ctx.sleep(400);
+    const sb3 = await strip();
+    const mb3 = await json(
+      `(function(){var r=window.__ccupSessionCards.rows.find(function(x){return x.id===${JSON.stringify(M)}}),` +
+        `f=window.__flights.find(function(x){return x.id===${JSON.stringify(M)}});` +
+        `return{echo:r?r.s.messages.value.filter(function(m){return m.uuid===${JSON.stringify(modelEcho.uuid)}}).length:-1,` +
+        `slid:!!f&&String(f.frames[0].transform||"").indexOf("translateX(")===0}})()`,
+    );
+    check(
+      "blank: its first prompt brings its card in, first and on screen, sliding in (the echo had landed in it)",
+      !!begun && sb3.startsWith("M*") && mb3.slid && mb3.echo === 1,
+      JSON.stringify({ strip: sb3, ...mb3 }),
+    );
+    await ctx.evaluate(
+      `window.__early=null;window.__finish(${JSON.stringify(M)})`,
+    );
+    await ctx.sleep(300);
+
+    // Draft: a new session you move off with a message left unsent in its
+    // input box keeps it (Claude Code 2.1.300 and later keep one per
+    // session) and gets an "Untitled" card for it, first (placed by when the
+    // session was created), keyed on its own since its id comes and goes
+    // with its process; none shows while you type in it. Back on it, the
+    // same card is on screen and the box holds the draft. Emptied and left,
+    // the card goes. Sent from it, the same card stays, the session now a
+    // conversation. A build keeping no draft shows no card.
+    const DRAFT = `${CARD}[data-id^="new-"]`;
+    const keepsDrafts = native.includes('composerDraft=""');
+    const draftCards = () =>
+      json(
+        `[].map.call(document.querySelectorAll(${JSON.stringify(DRAFT)}),function(b){` +
+          `return{id:b.dataset.id,active:b.hasAttribute("data-active"),first:b===b.parentNode.firstElementChild,` +
+          `title:b.lastChild.textContent,pending:b.getAttribute("data-pending")}})`,
+      );
+    const startDraft = async (text) => {
+      await click(center(await box(q(NEW))));
+      await until(
+        `!window.__ccupSessionCards.rows.some(function(r){return r.active})&&!!${q(INPUT)}`,
+      );
+      await ctx.sleep(300);
+      await ctx.evaluate(`${q(INPUT)}.focus()`);
+      await ctx.insertText(text);
+      await ctx.sleep(200);
+    };
+    const leaveForA = async () => {
+      await clickCard("A");
+      await until(
+        `${q(TITLE)}&&${q(TITLE)}.textContent===${JSON.stringify(TITLES.A)}`,
+      );
+      await ctx.sleep(400);
+    };
+    // The draft card, held for the checks that follow it, and a click on it
+    // once the strip shows it (the card on screen's reveal can leave the
+    // first card out of view).
+    const holdDraft = () =>
+      ctx.evaluate(
+        `!!(window.__draft=document.querySelector(${JSON.stringify(DRAFT)}))`,
+      );
+    const openDraft = async () => {
+      await ctx.evaluate(
+        `(function(){var b=${q(LIST)},e=window.__draft;b.scrollLeft=Math.max(0,e.offsetLeft-8)})()`,
+      );
+      await ctx.sleep(50);
+      await click(center(await box("window.__draft")));
+      return until(
+        `window.__draft.isConnected&&window.__draft.hasAttribute("data-active")&&!!${q(INPUT)}`,
+        3000,
+      );
+    };
+    const boxText = () => ctx.evaluate(`${q(INPUT)}&&${q(INPUT)}.textContent`);
+    if (keepsDrafts) {
+      // Named before any prompt here, as on the accounts that showed the
+      // stray card, until the draft has gone again.
+      const TEXT = "A draft left for later";
+      await ctx.evaluate(`window.__early=[];true`);
+      await startDraft(TEXT);
+      const named0 = await until(
+        `window.__early.length===1&&window.__sent.some(function(m){return m.type==="request:update_session_state"&&m.sessionId===window.__early[0]})`,
+        3000,
+      );
+      const d0 = await draftCards();
+      const on0 = await ctx.evaluate(
+        `window.__ccupSessionCards.rows.some(function(r){return r.active})`,
+      );
+      check(
+        "draft: no card shows while you type in a new session, named or not",
+        !!named0 && d0.length === 0 && !on0 && (await boxText()) === TEXT,
+        JSON.stringify({ named0: !!named0, d0, on0 }),
+      );
+      await leaveForA();
+      const d1 = await draftCards();
+      check(
+        "draft: moved off with a draft, a new session gets an Untitled card, first",
+        d1.length === 1 &&
+          !d1[0].active &&
+          d1[0].first &&
+          d1[0].title === "Untitled" &&
+          !d1[0].pending,
+        JSON.stringify({ d1, strip: await strip() }),
+      );
+      if (await holdDraft()) {
+        const back = await openDraft();
+        const text1 = await boxText();
+        check(
+          "draft: back on it, the same card is on screen and the box holds the draft",
+          !!back && text1 === TEXT,
+          JSON.stringify({ d: await draftCards(), text1 }),
+        );
+        await ctx.evaluate(
+          `${q(INPUT)}.focus();document.execCommand("selectAll");true`,
+        );
+        await key("Backspace", "Backspace", 8);
+        await ctx.sleep(200);
+        const text2 = await boxText();
+        await leaveForA();
+        const d2 = await draftCards();
+        check(
+          "draft: emptied and left, its card goes",
+          text2 === "" && d2.length === 0,
+          JSON.stringify({ text2, d2 }),
+        );
+      }
+      await ctx.evaluate(`window.__early=null;true`);
+      await startDraft("Another draft, sent this time");
+      await leaveForA();
+      if (await holdDraft()) {
+        await openDraft();
+        await ctx.sleep(300);
+        const m0 = await ctx.evaluate(`window.__minted.length`);
+        await ctx.evaluate(`${q(INPUT)}.focus()`);
+        await key("Enter", "Enter", 13);
+        const sentOn = await until(`window.__minted.length===${m0 + 1}`, 5000);
+        await ctx.sleep(400);
+        const kept = await json(
+          `({same:window.__draft.isConnected&&window.__draft.hasAttribute("data-active"),` +
+            `first:window.__draft===window.__draft.parentNode.firstElementChild})`,
+        );
+        await ctx.evaluate(
+          `window.__finish(window.__minted[window.__minted.length-1])`,
+        );
+        await ctx.sleep(300);
+        await leaveForA();
+        const stays = await ctx.evaluate(`window.__draft.isConnected`);
+        check(
+          "draft: sent from it, the same card stays, the session now a conversation",
+          !!sentOn && kept.same && kept.first && stays,
+          JSON.stringify({ sentOn: !!sentOn, kept, stays }),
+        );
+      } else check("draft: a second draft gets its card too", false);
+    } else {
+      await startDraft("A draft this build does not keep");
+      await leaveForA();
+      const d9 = await draftCards();
+      check(
+        "draft: a build that keeps no draft per session shows no draft card",
+        d9.length === 0,
+        JSON.stringify(d9),
+      );
+    }
 
     // Reload: A's sent time keeps it ahead of its transcript's old prompt,
     // and nothing reads as at work, since a reload ends every turn the view

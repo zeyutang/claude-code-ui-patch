@@ -8109,11 +8109,21 @@ export function promptHistWebview(
 //
 // What the strip reads, all of it native state:
 //   list     the manager's sessions: the local ones the list read (Web
-//            sessions live elsewhere and are skipped anyway), less archived,
-//            unreadable, and id-less (blank) ones. A session a surface reports
-//            that the list has not read yet asks for a re-read, at most every
-//            5s, under the "state_sync" entry point the session list view uses
-//            for the same reason
+//            sessions live elsewhere and are skipped anyway), less archived
+//            and unreadable ones, and less those begun here that hold no
+//            conversation yet. A new session gets its card with the first
+//            prompt you send it (or a reply, or a turn at work), not when
+//            Claude Code names it: the view takes a session's id from the
+//            first system message the CLI sends it, and for some accounts the
+//            CLI sends one at startup, before any prompt. A model or effort
+//            change counts no more here than in the order. The exception is a
+//            new session you move off with a message left unsent in its input
+//            box, which Claude Code keeps for you: it gets a card ("Untitled",
+//            placed by when the session was created) while that draft lasts,
+//            and keeps it while you are back on it. A session a surface
+//            reports that the list has not read yet asks for a re-read, at
+//            most every 5s, under the "state_sync" entry point the session
+//            list view uses for the same reason
 //   order    the time of your last message in the session: for a session this
 //            view holds, the newest prompt among its messages and queued sends
 //            (createdAt, the transcript's own timestamp, so a reload keeps
@@ -8221,6 +8231,7 @@ const SCARD_WHEEL_REST_MS = 80;
 const SCARD_SESSION_FIELDS = [
   "claudeChannelIdSignal",
   "sessionId",
+  "transcriptOnDisk",
   "summary",
   "isRemote",
   "archived",
@@ -8297,8 +8308,8 @@ function ccupSessionCardsWeb(
       }
     }, 1000);
   };
-  const note = (id: string, t: unknown): void => {
-    if (typeof t === "number" && t > 0 && !(sent[id] >= t)) {
+  const note = (id: string | undefined, t: unknown): void => {
+    if (id && typeof t === "number" && t > 0 && !(sent[id] >= t)) {
       sent[id] = t;
       save();
     }
@@ -8363,6 +8374,33 @@ function ccupSessionCardsWeb(
     last.set(s, { msgs, held, t });
     return t;
   };
+  // A conversation to come back to: a session read from disk, or one begun
+  // here that has a prompt you sent or queued, a reply, or a turn at work. An
+  // id alone is not one, since the CLI can name a new session before any
+  // prompt, and neither is a model or effort change's echo.
+  const holds = (s: any): boolean =>
+    !!s.transcriptOnDisk ||
+    s.busy.value ||
+    s.heldPrompts.value.some((h: any) => isPrompt(h?.message)) ||
+    s.messages.value.some(
+      (m: any) =>
+        isPrompt(m) || (m?.type === "assistant" && m.isSynthetic !== true),
+    );
+  // A message you started and left unsent, which a session keeps for when
+  // you come back to it: text or an attachment in its input box. Claude Code
+  // 2.1.300 and later keep one per session, the text written as the box
+  // unmounts, which no signal reports (see mount).
+  const drafted = (s: any): boolean =>
+    (typeof s.composerDraft === "string" && s.composerDraft.trim() !== "") ||
+    (s.composerAttachments?.value?.length ?? 0) > 0;
+  // A card for a new session that holds no conversation (a draft you left in
+  // it) has a key of its own rather than the session's id, which comes and
+  // goes with its process, and keeps it while this view holds the session.
+  // And the sessions with a card at the last count, so the one you come back
+  // to keeps its card.
+  const keyOf = new WeakMap<object, string>();
+  let keys = 0;
+  let carded = new WeakSet<object>();
 
   // Turns that ended in a held session while another one was on screen, and
   // whether every other session was last reported at work or idle, for its
@@ -8394,8 +8432,17 @@ function ccupSessionCardsWeb(
     for (const s of mgr.sessions.value) {
       const id = s.sessionId.value;
       if (id) known.add(id);
-      if (!id || s.isRemote.value || s.archived.value || s.unreadable.value)
-        continue;
+      if (s.isRemote.value || s.archived.value || s.unreadable.value) continue;
+      // A conversation, else a new session keeping a draft you left in it:
+      // its card comes as you move off it and stays while the draft lasts,
+      // and while you are back on it.
+      const begun = holds(s);
+      if (!begun && !(s === active ? carded.has(s) : drafted(s))) continue;
+      let key = keyOf.get(s);
+      if (key === undefined && !begun) keyOf.set(s, (key = `new-${++keys}`));
+      key ??= id;
+      // A conversation begun here gets its card with its id.
+      if (!key) continue;
       let waiting = false;
       let ended = false;
       let ongoing = false;
@@ -8439,7 +8486,7 @@ function ccupSessionCardsWeb(
               : "";
       rows.push({
         s,
-        id,
+        id: key,
         title: s.summary.value || "Untitled",
         active: s === active,
         pending,
@@ -8452,8 +8499,8 @@ function ccupSessionCardsWeb(
             : pending
               ? "turn finished"
               : "",
-        tab: tabs.has(id),
-        at: sent[id] || s.lastModifiedTime.value || 0,
+        tab: !!id && tabs.has(id),
+        at: (id && sent[id]) || s.lastModifiedTime.value || 0,
         mod: s.lastModifiedTime.value || 0,
       });
     }
@@ -8474,12 +8521,14 @@ function ccupSessionCardsWeb(
       }, 0);
     }
     rows.sort((a, b) => b.at - a.at || b.mod - a.mod || (a.id < b.id ? -1 : 1));
-    return rows.slice(0, cfg.max);
+    const out = rows.slice(0, cfg.max);
+    carded = new WeakSet(out.map((r) => r.s));
+    return out;
   };
 
   // The strip: its two buttons, and between them the scroller with the
-  // cards, keyed by session id so a re-render keeps each card's element (and
-  // its hover and focus).
+  // cards, keyed by session id (or a draft's own key) so a re-render keeps
+  // each card's element (and its hover and focus).
   const sheet = doc.createElement("style");
   sheet.textContent = cfg.css;
   const bar = doc.createElement("div");
@@ -8731,7 +8780,9 @@ function ccupSessionCardsWeb(
   // scroller over at its start, so the next render puts the cards back
   // where they last scrolled to (before it reveals anything), in the frame
   // before paint: read from the scroll events, not the scroller, which would
-  // force a layout here, as React commits the chat a switch remounts.
+  // force a layout here, as React commits the chat a switch remounts. That
+  // chat, as it went, wrote the draft of the session it showed to that
+  // session, so a move after the first counts the rows again.
   let scrolled = 0;
   let kept = 0;
   const mount = (): void => {
@@ -8739,6 +8790,7 @@ function ccupSessionCardsWeb(
       return;
     const t = doc.querySelector("." + cfg.body);
     if (!t) return;
+    const again = host !== null;
     if (!sheet.isConnected) doc.head.appendChild(sheet);
     if (host && host !== t) host.removeAttribute("data-ccup-cards");
     host = t;
@@ -8746,7 +8798,8 @@ function ccupSessionCardsWeb(
     t.appendChild(bar);
     mark(!bar.hidden);
     beat();
-    if (kept) schedule();
+    if (again) refresh();
+    else if (kept) schedule();
   };
   const cardFor = (id: string): any => {
     let b = cards.get(id);
@@ -9080,7 +9133,9 @@ function ccupSessionCardsWeb(
     if (!itemAt(e.relatedTarget)) hideTip();
   });
 
-  effect(() => {
+  // The rows counted again and drawn: whenever a signal they read changes,
+  // and after a session switch remounts the chat (see mount).
+  function refresh(): void {
     try {
       rows = compute();
     } catch {
@@ -9088,7 +9143,8 @@ function ccupSessionCardsWeb(
     }
     api.rows = rows;
     schedule();
-  });
+  }
+  effect(() => refresh());
   try {
     new g.MutationObserver(mount).observe(doc.body, {
       childList: true,

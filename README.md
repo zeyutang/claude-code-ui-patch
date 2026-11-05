@@ -83,7 +83,8 @@ Behavior
    │                                   #   (either button On: a question box dims the history like a
    │                                   #   permission box, and an open find bar lifts the dim)
    ├── chatSessionCards                # sidebar: recent session cards below the input box, if On
-   │                                   #   (filled while it is working, clay when it needs you)
+   │                                   #   (breathes while working, clay when it needs attention,
+   │                                   #   green when a finished turn is unseen)
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)
@@ -135,8 +136,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
 ## Caveats
 
 - **The patch reverts when Claude Code updates.**
-  The next window reload re-applies it and prompts for one more restart.
-  Right after an update that is always **Reload Window**: until the window re-scans its extensions, restarting the extension host alone would relaunch Claude Code from the version directory it has just replaced.
+  The next window reload re-applies it and prompts for one more restart, which right after an update is always **Reload Window**.
 - **`chatDiffCardLineNumbers` shows true file positions for live-session edits only.**
   Cards replayed from history (reload, resume), failed edits, and `replace_all` edits number from 1 (Claude Code re-emits conversation history without the absolute line numbers).
 - **`chatHistoryBoldWeight` applies to bold runs, not headings.**
@@ -146,51 +146,21 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   The input box, interface, and other chat extensions follow the native `chat.fontSize` / `chat.fontFamily`.
   Your own sent messages are styled by `chatInputHistoryFontSize` / `chatInputHistoryFontFamily`.
 - **`chatMathRendering` bundles KaTeX into the chat webview** (MIT code, SIL OFL 1.1 fonts; licenses ship in `assets/katex/`) and removes it fully when the toggle turns off.
-  Rendering covers the chat only: the Plan Mode preview's content-security policy allows no font loading.
+  Rendering covers the chat only, not the Plan Mode preview.
   Claude Code 2.1.301 and later render math themselves, and there it bundles nothing while `chatMathFontSizeEm` still sizes their math.
 - **`chatRawMarkdownButton` reveals the source of agent responses only.**
-  The button rides the left gutter, centered on the line that runs through the message dots: level with the block's top while that is in view, then pinned just under the user message stuck to the top of the chat, so a long response keeps it within reach.
-  It appears while the pointer is anywhere at that response's height, the gutter included, so you can travel down the line to reach it.
-  Out there it covers neither the response's own text nor the copy button on a code block, including a response that opens with one.
-  Thinking blocks, tool output, compact summaries, and slash-command results render through the same markdown component but get no button.
-  A response reading as source keeps its button in place, faded until you hover it.
+  Thinking blocks, tool output, compact summaries, and slash-command results get no button.
+  The button sits in the left gutter and shows while the pointer is anywhere at the response's height, staying within reach down a long response.
   Each response switches on its own, and all of them are back to rendered after a webview reload.
 - **`chatFindBar` replaces native `Cmd`/`Ctrl`+`F` widget inside the chat webview** (tab and sidebar alike).
   The Match Case, Match Whole Word, and Use Regular Expression toggles in its input work as in the editor's find widget, with JavaScript regular expression syntax.
   Math in agent responses matches by its TeX source, as its raw markdown reads, so `\frac{a}{b}` finds that fraction while the symbols it renders do not match.
 - **`chatSessionCards` shows local sessions in the sidebar chat only.**
-  The cards run from the session where you last sent a message, so a session working on its own keeps its place.
-  Changing a session's model or effort, or running a slash command, does not count as a message.
-  A session you have not opened in the sidebar since turning the setting on, nor sent to in an editor tab or a terminal since, takes its place from its last activity instead.
-  A click opens the session as the Session history list does, and one open in an editor tab gets that tab focused.
-  Each card's circle breathes while the session is working, wherever it runs: in the sidebar, an editor tab, a terminal, or another window.
-  Working includes a background agent the session started.
-  The circle turns solid clay while a permission or question prompt waits on you, and solid green while a finished turn is still unseen, back to a ring once you open the session.
-  The strip holds every session that is not archived and scrolls sideways like the editor's tabs, the mouse wheel included.
-  A new session gets its card once you send it a message or Claude starts working in it.
-  Leaving a new session with an unsent message in its input box gives it an "Untitled" card that takes you back to that message, until you empty the box and leave it again.
-  A New session button stays at its left end, and a button at its right end hides the secondary side bar (where Claude Code puts the chat).
-  That button's arrow points to the side of the window the secondary side bar is on.
-  Both buttons sit on the chat's own background, so the band of cards between them stands apart.
-  Between the buttons the strip shows only whole cards, sharing the width equally, with as few cards as keep each at most 300 pixels wide.
-  Scrolled with the mouse wheel, it settles on a whole card as soon as the wheel slows.
-  Cards slide to their new places: a card that moves first passes over the others, and a new session's card slides in from the left end, pushing the others right.
-  A title too long for its card ends in an ellipsis.
-  Hovering a card shows its full title.
-  The strip runs along the sidebar's bottom edge in the editor tab row's size, with cards rounded like the input box above them, and the card of the session on screen joins the chat above it, as an editor tab joins its editor, with its title in the input box's text color.
-  At the default density its ends stop short of the sidebar's rounded corners, so its own corners stay square.
-  The cards are as tall as `window.density.editorTabHeight` makes editor tabs, and when `window.density.layout` is compact, or without VS Code's modern UI, they keep a hairline below them and the card on screen also carries a blue line along its bottom edge.
+  The cards run from the session where you last sent a message, not counting a model or effort change or a slash command.
+  A new session gets its card once you send it a message or Claude starts working in it, or once you leave it with an unsent message in its input box.
 - **Last turn delete reaches the last turn only, within its first 30 seconds.**
-  With `chatPromptHistoryButton` on, every entry in the prompt history has a delete button, and only the last one works: for 30 seconds after that message appears in the list, and until Claude uses a tool that can leave changes behind, such as editing a file, running a command, or starting a subagent.
-  A message you send while Claude is still working appears once Claude starts on it.
-  Tools that leave nothing behind, such as reading and searching files, web lookups, and Claude's todo list, keep it working.
-  The other buttons are greyed out, and hovering one says why.
-  A first click turns the working one into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.
-  Every turn builds on the ones before it, so removing one from the middle would leave the later turns answering a conversation that no longer holds it.
-  Deleting a conversation's only turn empties it but keeps the title Claude Code gave it.
+  With `chatPromptHistoryButton` on, only the last prompt history entry's delete button works, and only until Claude uses a tool that can leave changes behind, such as editing a file, running a command, or starting a subagent.
+  A first click turns it into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.
 - **Bookmark notes are kept with Claude Code's own bookmarks.**
-  Each row of the Bookmarks pane has a notepad button after its time, which opens a box for a note of your own.
-  `Enter` or clicking away keeps the note, `Escape` leaves it as it was, and emptying the box removes it.
-  The row then shows your note in place of the response's opening line, in every tab and window that opens the conversation.
-  Removing the bookmark removes its note.
+  A notepad button on each Bookmarks pane row adds a note of your own, which the row shows in place of the response's opening line.
   Without this patch Claude Code ignores the notes, and the next bookmark change in that conversation discards them.

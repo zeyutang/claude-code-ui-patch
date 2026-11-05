@@ -1614,6 +1614,256 @@ function questionRevealBuild(c: string): string | undefined {
   return `${QUESTION_REVEAL_MARKER}.questionsContainer_${qHash}{scroll-padding:${pad}px 0 ${pad}px}`;
 }
 
+// Wheel reversal (always on): Chromium picks what a scroll sequence moves
+// once, at its first delta, walking up from the hit element to the first
+// scroller that can move that way (cc InputHandler::FindNodeToLatch). The
+// webview is an out-of-process iframe, which has no viewport node to fall back
+// on, so a first delta that points past a scroller's end (down with the chat
+// at its bottom, up at its top) latches nothing when nothing above it scrolls:
+// ScrollBegin returns kScrollIgnored and the rest of the sequence goes with
+// it, reversals included. For a mouse wheel on macOS the sequence only ends
+// after a 500 ms pause or a pointer move past the 10 px slop
+// (MouseWheelPhaseHandler), so turning the wheel back does nothing for as long
+// as it keeps turning. A scroller with non-auto overscroll-behavior is latched
+// even when it cannot take the first delta ("if we reverse direction we should
+// scroll it so we must be latched to it"), so contain turns the wheel around
+// at once.
+// It goes on every scroller with nothing that scrolls above it, where the
+// chain it cuts leads nowhere (the workbench scrolls in script, unmoved by the
+// gestures a frame bubbles up): the transcript, the input box, the scrollers
+// of the permission and question cards, the menus, the dialogs, the session
+// lists, the side panels, the strip above the input box, and the sign-in
+// screen. Nested scrollers stay native: there the cut chain leads somewhere,
+// and a nested box with nothing to scroll and contain set swallows the wheel
+// its outer scroller should take. Each site is its own rule behind its own
+// marker, so a selector a build rejects drops only that rule and the anchor
+// audit sees each site land. A site whose anchor is gone is left out, and only
+// a missing transcript anchor makes the point read missing. Contain rather
+// than none, which would also drop each scroller's own overscroll effect.
+const WHEEL_LATCH_MARKER = "/*ccup:wheelLatch*/";
+
+// The hash of the first class that re captures (group 1).
+const cssHash = (c: string, re: RegExp): string | undefined => c.match(re)?.[1];
+// Whether the native rule of .<cls>_<hash> carries decl.
+const cssHas = (c: string, cls: string, hash: string, decl: string): boolean =>
+  new RegExp(`\\.${cls}_${hash}\\{[^{}]*?${decl}`).test(c);
+// A class that its own native rule makes a scroller, whichever its module.
+const ownScroller =
+  (cls: string, decl: string) =>
+  (c: string): string | undefined => {
+    const h = cssHash(c, new RegExp(`\\.${cls}_([-\\w]+)\\{[^{}]*?${decl}`));
+    return h && `.${cls}_${h}`;
+  };
+
+interface LatchSite {
+  marker: string;
+  // The site's selector on this build, or undefined when an anchor is gone.
+  sel: (c: string) => string | undefined;
+}
+
+const WHEEL_LATCH_SITES: LatchSite[] = [
+  {
+    marker: "/*ccup:wheelLatch:input*/",
+    sel: ownScroller("messageInput", "overflow-y:auto"),
+  },
+  {
+    // The command or address a permission card asks about.
+    marker: "/*ccup:wheelLatch:permInput*/",
+    sel: ownScroller("permissionRequestInput", "overflow-y:auto"),
+  },
+  {
+    marker: "/*ccup:wheelLatch:permJson*/",
+    sel: (c) => {
+      const m = c.match(
+        /\.permissionRequestDescription_([-\w]+) \.inputJson_([-\w]+)\{[^{}]*?overflow:auto/,
+      );
+      return m
+        ? `.permissionRequestDescription_${m[1]} .inputJson_${m[2]}`
+        : undefined;
+    },
+  },
+  {
+    // The permission card's feedback box, but not the question card's Other
+    // box: the same component, nested there in the questions list.
+    marker: "/*ccup:wheelLatch:feedback*/",
+    sel: (c) => {
+      const card = cssHash(c, /\.permissionRequestContainer_([-\w]+)\{/);
+      const list = cssHash(
+        c,
+        /\.questionsContainer_([-\w]+)\{[^{}]*?overflow-y:auto/,
+      );
+      let box: string | undefined;
+      for (const [, h] of c.matchAll(
+        /\.input_([-\w]+)\{[^{}]*?overflow-y:auto/g,
+      )) {
+        if (c.includes(`.placeholder_${h}{`)) {
+          box = h;
+          break;
+        }
+      }
+      return card && list && box
+        ? `.permissionRequestContainer_${card} .input_${box}:not(.questionsContainer_${list} *)`
+        : undefined;
+    },
+  },
+  {
+    // The comments on a plan waiting for approval.
+    marker: "/*ccup:wheelLatch:planComments*/",
+    sel: ownScroller("commentList", "overflow-y:auto"),
+  },
+  {
+    marker: "/*ccup:wheelLatch:questions*/",
+    sel: ownScroller("questionsContainer", "overflow-y:auto"),
+  },
+  {
+    // With an option preview, the questions list and the preview share a
+    // column that scrolls too; each holds its own wheel.
+    marker: "/*ccup:wheelLatch:previewColumn*/",
+    sel: ownScroller("withPreview", "overflow:hidden auto"),
+  },
+  {
+    marker: "/*ccup:wheelLatch:preview*/",
+    sel: ownScroller("previewPane", "overflow:auto"),
+  },
+  {
+    // The strip above the input box. The bands, rows, and inline panes in it
+    // are nested in its scroller, so they stay native.
+    marker: "/*ccup:wheelLatch:abovePrompt*/",
+    sel: ownScroller("abovePrompt", "overflow-y:auto"),
+  },
+  {
+    // The slash command menu, which the model menu shares.
+    marker: "/*ccup:wheelLatch:commands*/",
+    sel: ownScroller("commandList", "overflow-y:auto"),
+  },
+  {
+    // The file menu's list, not the rewind summary's.
+    marker: "/*ccup:wheelLatch:files*/",
+    sel: (c) => {
+      for (const [, h] of c.matchAll(
+        /\.fileList_([-\w]+)\{[^{}]*?overflow-y:auto/g,
+      )) {
+        if (c.includes(`.menuPopup_${h}{`)) return `.fileList_${h}`;
+      }
+      return undefined;
+    },
+  },
+  {
+    marker: "/*ccup:wheelLatch:styles*/",
+    sel: ownScroller("styleList", "overflow-y:auto"),
+  },
+  {
+    marker: "/*ccup:wheelLatch:contextMenu*/",
+    sel: ownScroller("contextMenu", "overflow-y:auto"),
+  },
+  {
+    // The session history list. In the side bar's panel the list does not
+    // scroll; the panel does (the next site).
+    marker: "/*ccup:wheelLatch:sessions*/",
+    sel: (c) => {
+      const h = cssHash(c, /\.content_([-\w]+)\.sessionListOnly_\1\{/);
+      return h && cssHas(c, "content", h, "overflow-y:auto")
+        ? `.content_${h}:not(.sessionListOnly_${h})`
+        : undefined;
+    },
+  },
+  {
+    marker: "/*ccup:wheelLatch:sessionPanel*/",
+    sel: (c) => {
+      const h = cssHash(c, /\.accountRows_([-\w]+)>/);
+      return h && cssHas(c, "root", h, "overflow-y:auto")
+        ? `.root_${h}`
+        : undefined;
+    },
+  },
+  {
+    // A dialog scrolls itself, or its content when it scrolls inside (the
+    // next site).
+    marker: "/*ccup:wheelLatch:dialog*/",
+    sel: (c) => {
+      const h = cssHash(c, /\.dialog_([-\w]+)\.scrollInside_\1\{/);
+      return h && cssHas(c, "dialog", h, "overflow-y:auto")
+        ? `.dialog_${h}:not(.scrollInside_${h})`
+        : undefined;
+    },
+  },
+  {
+    marker: "/*ccup:wheelLatch:dialogContent*/",
+    sel: (c) => {
+      const h = cssHash(c, /\.dialog_([-\w]+)\.scrollInside_\1\{/);
+      return h && cssHas(c, "content", h, "overflow:auto")
+        ? `.scrollInside_${h} .content_${h}`
+        : undefined;
+    },
+  },
+  {
+    // The plugins dialog, whose tabbed content scrolls.
+    marker: "/*ccup:wheelLatch:tabDialog*/",
+    sel: (c) => {
+      const h = cssHash(c, /\.tabBadge_([-\w]+)\{/);
+      return h && cssHas(c, "content", h, "overflow-y:auto")
+        ? `.content_${h}`
+        : undefined;
+    },
+  },
+  {
+    marker: "/*ccup:wheelLatch:sideQuestion*/",
+    sel: (c) => {
+      const h = cssHash(c, /\.spark_([-\w]+)\{/);
+      return h && cssHas(c, "thread", h, "overflow-y:auto")
+        ? `.thread_${h}`
+        : undefined;
+    },
+  },
+  {
+    // A plugin pane in a side panel. Inline in the strip above the input box,
+    // the same pane body is nested in the strip's scroller.
+    marker: "/*ccup:wheelLatch:pluginPanel*/",
+    sel: (c) => {
+      const panel = cssHash(c, /\.resizeHandle_([-\w]+)\{/);
+      const body = cssHash(c, /\.paneBody_([-\w]+)\{[^{}]*?overflow:auto/);
+      return panel && body && c.includes(`.panel_${panel}{`)
+        ? `.panel_${panel} .paneBody_${body}`
+        : undefined;
+    },
+  },
+  {
+    // The Bookmarks panel's list, and the response it shows (the next site).
+    marker: "/*ccup:wheelLatch:bookmarks*/",
+    sel: (c) => {
+      const h = cssHash(c, /\.reprintText_([-\w]+)\{[^{}]*?overflow:auto/);
+      return h && c.includes(`.list_${h}{`) ? `.list_${h}` : undefined;
+    },
+  },
+  {
+    marker: "/*ccup:wheelLatch:bookmark*/",
+    sel: ownScroller("reprintText", "overflow:auto"),
+  },
+  {
+    marker: "/*ccup:wheelLatch:signIn*/",
+    sel: (c) => {
+      const h = cssHash(c, /\.asciiArtContainer_([-\w]+)[ {]/);
+      return h && cssHas(c, "container", h, "overflow-y:auto")
+        ? `.container_${h}`
+        : undefined;
+    },
+  },
+];
+
+function wheelLatchBuild(c: string): string | undefined {
+  // Anchored on the native rules alone, never on this line's own selectors.
+  const n = cssRemoveLine(c, WHEEL_LATCH_MARKER);
+  const rule = (sel: string): string => `${sel}{overscroll-behavior-y:contain}`;
+  const chat = ownScroller("messagesContainer", "overflow-y:auto")(n);
+  if (!chat) return undefined; // anchor gone: leave native
+  let line = WHEEL_LATCH_MARKER + rule(chat);
+  for (const s of WHEEL_LATCH_SITES) {
+    const sel = s.sel(n);
+    if (sel) line += s.marker + rule(sel);
+  }
+  return line;
+}
+
 // Permission and question card text (always on, two halves): the card that
 // stands in for the input box while a tool waits for permission or a question
 // waits for an answer (.permissionRequestContainer_<h>) inherits the app
@@ -13816,6 +14066,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: "webview/index.css",
     marker: QUESTION_REVEAL_MARKER,
     build: questionRevealBuild,
+  },
+  {
+    kind: "line",
+    id: "wheelLatch",
+    label: "wheel reversal",
+    file: "webview/index.css",
+    marker: WHEEL_LATCH_MARKER,
+    build: wheelLatchBuild,
   },
   {
     kind: "line",

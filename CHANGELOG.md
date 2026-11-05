@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Turning the mouse wheel back at the end of the chat now scrolls at once.
+  The same holds in other scrolling areas, such as the input box, the permission and question boxes, menus, dialogs, session lists, side panels, and so on.
+  When the wheel first went past the end, such as down with the chat already at the bottom, it had been ignored until it paused for half a second or the pointer moved.
+  Always applied, no setting.
 - A conversation reopened after a compaction shows its turns from before each compaction again, with a "Compacted chat" row where each one happened, as the chat showed them before the reopen.
   It had started at the last compaction's summary.
   Always applied, no setting.

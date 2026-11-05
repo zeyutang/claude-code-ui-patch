@@ -145,11 +145,16 @@ function loadPatcher(config, notices) {
 // settings stay empty so the find bar bakes its built-in defaults, which keeps
 // the audit independent of the machine's keybindings.json. The native
 // claudeCode.useCtrlEnterToSend comes along because ctrlEnterEverywhere folds
-// it into the plan-comment toggle.
+// it into the plan-comment toggle, and VS Code's editor scrollbars go hidden
+// because the editor scrollbar fix writes nothing at their default.
 function everythingOn() {
   const props = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
     .contributes.configuration.properties;
-  const config = { "claudeCode.useCtrlEnterToSend": true };
+  const config = {
+    "claudeCode.useCtrlEnterToSend": true,
+    "editor.scrollbar.vertical": "hidden",
+    "editor.scrollbar.horizontal": "hidden",
+  };
   for (const [key, schema] of Object.entries(props)) {
     if (schema.type === "boolean") config[key] = true;
     else if (schema.type === "number") config[key] = schema.maximum;

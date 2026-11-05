@@ -1864,6 +1864,87 @@ function wheelLatchBuild(c: string): string | undefined {
   return line;
 }
 
+// Editor scrollbars (always on, two halves, following VS Code's own
+// editor.scrollbar.vertical and editor.scrollbar.horizontal): with either set
+// to "hidden", the webview hides that axis's scrollbars as the editors do,
+// and the wheel still scrolls. Like the session cards' look, the settings are
+// read, never written, at patch time, so a change re-applies (see
+// Patcher.register) and asks for a webview refresh; with neither hidden both
+// halves read inert and the bundle stays native.
+// The CSS half (editorBarsCss) covers the native scrollbars. VS Code gives
+// every webview a scrollbar-color on html, inherited everywhere, and Chromium
+// draws ::-webkit-scrollbar only where scrollbar-color and scrollbar-width
+// are both auto, so the default webview has standard scrollbars, which hide
+// only both axes at once (scrollbar-width:none). Hiding one axis therefore
+// resets scrollbar-color to auto to bring back the ::-webkit-scrollbar path,
+// whose vertical or horizontal bar then takes no room, while the other axis
+// draws in VS Code's own webview scrollbar style. Hiding the horizontal one
+// also resets scrollbar-width, so the bars drawn thin or none natively (all
+// of them sideways: the attachment strips and the session cards) hide too;
+// hiding the vertical one leaves scrollbar-width alone, so they keep their
+// native look. The JS half (editorBars) hands the same values to the one
+// Monaco editor that shows scrollbars, the diff view a diff card opens: its
+// scrollbar option gains the hidden axes, so Monaco frees their room as it
+// does in the editors (the diff cards hide both already).
+export const EDITOR_BARS_KEYS = [
+  "editor.scrollbar.vertical",
+  "editor.scrollbar.horizontal",
+];
+function editorBarsHidden(): { v: boolean; h: boolean } {
+  try {
+    const c = vscode.workspace.getConfiguration("editor");
+    return {
+      v: c.get<string>("scrollbar.vertical") === "hidden",
+      h: c.get<string>("scrollbar.horizontal") === "hidden",
+    };
+  } catch {
+    return { v: false, h: false }; // outside VS Code: native
+  }
+}
+const editorBarsOff = (): boolean => {
+  const { v, h } = editorBarsHidden();
+  return !v && !h;
+};
+
+const EDITOR_BARS_CSS_MARKER = "/*ccup:editorBarsCss*/";
+function editorBarsCssBuild(): string | undefined {
+  const { v, h } = editorBarsHidden();
+  if (v && h)
+    return `${EDITOR_BARS_CSS_MARKER}*{scrollbar-width:none!important}`;
+  if (v)
+    return `${EDITOR_BARS_CSS_MARKER}*{scrollbar-color:auto!important}::-webkit-scrollbar:vertical{width:0}`;
+  if (h)
+    return `${EDITOR_BARS_CSS_MARKER}*{scrollbar-color:auto!important;scrollbar-width:auto!important}::-webkit-scrollbar:horizontal{height:0}`;
+  return undefined; // neither hidden: native (inert)
+}
+
+const EDITOR_BARS_MARKER = "/*ccup:editorBars*/";
+const EDITOR_BARS_END_MARKER = "/*ccup:editorBarsEnd*/";
+const EDITOR_BARS_FRAG_RE =
+  /\/\*ccup:editorBars\*\/[^]*?\/\*ccup:editorBarsEnd\*\//g;
+// The diff view's own scrollbar option, the bundle's only one left on auto.
+const EDITOR_BARS_ANCHOR = 'scrollbar:{vertical:"auto",horizontal:"auto"}';
+
+// The bundle with the hidden axes appended to that option's object (a later
+// key wins in an object literal, so stripping the fragment gives back the
+// native bytes), or null when nothing is hidden or the anchor is not exactly
+// one.
+function editorBarsPatch(native: string): string | null {
+  const { v, h } = editorBarsHidden();
+  if (!v && !h) return null;
+  const i = native.indexOf(EDITOR_BARS_ANCHOR);
+  if (i < 0 || native.indexOf(EDITOR_BARS_ANCHOR, i + 1) >= 0) return null;
+  const at = i + EDITOR_BARS_ANCHOR.length - 1; // the object's closing brace
+  const keys = [v && 'vertical:"hidden"', h && 'horizontal:"hidden"']
+    .filter(Boolean)
+    .join(",");
+  return (
+    native.slice(0, at) +
+    `${EDITOR_BARS_MARKER},${keys}${EDITOR_BARS_END_MARKER}` +
+    native.slice(at)
+  );
+}
+
 // Permission and question card text (always on, two halves): the card that
 // stands in for the input box while a tool waits for permission or a question
 // waits for an answer (.permissionRequestContainer_<h>) inherits the app
@@ -14008,8 +14089,10 @@ function toggleByFile(): Map<string, TogglePoint[]> {
 // (the session list's delete button), so there is no native behavior worth
 // preserving as an option and a knob would only be noise. They ride the same
 // analyze / apply / restore / reload-cue machinery as the toggles but read no
-// configuration: applying always writes the current form, restoring always
-// strips it, and the panel shows no row for them. Their one user-visible
+// configuration of this extension's own: applying always writes the current
+// form, restoring always strips it, and the panel shows no row for them. One
+// pair follows a VS Code setting instead (the editor scrollbars), reading
+// inert at the value that asks for nothing. Their one user-visible
 // consequence is that an install with every setting left at its default still
 // patches the bundle (and so still asks for the one reload), where before it
 // would leave it untouched.
@@ -14032,6 +14115,10 @@ interface AlwaysLine extends AlwaysBase {
   // Deterministic given the file content, so equality against the on-disk line
   // doubles as the staleness check across Claude Code versions.
   build: (c: string) => string | undefined;
+  // Whether an undefined build means there is nothing to write rather than a
+  // lost anchor, so no line reads inert, not missing (a fix that follows a
+  // VS Code setting, with nothing to do at that setting's value).
+  inert?: (c: string) => boolean;
 }
 // Marker-delimited fragments inside the native code.
 interface AlwaysInline extends AlwaysBase {
@@ -14074,6 +14161,24 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: "webview/index.css",
     marker: WHEEL_LATCH_MARKER,
     build: wheelLatchBuild,
+  },
+  {
+    kind: "line",
+    id: "editorBarsCss",
+    label: "editor scrollbars",
+    file: "webview/index.css",
+    marker: EDITOR_BARS_CSS_MARKER,
+    build: editorBarsCssBuild,
+    inert: editorBarsOff,
+  },
+  {
+    kind: "inline",
+    id: "editorBars",
+    label: "editor scrollbars in the diff view",
+    file: "webview/index.js",
+    frags: EDITOR_BARS_FRAG_RE,
+    patch: editorBarsPatch,
+    inert: editorBarsOff,
   },
   {
     kind: "line",
@@ -15796,8 +15901,9 @@ export function analyzeToggles(
 // Always-on fixes have no setting to disagree with, so there is no "custom":
 // "current" = this bundle's line is in place, "stock" = it is absent or stale
 // (including a leftover line whose anchor is now gone, which apply strips),
-// "missing" = the file is unreadable, "inert" = this build gives the fix
-// nothing to change (see AlwaysInline.inert).
+// "missing" = the file is unreadable, "inert" = this build, or the VS Code
+// setting a fix follows, gives it nothing to change (see AlwaysLine.inert and
+// AlwaysInline.inert).
 export type AlwaysStatus = "current" | "stock" | "missing" | "inert";
 export interface AlwaysState {
   id: string;
@@ -15817,8 +15923,10 @@ export function analyzeAlways(
     if (a.kind === "line") {
       const want = a.build(c);
       const cur = cssMarkedLine(c, a.marker);
-      if (want === undefined)
-        return { ...base, status: cur === undefined ? "missing" : "stock" };
+      if (want === undefined) {
+        if (cur !== undefined) return { ...base, status: "stock" };
+        return { ...base, status: a.inert?.(c) ? "inert" : "missing" };
+      }
       return { ...base, status: cur === want ? "current" : "stock" };
     }
     const native = c.replace(a.frags, "");
@@ -16334,6 +16442,8 @@ export class Patcher {
     // arrow points from the side bar's location, so a change to any of those
     // re-applies too.
     patchKeys.push(...SCARD_LOOK_KEYS);
+    // The editor scrollbar fix bakes VS Code's own scrollbar visibility.
+    patchKeys.push(...EDITOR_BARS_KEYS);
     // chat.fontSize is no longer a knob, but the chatHistoryFontSize knob shows it
     // while inheriting, so a native change should refresh (not re-patch) the view.
     // The editor sizes feed what the patch knobs show at 0 (see NativeEnv).

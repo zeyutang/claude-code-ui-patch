@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- With `editor.scrollbar.vertical` or `editor.scrollbar.horizontal` set to `hidden`, the chat and the rest of the Claude Code view hide their scrollbars on that axis too, as VS Code's editors do, and the wheel still scrolls.
+  It follows those two settings, with no setting of its own.
 - Turning the mouse wheel back at the end of the chat now scrolls at once.
   The same holds in other scrolling areas, such as the input box, the permission and question boxes, menus, dialogs, session lists, side panels, and so on.
   When the wheel first went past the end, such as down with the chat already at the bottom, it had been ignored until it paused for half a second or the pointer moved.

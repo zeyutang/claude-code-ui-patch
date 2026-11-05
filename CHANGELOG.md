@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- With `chatPromptHistoryButton` on, a conversation reopened after a compaction lists the prompts sent before each compaction too, read from its transcript, with a divider at each compaction worded like the chat's own compaction row, and the numbers run across as they did before the reopen.
+  Those earlier entries are not in the chat, so a click opens one in place to its whole text instead of jumping, and the compaction summary that opens a reopened conversation is the divider rather than an entry.
+- With `chatPromptHistoryButton` on, `/compact`, `/model` and `/effort` echoes and messages with no text, such as an attachment sent alone, start folded, and opening their fold keeps them in view for that conversation.
 - With `chatSessionCards` on, a new session gets its card once you send it a message or Claude starts working in it, so a window that opens on a new session no longer shows an "Untitled" card for it.
   Leaving a new session with an unsent message in its input box gives it an "Untitled" card that takes you back to that message.
 - Text in a permission or question box, such as a question, an option, or the URL a permission asks to fetch, can now be selected and copied.

@@ -38,6 +38,22 @@
 //             the run back. From the keyboard, Delete hides and Enter on the
 //             fold restores, and a hidden current entry hands its highlight
 //             to the fold
+//   auto      the /model echo starts folded with no mark stored, the fold
+//             opened keeps it in view across a reload (an unhide mark), and
+//             hiding it again folds it
+//   compact   a reopened compacted session: the host's epoch push lists the
+//             earlier prompts first, muted and without delete buttons, each
+//             epoch closed by a divider worded like the chat's compaction
+//             row, the summary header being that divider rather than an
+//             entry, numbers running across; a divider's click jumps to the
+//             summary header, which reads current at the top; an earlier
+//             entry's click opens it whole in place (its breaks as lines)
+//             and a second closes it, with no jump; its hover tip; a prompt
+//             with no text ("Your message") and the /compact echo fold by
+//             themselves; hiding an earlier entry stores its uuid and
+//             survives a reload; a compaction that happens live adds a
+//             divider at its row, and a click lands just under the stuck
+//             header
 //   popup     a permission request hiding the composer closes an open list,
 //             and the button riding the popup's wrapper opens one aligned
 //             to that wrapper
@@ -115,6 +131,40 @@ const PROMPTS = [
 ];
 // A second session of short prompts only, for the width floor.
 const SHORT = ["yes", "go on", "ok", "Ship it.", "thanks"];
+// The compacted session: a reopened conversation whose chat holds the
+// summary (is_meta, isCompactSummary, string content as the host sends it)
+// and five prompts after it, one the /compact echo and one with no text (an
+// image alone), while the host pushes the three prompts from before the
+// compaction, one a /model echo and one with breaks.
+const SUMMARY_UUID = "55555555-5555-4555-8555-555555555555";
+const SUMMARY_TEXT =
+  "This session is being continued from a previous conversation that ran out of context. " +
+  "The summary below covers the earlier portion of the conversation.\n\nSummary:\n- the retry pipeline";
+const PNG1 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+const CPROMPTS = [
+  "Pick up where the summary left off.",
+  "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>",
+  null, // an image and no text
+  "What did the earlier run conclude?\nList the open items.",
+  "Ship the fix.",
+];
+const EPOCH = {
+  g: "auto",
+  p: 974000,
+  s: SUMMARY_UUID,
+  r: [
+    {
+      u: "e1000000-0000-4000-8000-000000000001",
+      t: "First question before the compaction, about the retry pipeline.",
+    },
+    { u: "e1000000-0000-4000-8000-000000000002", t: "/model opus" },
+    {
+      u: "e1000000-0000-4000-8000-000000000003",
+      t: "Three things:\n1. fix the lint\n2. bump the lockfile\n\n3. rerun the build",
+    },
+  ],
+};
 // The last two replies are one paragraph each, so turns 13 and 14 share the
 // final screen and entry 13's jump clamps to the bottom.
 const reply = (i) =>
@@ -160,6 +210,7 @@ const WHICH = new URLSearchParams(location.search).get("s");
 const PROMPTS = WHICH === "short" ? ${JSON.stringify(SHORT)}
   : WHICH === "empty" ? [] : ${JSON.stringify(PROMPTS)};
 const REPLIES = ${JSON.stringify(PROMPTS.map((_, i) => reply(i)))};
+const CPROMPTS = ${JSON.stringify(CPROMPTS)}, EPOCH = ${JSON.stringify(EPOCH)};
 const at = (i) => new Date(NOW - (PROMPTS.length - i) * 60e3).toISOString();
 const MESSAGES = PROMPTS.flatMap((p, i) => [
   { type: "user", uuid: "u" + i + "-0000-4000-8000-000000000000", session_id: R,
@@ -171,6 +222,22 @@ const MESSAGES = PROMPTS.flatMap((p, i) => [
       content: [{ type: "text", text: REPLIES[i] }], stop_reason: "end_turn",
       usage: { input_tokens: 1, output_tokens: 1 } } },
 ]);
+const COMPACT = [
+  { type: "user", uuid: ${JSON.stringify(SUMMARY_UUID)}, session_id: R, parent_tool_use_id: null,
+    timestamp: at(0), is_meta: true, isCompactSummary: true,
+    message: { role: "user", content: ${JSON.stringify(SUMMARY_TEXT)} } },
+].concat(CPROMPTS.flatMap((p, i) => [
+  { type: "user", uuid: "c" + i + "-0000-4000-8000-000000000000", session_id: R,
+    parent_tool_use_id: null, timestamp: at(i),
+    message: { role: "user", content: p === null
+      ? [{ type: "image", source: { type: "base64", media_type: "image/png", data: ${JSON.stringify(PNG1)} } }]
+      : [{ type: "text", text: p }] } },
+  { type: "assistant", uuid: "d" + i + "-0000-4000-8000-000000000000", session_id: R,
+    parent_tool_use_id: null, timestamp: at(i),
+    message: { id: "msg_c" + i, type: "message", role: "assistant", model: "claude-fable-5",
+      content: [{ type: "text", text: REPLIES[i] }], stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 } } },
+]));
 const SESSION = { id: R, summary: "History pane", customTitle: "History pane",
   lastModified: NOW, lastActivity: NOW, archived: false, fileSize: 4096,
   gitBranch: "develop", isCurrentWorkspace: true };
@@ -210,7 +277,10 @@ window.acquireVsCodeApi = () => ({
         break;
       case "get_session_request":
         resp = { type: "get_session_response",
-          messages: r.sessionId === R ? MESSAGES : [], sessionDiffs: [] };
+          messages: r.sessionId !== R ? [] : WHICH === "compact" ? COMPACT : MESSAGES, sessionDiffs: [] };
+        // The host's push follows its response.
+        if (WHICH === "compact" && r.sessionId === R)
+          setTimeout(() => deliver({ type: "ccup_prompt_epochs", sessionId: R, epochs: [EPOCH] }), 60);
         break;
     }
     deliver({ type: "response", requestId: msg.requestId, response: resp });
@@ -413,17 +483,20 @@ export async function run(ctx) {
         `div:{content:d.content,h:d.height,bg:d.backgroundColor,vis:d.visibility}}});` +
         `p.scrollTop=s0;return r})()`,
     );
+    // The /model echo, index 9, starts folded (see the auto checks), so the
+    // entries are the other thirteen.
+    const SHOWN = PROMPTS.map((_, i) => i).filter((i) => i !== 9);
     check(
-      "list: one entry per user message",
-      entries.length === PROMPTS.length,
+      "list: one entry per user message, the /model echo folded",
+      entries.length === SHOWN.length,
       entries.length,
     );
     check(
-      "list: numbered from 1",
-      entries.every((e, i) => e.n === String(i + 1)),
+      "list: numbered from 1, the fold keeping its number",
+      entries.every((e, i) => e.n === String(SHOWN[i] + 1)),
       entries.map((e) => e.n).join(","),
     );
-    const badText = entries.findIndex((e, i) => e.txt !== EXPECT[i]);
+    const badText = entries.findIndex((e, i) => e.txt !== EXPECT[SHOWN[i]]);
     check(
       "list: each entry reads its prompt, line breaks as \\n",
       badText < 0,
@@ -723,6 +796,8 @@ export async function run(ctx) {
           `n:g.querySelector(".ccup-hist-fold-n").textContent,` +
           `r:g.querySelector(".ccup-hist-fold-r").textContent,cur:g.hasAttribute("data-cur")}})`,
       );
+    // The folds the user made: the /model echo's own fold is left out.
+    const userFolds = async () => (await folds()).filter((f) => f.a !== 9);
     const stored = () =>
       json(
         `(function(){try{return JSON.parse(localStorage.getItem("ccup-prompt-history-hidden")||"{}")}catch(e){return null}})()`,
@@ -748,7 +823,7 @@ export async function run(ctx) {
       airOk(hv),
       JSON.stringify(hv),
     );
-    let fs = await folds();
+    let fs = await userFolds();
     check(
       "hide: entry 4 folds into one row",
       fs.length === 1 &&
@@ -764,7 +839,7 @@ export async function run(ctx) {
       Math.abs((await scrollTop()) - stH) < 1 && (await isOpen()),
     );
     await hideVia(4);
-    fs = await folds();
+    fs = await userFolds();
     check(
       "hide: a neighbor joins the same fold",
       fs.length === 1 &&
@@ -809,7 +884,7 @@ export async function run(ctx) {
     );
     check(
       "hide: the other entries keep their numbers",
-      nums === "1,2,3,6,7,8,9,10,11,12,13,14",
+      nums === "1,2,3,6,7,8,9,11,12,13,14",
       nums,
     );
     const sid = await ctx.evaluate(
@@ -828,7 +903,7 @@ export async function run(ctx) {
     await ctx.sleep(300);
     await clickSel(BTN);
     await ctx.sleep(250);
-    fs = await folds();
+    fs = await userFolds();
     check(
       "hide: the fold survives a reload",
       fs.length === 1 && fs[0].a === 3 && fs[0].b === 4,
@@ -844,7 +919,7 @@ export async function run(ctx) {
     await ctx.sleep(100);
     check(
       "hide: clicking the fold brings both back, with no jump",
-      (await folds()).length === 0 &&
+      (await userFolds()).length === 0 &&
         (await has(3)) &&
         (await has(4)) &&
         Math.abs((await scrollTop()) - stF) < 1,
@@ -855,6 +930,61 @@ export async function run(ctx) {
       !!sto && !sto[R],
       JSON.stringify(sto),
     );
+
+    // Auto: the /model echo is folded with nothing stored, its fold opened
+    // keeps it in view (an unhide mark) across a reload, and hiding it again
+    // folds it with a hide mark alone.
+    const autoFold = async () => (await folds()).find((f) => f.a === 9);
+    check(
+      "auto: the /model echo starts folded by itself, with no mark stored",
+      !!(await autoFold()) &&
+        (await autoFold()).r === "10" &&
+        !(await has(9)) &&
+        !sto[R],
+      JSON.stringify(await autoFold()),
+    );
+    await ctx.evaluate(
+      `(function(){var p=${q(PANE)},g=p.querySelector('.ccup-hist-fold[data-a="9"]');` +
+        `p.scrollTop=g.offsetTop-(p.clientHeight-g.offsetHeight)/2})()`,
+    );
+    await clickSel(`${PANE} .ccup-hist-fold[data-a="9"]`);
+    await ctx.sleep(100);
+    sto = await stored();
+    check(
+      "auto: its fold opened shows it, with an unhide mark and no hide mark",
+      (await has(9)) &&
+        !(await autoFold()) &&
+        !!sto[R] &&
+        sto[R].u.length === 1 &&
+        sto[R].k.length === 0,
+      JSON.stringify(sto),
+    );
+    check("auto: remounts", !!(await boot()));
+    await ctx.sleep(300);
+    await clickSel(BTN);
+    await ctx.sleep(250);
+    check(
+      "auto: it stays in view across a reload",
+      (await has(9)) && !(await autoFold()),
+    );
+    await hideVia(9);
+    sto = await stored();
+    check(
+      "auto: hidden again, it folds with a hide mark alone",
+      !!(await autoFold()) &&
+        !(await has(9)) &&
+        !!sto[R] &&
+        sto[R].k.length === 1 &&
+        sto[R].u.length === 0,
+      JSON.stringify(sto),
+    );
+    await ctx.evaluate(`localStorage.removeItem("ccup-prompt-history-hidden")`);
+    await key("Escape", "Escape", 27);
+    await ctx.sleep(100);
+    check("auto: remounts clean", !!(await boot()));
+    await ctx.sleep(300);
+    await clickSel(BTN);
+    await ctx.sleep(250);
 
     // Keyboard: Delete hides the focused entry and leaves focus on its fold,
     // Enter there restores it. The current entry's fold takes the highlight.
@@ -878,13 +1008,13 @@ export async function run(ctx) {
     );
     check(
       "hide: Enter on the fold restores it, focus on the entry",
-      ke === "0" && (await folds()).length === 0,
+      ke === "0" && (await userFolds()).length === 0,
       ke,
     );
     await key("End", "End", 35);
     await key("Delete", "Delete", 46);
     await ctx.sleep(80);
-    fs = await folds();
+    fs = await userFolds();
     check(
       "hide: a hidden current entry hands the highlight to its fold",
       fs.length === 1 && fs[0].a === PROMPTS.length - 1 && fs[0].cur,
@@ -920,7 +1050,217 @@ export async function run(ctx) {
     await key("Escape", "Escape", 27);
     await ctx.sleep(100);
 
+    // Compact: a reopened compacted session with the host's push.
+    const rowsOf = () =>
+      json(
+        `[...${q(PANE)}.children].map(function(r){var t=r.querySelector(".ccup-hist-txt,.ccup-hist-sep-t,.ccup-hist-fold-n"),n=r.querySelector(".ccup-hist-num");` +
+          `return{k:r.classList.contains("ccup-hist-item")?"item":r.classList.contains("ccup-hist-fold")?"fold":"sep",` +
+          `i:r.getAttribute("data-i"),n:r.classList.contains("ccup-hist-item")?n.textContent:r.classList.contains("ccup-hist-fold")?r.querySelector(".ccup-hist-fold-r").textContent:"",` +
+          `t:t?t.textContent:"",unl:r.hasAttribute("data-unl"),go:r.hasAttribute("data-go"),cur:r.hasAttribute("data-cur"),` +
+          `del:!!r.querySelector(".ccup-hist-del"),open:r.hasAttribute("data-open")}})`,
+      );
+    check(
+      "compact: the compacted session mounts",
+      !!(await boot("?s=compact")),
+    );
+    await ctx.sleep(300);
+    const nh = await ctx.evaluate(
+      `document.querySelectorAll(${JSON.stringify(HDR)}).length`,
+    );
+    check(
+      "compact: the summary and the five prompts have headers",
+      nh === 6,
+      nh,
+    );
+    await clickSel(BTN);
+    await ctx.sleep(250);
+    check(
+      "compact: the push's prompts are in the list",
+      !!(await until(`!!${q(`${PANE} .ccup-hist-item[data-unl]`)}`, 3000)),
+    );
+    await ctx.sleep(100);
+    let cr = await rowsOf();
+    const shape = cr.map((r) => `${r.k}:${r.n}`).join(" ");
+    check(
+      "compact: earlier prompts, their folds, the divider, then the chat's, numbered across",
+      shape === "item:1 fold:2 item:3 sep: item:4 fold:5–6 item:7 item:8",
+      shape,
+    );
+    check(
+      "compact: the earlier entries are muted and have no delete button, the chat's may",
+      cr[0].unl &&
+        cr[2].unl &&
+        !cr[0].del &&
+        !cr[2].del &&
+        !cr[4].unl &&
+        !cr[6].unl,
+      JSON.stringify(cr.map((r) => [r.unl, r.del])),
+    );
+    check(
+      "compact: the divider reads like the chat's compaction row and has a row to reach",
+      cr[3].k === "sep" &&
+        cr[3].t === "Compacted chat · auto · 974k tokens freed" &&
+        cr[3].go,
+      JSON.stringify(cr[3]),
+    );
+    check(
+      "compact: the summary is no entry, and the text-less prompt and /compact fold together",
+      cr.every((r) => !r.t.startsWith("This session is being continued")) &&
+        cr[5].k === "fold" &&
+        cr[5].t === "2 hidden",
+      JSON.stringify(cr.map((r) => r.t.slice(0, 30))),
+    );
+    check(
+      "compact: the entries read the pushed and the shown text",
+      cr[0].t === EPOCH.r[0].t &&
+        cr[2].t ===
+          "Three things:\\n1. fix the lint\\n2. bump the lockfile\\n\\n3. rerun the build" &&
+        cr[4].t === CPROMPTS[0] &&
+        cr[6].t === "What did the earlier run conclude?\\nList the open items.",
+      JSON.stringify([cr[0].t, cr[2].t, cr[4].t, cr[6].t]),
+    );
+    await ctx.shot("compact");
+    // The divider jumps to the summary header, which then reads current.
+    const cnat = await natural();
+    const stC = await scrollTop();
+    await clickSel(`${PANE} .ccup-hist-sep`);
+    await ctx.sleep(350);
+    check(
+      "compact: the divider's click lands on the summary header",
+      Math.abs((await scrollTop()) - cnat[0]) < 1 && (await isOpen()),
+      `${await scrollTop()} vs ${cnat[0]}`,
+    );
+    cr = await rowsOf();
+    check(
+      "compact: and the divider reads current",
+      cr[3].cur && !cr.some((r, i) => i !== 3 && r.cur),
+    );
+    // An earlier entry opens in place, whole, with no jump.
+    await clickSel(`${PANE} .ccup-hist-item[data-i="2"]`);
+    await ctx.sleep(120);
+    const op = await json(
+      `(function(){var r=${q(`${PANE} .ccup-hist-item[data-i="2"]`)},t=r.querySelector(".ccup-hist-txt"),cs=getComputedStyle(t),` +
+        `nl=[...t.querySelectorAll(".ccup-hist-nl")].map(function(e){var s=getComputedStyle(e);return[s.display,s.height]});` +
+        `return{open:r.hasAttribute("data-open"),h:t.getBoundingClientRect().height,lh:parseFloat(cs.lineHeight),nl:nl,st:${q(SC)}.scrollTop}})()`,
+    );
+    check(
+      "compact: a click opens an earlier entry whole, its breaks as lines, an empty line for a double break, with no jump",
+      op.open &&
+        Math.abs(op.h - 5 * op.lh) < 1 &&
+        op.nl.length === 3 &&
+        op.nl.every((x) => x[0] === "block") &&
+        op.nl[0][1] === "0px" &&
+        op.nl[2][1] === op.lh + "px" &&
+        Math.abs(op.st - cnat[0]) < 1 &&
+        (await isOpen()),
+      JSON.stringify(op),
+    );
+    await clickSel(`${PANE} .ccup-hist-item[data-i="2"]`);
+    await ctx.sleep(120);
+    const cl = await json(
+      `(function(){var r=${q(`${PANE} .ccup-hist-item[data-i="2"]`)},t=r.querySelector(".ccup-hist-txt");` +
+        `return{open:r.hasAttribute("data-open"),h:t.getBoundingClientRect().height,lh:parseFloat(getComputedStyle(t).lineHeight)}})()`,
+    );
+    check(
+      "compact: a second click closes it to two lines",
+      !cl.open && Math.abs(cl.h - 2 * cl.lh) < 0.6,
+      JSON.stringify(cl),
+    );
+    await ctx.evaluate(
+      `(function(){var p=${q(PANE)},it=p.querySelector('.ccup-hist-item[data-i="0"]');` +
+        `p.scrollTop=it.offsetTop-(p.clientHeight-it.offsetHeight)/2})()`,
+    );
+    await moveTo(
+      center(await rect(`${PANE} .ccup-hist-item[data-i="0"] .ccup-hist-txt`)),
+    );
+    await ctx.sleep(350);
+    const tip = await json(
+      `(function(){var t=document.querySelector(".ccup-hover-tip"),r=${q(`${PANE} .ccup-hist-item[data-i="0"] .ccup-hist-txt`)}.getBoundingClientRect(),` +
+        `e=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);` +
+        `return{text:t&&t.style.display!=="none"?t.textContent:"",under:e?e.tagName+"."+e.className:"",tipEl:!!t,disp:t?t.style.display:""}})()`,
+    );
+    check(
+      "compact: an earlier entry's hover tip says it is from before a compaction",
+      tip.text === "Sent before a compaction: a click shows it whole",
+      JSON.stringify(tip),
+    );
+    // Hiding an earlier entry stores its uuid, and the mark survives a reload.
+    await hideVia(0);
+    let cs = await stored();
+    cr = await rowsOf();
+    check(
+      "compact: hiding an earlier entry stores its uuid, and it joins the /model fold",
+      !!cs[R] &&
+        JSON.stringify(cs[R].k) === JSON.stringify(["u:" + EPOCH.r[0].u]) &&
+        cr[0].k === "fold" &&
+        cr[0].n === "1–2",
+      JSON.stringify(cs),
+    );
+    check("compact: remounts", !!(await boot("?s=compact")));
+    await ctx.sleep(300);
+    await clickSel(BTN);
+    await ctx.sleep(250);
+    await until(`!!${q(`${PANE} .ccup-hist-item[data-unl]`)}`, 3000);
+    await ctx.sleep(100);
+    cr = await rowsOf();
+    check(
+      "compact: the mark survives a reload",
+      cr[0].k === "fold" && cr[0].n === "1–2",
+      JSON.stringify(cr[0]),
+    );
+    await clickSel(`${PANE} .ccup-hist-fold`);
+    await ctx.sleep(100);
+    cs = await stored();
+    cr = await rowsOf();
+    check(
+      "compact: the fold opened shows both, the /model echo kept by an unhide mark",
+      cr[0].k === "item" &&
+        cr[1].k === "item" &&
+        cr[1].t === "/model opus" &&
+        !!cs[R] &&
+        cs[R].k.length === 0 &&
+        JSON.stringify(cs[R].u) === JSON.stringify(["u:" + EPOCH.r[1].u]),
+      JSON.stringify(cs),
+    );
+    await ctx.evaluate(`localStorage.removeItem("ccup-prompt-history-hidden")`);
+    // A compaction that happens live adds its divider at the chat's row.
+    await ctx.evaluate(
+      `deliver({type:"io_message",channelId:window.__chan,done:false,message:{type:"system",subtype:"compact_boundary",` +
+        `compact_metadata:{trigger:"manual",pre_tokens:123456}}});` +
+        `deliver({type:"io_message",channelId:window.__chan,done:false,message:{type:"user",isSynthetic:true,` +
+        `message:{role:"user",content:"This session is being continued from a previous conversation that ran out of context. Live."}}})`,
+    );
+    const liveRow = await until(
+      `!!document.querySelector('[class*="compact_"] summary')&&${q(PANE)}.querySelectorAll(".ccup-hist-sep").length===2`,
+      3000,
+    );
+    cr = await rowsOf();
+    const last = cr[cr.length - 1];
+    check(
+      "compact: a live compaction adds a divider after the last entry, reading the chat's row",
+      !!liveRow &&
+        last.k === "sep" &&
+        last.go &&
+        /^Compacted chat · manual · 123k tokens freed$/.test(last.t),
+      JSON.stringify(last),
+    );
+    const want = await ctx.evaluate(
+      `(function(){var t=${q(SC)},el=document.querySelector('[class*="compact_"]'),hs=t.querySelectorAll(${JSON.stringify(HDR)}),h=hs[hs.length-1],y=0,n=el;` +
+        `while(n&&n!==t){y+=n.offsetTop;n=n.offsetParent}y-=h.offsetHeight;return Math.max(0,Math.min(y,t.scrollHeight-t.clientHeight))})()`,
+    );
+    await clickSel(`${PANE} .ccup-hist-sep:last-child`);
+    await ctx.sleep(350);
+    check(
+      "compact: its click lands the row just under the stuck header",
+      Math.abs((await scrollTop()) - want) < 1,
+      `${await scrollTop()} vs ${want}`,
+    );
+    await key("Escape", "Escape", 27);
+    await ctx.sleep(100);
+
     // Popup: a permission request replaces the composer under an open list.
+    check("popup: the full session mounts again", !!(await boot()));
+    await ctx.sleep(300);
     await clickSel(BTN);
     await ctx.sleep(200);
     check("popup: list open on the composer", await isOpen());

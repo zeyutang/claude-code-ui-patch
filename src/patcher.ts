@@ -7825,16 +7825,15 @@ function jumpMsgSet(c: string, on: boolean): string {
 // on it, brings the run back. Visible entries keep their transcript numbers,
 // and when the current entry is hidden its fold carries the highlight. An
 // entry is named by its message's uuid (the data-ccup-uuid the last turn
-// delete point stamps on every header, or the uuid an epoch's prompt carries)
-// and else, as marks were named before uuids were read, by its header's
-// position and an FNV-1a hash of its text, a form every chat entry is still
-// matched under, so a rewound or edited transcript never hides the wrong
-// one. The marks persist per conversation in the webview's localStorage
-// (where Claude Code keeps its own UI flags), keyed by the ?session= id the
-// webview mirrors into its URL, the 200 most recently touched conversations
-// kept. A brand-new conversation has no id until its first reply arrives, so
-// marks made in that moment land under the URL's previous id (or none) and
-// fail to match once the id comes in.
+// delete point stamps on every header) and else, as marks were named before
+// uuids were read, by its header's position and an FNV-1a hash of its text, a
+// form every entry is still matched under, so a rewound or edited transcript
+// never hides the wrong one. The marks persist per conversation in the
+// webview's localStorage (where Claude Code keeps its own UI flags), keyed by
+// the ?session= id the webview mirrors into its URL, the 200 most recently
+// touched conversations kept. A brand-new conversation has no id until its
+// first reply arrives, so marks made in that moment land under the URL's
+// previous id (or none) and fail to match once the id comes in.
 //
 // Some entries start hidden: a command that only steers the session
 // (/compact, /model and /effort, PROMPT_HIST_AUTO_HIDE) and a message with no
@@ -7843,24 +7842,15 @@ function jumpMsgSet(c: string, on: boolean): string {
 // for that conversation (an unhide mark beside the hide marks) until they are
 // hidden again.
 //
-// A compaction divides the list. Claude Code's loader stops at the last
-// compaction boundary when a conversation is reopened (see the prompt history
-// across compactions point below), and the host pushes the prompts of the
-// earlier epochs as ccup_prompt_epochs, which a window message listener here
-// keeps per session id. The list then opens with those prompts first, each
-// epoch closed by a slim divider row worded like the chat's own compaction
-// row ("Compacted chat · auto · 974k tokens freed"), and the chat's headers
-// after them. The reopened summary header ("This session is being
-// continued...", told by the uuid the push names or by its opening words) is
-// no entry but the last pushed divider's own row, so a click on that divider
-// jumps to it, and a compaction that happens live adds its divider where the
-// chat's compaction row sits in document order, a click jumping just below
-// the stuck header. Numbers run across the epochs and skip the dividers,
-// which keeps them what they were in the live view before the reopen, where
-// the summary is no header. A pushed prompt is not in the chat, so its entry
-// is a little muted, its hover tip says so, it has no delete button, and a
-// click opens it in place to its whole text (the first 2000 characters), a
-// second click closing it.
+// A compaction divides the list. Each of the chat's compaction rows
+// ("Compacted chat · auto · 974k tokens freed", the row a live compaction
+// adds, and with the compacted history point below the row every earlier
+// compaction of a reopened conversation gets) puts a slim divider worded like
+// it in document order, and a click on the divider lands the row just below
+// the stuck header. A summary header ("This session is being continued...",
+// told by its opening words), which a reopened conversation shows when its
+// earlier turns were not put back, is a divider too rather than an entry, and
+// a click on it jumps to that header. Numbers skip the dividers.
 //
 // Every chat entry carries a delete button at its right end once the last turn
 // delete point is in (window.__ccupTurnRewind, see turnRewindWebFind): one
@@ -7931,9 +7921,8 @@ const PROMPT_HIST_AUTO_HIDE = "/^\\/(?:compact|model|effort)(?:\\s|$)/";
 // compact and compactSummary together), optional.
 const PROMPT_HIST_COMPACT_RE =
   /compact:"compact_([-\w]+)",compactSummary:"compactSummary_\1"/;
-// How much of an entry's text the list holds: far more than two lines show,
-// and what an entry opened in place shows whole (the host cuts there too).
-const PROMPT_HIST_CUT = 2000;
+// How much of an entry's text the list holds, far more than two lines show.
+const PROMPT_HIST_CUT = 1000;
 
 // The full marked line for this bundle, or undefined when a required anchor is
 // gone. Deterministic given the bundle content, so equality against the on-disk
@@ -7995,13 +7984,6 @@ function promptHistBuild(c: string): string | undefined {
     ".ccup-hist-item[data-cur] .ccup-hist-num{color:inherit;opacity:.75}" +
     ".ccup-hist-txt{flex:1 1 auto;min-width:0;height:2lh;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere}" +
     ".ccup-hist-nl{margin:0 .3em;color:var(--app-secondary-foreground);opacity:.7;font-family:var(--app-monospace-font-family,monospace);font-size:.85em}" +
-    // A prompt from before a compaction is not in the chat: a little muted,
-    // and opened in place it shows whole, each break run a line break, a run
-    // of two or more an empty line.
-    ".ccup-hist-item[data-unl] .ccup-hist-txt{opacity:.75}" +
-    ".ccup-hist-item[data-open] .ccup-hist-txt{height:auto;display:block;-webkit-line-clamp:unset}" +
-    ".ccup-hist-item[data-open] .ccup-hist-nl{display:block;height:0;margin:0;overflow:hidden;font-size:inherit}" +
-    ".ccup-hist-item[data-open] .ccup-hist-nl[data-n]{height:1lh}" +
     // The number over the hide button in one column, the button one line
     // square on the second line, as the delete button is (font:inherit, or
     // the button's own UA font would size 1lh), shown with its entry's hover
@@ -8077,9 +8059,8 @@ function promptHistBuild(c: string): string | undefined {
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
     `var BARS="${bars}",EYE="${eyeOff}",CHEV="${chevron}",TRASH="${trash}",PACK="${pack}",T="Prompt History",NL=String.fromCharCode(92)+"n",` +
     `SK="${PROMPT_HIST_STORE}",SUMP="${PROMPT_HIST_SUMMARY}",AUTO=${PROMPT_HIST_AUTO_HIDE},EMPTY="Your message",` +
-    `UNL="Sent before a compaction: a click shows it whole",` +
-    `raf=0,gen=0,gl=0,P=null,on=0,pBox=null,pBtn=null,pFoc=null,pHs=[],pCs=[],pEp=null,items=[],itemOfH=[],lastH=-1,pCur=-1,` +
-    `pin=-1,pinTop=0,rowOf=[],curEl=null,dT=0,EP={},OPEN={};` +
+    `raf=0,gen=0,gl=0,P=null,on=0,pBox=null,pBtn=null,pFoc=null,pHs=[],pCs=[],items=[],itemOfH=[],lastH=-1,pCur=-1,` +
+    `pin=-1,pinTop=0,rowOf=[],curEl=null,dT=0;` +
     HOVER_TIP_JS +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
     btnHostsJs(host, perm, preq, false) +
@@ -8108,12 +8089,10 @@ function promptHistBuild(c: string): string | undefined {
         `if(c){s=c.textContent;if(s.indexOf("You: ")===0)p.push(s.slice(5).trim())}}`
       : "") +
     `return p.join("\\n")}` +
-    // Text runs as text nodes, and each run of breaks as one muted \n per
-    // break, a run of two or more marked for the opened form.
+    // Text runs as text nodes, and each run of breaks as one muted \n per break.
     `function fill(el,s){if(s.length>${PROMPT_HIST_CUT})s=s.slice(0,${PROMPT_HIST_CUT});var a=s.split(/(\\n+)/),i,m;` +
     `for(i=0;i<a.length;i++){if(!a[i])continue;` +
-    `if(i%2){m=document.createElement("span");m.className="ccup-hist-nl";m.textContent=Array(a[i].length+1).join(NL);` +
-    `if(a[i].length>1)m.setAttribute("data-n","");el.appendChild(m)}` +
+    `if(i%2){m=document.createElement("span");m.className="ccup-hist-nl";m.textContent=Array(a[i].length+1).join(NL);el.appendChild(m)}` +
     `else el.appendChild(document.createTextNode(a[i]))}}` +
     // Hidden marks and unhide marks, per conversation (the URL's session id).
     // Storage failures are no-ops.
@@ -8125,34 +8104,24 @@ function promptHistBuild(c: string): string | undefined {
     `var ids=Object.keys(o);if(ids.length>${PROMPT_HIST_STORE_CAP}){ids.sort(function(a,b){return((o[b]&&o[b].t)||0)-((o[a]&&o[a].t)||0)});` +
     `for(var i=${PROMPT_HIST_STORE_CAP};i<ids.length;i++)delete o[ids[i]]}localStorage.setItem(SK,JSON.stringify(o))}catch(e){}}` +
     // An entry's key: its message's uuid, else (as marks were kept before)
-    // its header's position and a hash of its text, which every entry in the
-    // chat is still matched under.
+    // its header's position and a hash of its text, which every entry is
+    // still matched under.
     `function keyOf(x){return x.u?"u:"+x.u:legacy(x)}` +
     `function legacy(x){return x.h?x.hi+":"+hsh(x.t):""}` +
     `function auto(x){return!x.t.trim()||AUTO.test(x.t)}` +
-    `function label(g,p){return"Compacted chat"+(g?" \\u00b7 "+g:"")+(p?" \\u00b7 "+Math.round(p/1000)+"k tokens freed":"")}` +
     `function rowText(el){var s=el.querySelector("summary");s=s?s.textContent.replace(/\\s+/g," ").trim():"";return s||"Compacted chat"}` +
-    // The list's items in order: the pushed epochs' prompts, each epoch
-    // closed by a divider, then the chat's headers and live compaction rows
-    // in document order, a reopened conversation's summary header (the uuid
-    // the push names, else its opening words) standing in for the last
-    // pushed divider rather than being an entry. Numbers run over the
-    // prompts alone.
-    `function assemble(hs,cs){var eps=EP[sid()]||[],it=[],nodes=[],i,k,E,rs,sep=null,n=0,nd,h,u,s;` +
-    `for(i=0;i<eps.length;i++){E=eps[i]||{};rs=Array.isArray(E.r)?E.r:[];` +
-    `for(k=0;k<rs.length;k++)it.push({k:"p",u:typeof rs[k].u==="string"?rs[k].u:"",t:typeof rs[k].t==="string"?rs[k].t:"",h:null,hi:-1,n:0});` +
-    `sep={k:"c",g:E.g==="manual"?"manual":"auto",p:+E.p||0,u:typeof E.s==="string"?E.s:"",h:null,el:null,i:it.length};it.push(sep)}` +
+    // The list's items: the chat's headers and compaction rows in document
+    // order, a summary header standing as a divider rather than an entry.
+    // Numbers run over the prompts alone.
+    `function assemble(hs,cs){var it=[],nodes=[],i,n=0,nd,h,u,s;` +
     `for(i=0;i<hs.length;i++)nodes.push({h:hs[i],hi:i});for(i=0;i<cs.length;i++)nodes.push({c:cs[i]});` +
     `nodes.sort(function(a,b){var x=a.h||a.c,y=b.h||b.c;return x===y?0:x.compareDocumentPosition(y)&4?-1:1});` +
     `itemOfH=[];lastH=-1;` +
     `for(i=0;i<nodes.length;i++){nd=nodes[i];` +
-    `if(nd.c){it.push({k:"c",g:"",p:0,u:"",h:null,el:nd.c,i:it.length});continue}` +
-    `h=nd.h;u=h.getAttribute("data-ccup-uuid")||"";s=txt(h);` +
-    `if((u&&sep&&sep.u===u)||s.indexOf(SUMP)===0){` +
-    `if(sep&&!sep.h&&(!sep.u||!u||sep.u===u)){sep.h=h;itemOfH[nd.hi]=sep.i}` +
-    `else{itemOfH[nd.hi]=it.length;it.push({k:"c",g:"",p:0,u:u,h:h,el:null,i:it.length})}` +
-    `sep=null;continue}` +
-    `itemOfH[nd.hi]=it.length;lastH=it.length;it.push({k:"p",u:u,t:s,h:h,hi:nd.hi,n:0})}` +
+    `if(nd.c){it.push({k:"c",h:null,el:nd.c});continue}` +
+    `h=nd.h;u=h.getAttribute("data-ccup-uuid")||"";s=txt(h);itemOfH[nd.hi]=it.length;` +
+    `if(s.indexOf(SUMP)===0){it.push({k:"c",h:h,el:null});continue}` +
+    `lastH=it.length;it.push({k:"p",u:u,t:s,h:h,hi:nd.hi,n:0})}` +
     `for(i=0;i<it.length;i++)if(it[i].k==="p")it[i].n=++n;` +
     `return it}` +
     `function entry(i,x){var it=document.createElement("div"),ld=document.createElement("span"),` +
@@ -8161,9 +8130,7 @@ function promptHistBuild(c: string): string | undefined {
     `ld.className="ccup-hist-lead";nu.className="ccup-hist-num";nu.textContent=x.n;tx.className="ccup-hist-txt";fill(tx,x.t||EMPTY);` +
     `hb.type="button";hb.className="ccup-hist-hide";hb.tabIndex=-1;hb.setAttribute("aria-label","Hide "+x.n);hb.innerHTML=EYE;` +
     `ld.appendChild(nu);ld.appendChild(hb);it.appendChild(ld);it.appendChild(tx);` +
-    `if(x.h){if(window.__ccupTurnRewind)it.appendChild(dbtn(i,x.n))}` +
-    `else{it.setAttribute("data-unl","");if(OPEN[keyOf(x)])it.setAttribute("data-open","");att(it,UNL)}` +
-    `return it}` +
+    `if(window.__ccupTurnRewind)it.appendChild(dbtn(i,x.n));return it}` +
     `function fold(a,b){var g=document.createElement("div"),c=document.createElement("span"),` +
     `l=document.createElement("span"),r=document.createElement("span");` +
     `g.className="ccup-hist-row ccup-hist-fold";g.setAttribute("role","option");g.setAttribute("data-a",a);g.setAttribute("data-b",b);g.tabIndex=-1;` +
@@ -8172,10 +8139,10 @@ function promptHistBuild(c: string): string | undefined {
     `g.setAttribute("aria-label","Show "+l.textContent+", "+r.textContent);` +
     `g.appendChild(c);g.appendChild(l);g.appendChild(r);return g}` +
     // A compaction's divider, worded like the chat's own compaction row.
-    `function sep(i,x){var g=document.createElement("div"),c=document.createElement("span"),l=document.createElement("span"),s=x.el?rowText(x.el):label(x.g,x.p);` +
+    `function sep(i,x){var g=document.createElement("div"),c=document.createElement("span"),l=document.createElement("span"),s=x.el?rowText(x.el):"Compacted chat";` +
     `g.className="ccup-hist-row ccup-hist-sep";g.setAttribute("role","option");g.setAttribute("data-i",i);g.tabIndex=-1;` +
     `c.className="ccup-hist-num";c.innerHTML=PACK;l.className="ccup-hist-sep-t";l.textContent=s;` +
-    `if(x.h||x.el)g.setAttribute("data-go","");g.setAttribute("aria-label",s);` +
+    `g.setAttribute("data-go","");g.setAttribute("aria-label",s);` +
     `g.appendChild(c);g.appendChild(l);return g}` +
     // The first item a row stands for.
     `function anchor(r){var a=r.getAttribute("data-i");return a!==null?+a:+r.getAttribute("data-a")}` +
@@ -8184,7 +8151,7 @@ function promptHistBuild(c: string): string | undefined {
     // and the list's scroll position all survive the rebuild.
     `function build(t){hideTip();var ae=document.activeElement,fi=ae&&ae.parentNode===P?anchor(ae):-1,st=P.scrollTop,` +
     `m=marks(),f=document.createDocumentFragment(),hs=hh(t),cs=cc(t),it=assemble(hs,cs),n=it.length,i,j,q,g,x,hid=[],np=0;` +
-    `pHs=hs;pCs=cs;pEp=EP[sid()]||null;items=it;rowOf=[];curEl=null;` +
+    `pHs=hs;pCs=cs;items=it;rowOf=[];curEl=null;` +
     `for(i=0;i<n;i++){x=it[i];if(x.k==="p")np=x.n;` +
     `hid[i]=x.k==="p"&&(m.h.has(keyOf(x))||m.h.has(legacy(x))||(auto(x)&&!m.u.has(keyOf(x))&&!m.u.has(legacy(x))))}` +
     `for(i=0;i<n;i=j+1){j=i;x=it[i];if(hid[i]){while(j+1<n&&hid[j+1])j++;g=fold(i,j)}else g=x.k==="c"?sep(i,x):entry(i,x);` +
@@ -8248,13 +8215,11 @@ function promptHistBuild(c: string): string | undefined {
     // Marks of a deleted turn, and position marks from its position on: the
     // next prompts take those positions.
     `function forget(x){var m=marks(),c=0;m.h.forEach(function(k){if((x.u&&k==="u:"+x.u)||(/^\\d+:/.test(k)&&parseInt(k,10)>=x.hi)){m.h.delete(k);c++}});if(c)keep(m)}` +
-    // A chat entry jumps, one from before a compaction opens or closes in
-    // place, a divider jumps to its row in the chat when it has one, and a
-    // fold brings its run back.
+    // An entry or a summary header's divider jumps to its header, a
+    // compaction row's divider to the row, and a fold brings its run back.
     `function act(r){if(r.hasAttribute("data-a")){unhide(+r.getAttribute("data-a"),+r.getAttribute("data-b"));return}` +
     `var i=+r.getAttribute("data-i"),x=items[i];if(!x)return;` +
-    `if(x.h)jumpTo(i);else if(x.el)jumpEl(i);else if(x.k==="p")toggle(r,x)}` +
-    `function toggle(r,x){var k=keyOf(x);if(r.hasAttribute("data-open")){r.removeAttribute("data-open");delete OPEN[k]}else{r.setAttribute("data-open","");if(k)OPEN[k]=1}}` +
+    `if(x.h)jumpTo(i);else if(x.el)jumpEl(i)}` +
     // A header's natural position, its sticky shift neutralized for one read.
     `function jumpTo(i){var t=sc(),h=items[i].h;if(!t||!h||!h.isConnected)return;` +
     `h.style.position="static";var y=ot(h,t);h.style.position="";y=go(y);` +
@@ -8292,7 +8257,7 @@ function promptHistBuild(c: string): string | undefined {
     `function close(back){if(!on)return;on=0;if(dT){clearTimeout(dT);dT=0}hideTip();var f=P.contains(document.activeElement);P.remove();` +
     `if(pBtn)pBtn.setAttribute("aria-expanded","false");` +
     `if(back&&f&&pFoc&&pFoc.isConnected&&pFoc.focus)try{pFoc.focus({preventScroll:!0})}catch(e){}` +
-    `pBox=pBtn=pFoc=curEl=null;pHs=[];pCs=[];pEp=null;items=[];itemOfH=[];rowOf=[];lastH=-1;pCur=-1;pin=-1}` +
+    `pBox=pBtn=pFoc=curEl=null;pHs=[];pCs=[];items=[];itemOfH=[];rowOf=[];lastH=-1;pCur=-1;pin=-1}` +
     `function mk(){var b=document.createElement("button");b.type="button";b.className="ccup-hist-btn";` +
     `b.setAttribute("aria-label",T);b.setAttribute("aria-haspopup","listbox");b.setAttribute("aria-expanded","false");b.innerHTML=BARS;` +
     `b.addEventListener("mouseenter",function(){if(tipT)clearTimeout(tipT);` +
@@ -8307,12 +8272,9 @@ function promptHistBuild(c: string): string | undefined {
     `for(i=0;i<boxes.length;i++){b=boxes[i].querySelector(".ccup-hist-btn");if(!b){b=mk();boxes[i].appendChild(b)}ss(b,!0,!n)}` +
     `if(!on)return;` +
     `if(!n||!P.isConnected||!pBox.isConnected||!pBox.getClientRects().length||!pBtn.isConnected){close(0);return}` +
-    `if(!same(hs,pHs)||!same(cs,pCs)||(EP[sid()]||null)!==pEp){pin=-1;build(t)}else dsync();fit();mark(cur(t,hs))}` +
+    `if(!same(hs,pHs)||!same(cs,pCs)){pin=-1;build(t)}else dsync();fit();mark(cur(t,hs))}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
     `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
-    // The host's epochs for a session, kept by its id.
-    `window.addEventListener("message",function(e){var d=e&&e.data,m=d&&d.type==="from-extension"?d.message:null;` +
-    `if(!m||m.type!=="ccup_prompt_epochs"||typeof m.sessionId!=="string"||!Array.isArray(m.epochs))return;EP[m.sessionId]=m.epochs;if(on)que()});` +
     // Outside the list and the button row: close, and let the press go on.
     `document.addEventListener("pointerdown",function(e){if(!on)return;var el=e.target;` +
     `if(el&&el.nodeType===1&&(P.contains(el)||el.closest(".ccup-hist-btn,.ccup-nav-btn,.ccup-scroll-btn")))return;close(0)},!0);` +
@@ -8362,387 +8324,279 @@ export function promptHistWebview(
 }
 
 // ---------------------------------------------------------------------------
-// Prompt history across compactions (always on, no setting): the host half of
-// the prompt history list. A compaction keeps one transcript file: the CLI
-// appends a system record of subtype compact_boundary whose parentUuid is
-// null and whose logicalParentUuid names the leaf of the conversation it
-// closed, then the summary as a user record (isCompactSummary), and the chat
-// goes on from there. Claude Code's loader walks the chain back from the
-// newest leaf and stops at that null parent, and a file over 5 MiB is not
-// even read before its last boundary, so a reopened conversation (a window
-// reload, a Reload Webviews apply, the session opened in another tab) loses
-// every prompt sent before its last compaction, and the list with it. No
-// request the webview can make returns them.
+// Compacted history (always on, no setting): a reopened conversation shows
+// its turns from before each compaction again. A compaction keeps one
+// transcript file: the CLI appends a system record of subtype
+// compact_boundary whose parentUuid is null and whose logicalParentUuid names
+// the leaf of the conversation it closed, then the summary as a user record
+// (isCompactSummary), and the chat goes on from there. Claude Code's loader
+// walks the chain back from the newest leaf and stops at that null parent, so
+// a reopened conversation (a window reload, a Reload Webviews apply, the
+// session opened in another tab) starts at its last summary, shown as a
+// prompt, while the view that lived through the compaction still holds every
+// earlier turn, with the chat's "Compacted chat" row where it happened.
 //
-// So the host reads them: once the comms base has read a session for the
-// view (getSession, for any purpose but a diff refresh), it resolves the
-// transcript through the session store, walks the chain from the leaf the
-// loader picks through every boundary (logicalParentUuid), splits it into
-// epochs, keeps the prompts of every epoch but the loaded one, and posts
-// them to the view as a ccup_prompt_epochs message through the plain send,
-// so they follow the response. The prompts are the user records the chat
-// gives a turn header, classified as the webview's content parser does: a
-// text block that is not an IDE attachment, a terminal or browser capture, a
-// task notification, a command's own output or caveat, or an interrupt
-// notice counts (a command echo in the CLI's tag form counts as its command
-// line), an image or document counts, and a message with no such block, with
-// a tool result, or with an IDE diagnostics block has no header. Records off
-// the chain the loader shows (sidechains, teams, meta records, those with a
-// non-human origin such as task notifications and peer messages) are left
-// out, and so is each compaction's own summary, which the list shows as the
-// divider between epochs. The entries a boundary preserves (its segment, or
-// its listed uuids) follow its summary in the chat, so they go with the epoch
-// the boundary opens. Each epoch names the compaction that closed it (its
-// trigger, the tokens before it, its summary's uuid), so the list can tell
-// which divider the loaded summary header stands for.
+// The host puts the earlier turns back, built by Claude Code's own loader, so
+// they are the frames a reopen would have shown at the time. Once the comms
+// base has read a session for the view (getSession, for any purpose but a
+// diff refresh, whose frames the view ignores), and when those frames open
+// with a compaction summary, it reads the transcript the session store
+// resolves and parses it with the loader's parse. Built from the whole file,
+// the loader's frame builder must reproduce the frames the view was given, or
+// nothing changes: the reader may have read another store, or a later build
+// may take other arguments. Then the builder runs over the entries before the
+// boundary above the leading summary, the transcript as it stood before that
+// compaction, which yields the epoch the boundary closed, ending on the leaf
+// the boundary names. That epoch's own leading summary leads to the epoch
+// before it, and so on back to the first. The epochs go in oldest first,
+// within a budget of CST_MAX_FRAMES frames filled newest first, so a very
+// long conversation leaves out its oldest epochs rather than its newest.
 //
-// Two fragments in extension.js, both in the comms base (the class around the
-// rewind_code case, see turnRewindHostFind): `send`, ahead of getSession's
-// get_session_response return, and `method`, the method it calls, right
-// after getSession. Both are found by structure (src/derive.ts) and wrapped
-// in /*ccup:phe:<site>*/.../*ccup:pheEnd*/, so stripping the fragments
-// restores the stock bytes. The point needs the webview's list to be
-// buildable (promptHistBuild) and is otherwise independent of its toggle:
-// with the list off, the push goes unread.
+// The records a boundary preserves sit at the end of the epoch it closed and
+// again, re-parented, after its summary, so a frame whose uuid an earlier
+// epoch carries is dropped, which leaves them where the live view had them.
+// Each summary is marked with its boundary's trigger and token count
+// (ccupCompact) and stays in the frames, so the view's own handling of a
+// summary frame runs as before, and a /compact echo right after its summary
+// moves ahead of it, so the compaction's row sits in the /compact turn, as it
+// did live.
 //
-// Cost: one read of the transcript per session open, nothing more when it
-// holds no boundary (a substring check), else one JSON.parse per chain record
-// (the lines starting {"parentUuid", the first key of every chain record the
-// CLI writes, 2.1.268 through 2.1.318; a line naming compact_boundary is
-// parsed whatever its first key), about 60ms for a 40MB file, off the
-// response's path.
+// The view's half turns a marked summary into the row a live boundary makes:
+// in the session's loadFromServer, ahead of the statement that adds a loaded
+// frame to the rows, a marked frame instead adds the row the session's live
+// frame handler makes for a compact_boundary frame, its summary filled from
+// the frame's text through the normalizer a live summary frame goes through.
+//
+// Three fragments, found by structure (src/derive.ts) and wrapped in
+// /*ccup:cst:<site>*/.../*ccup:cstEnd*/, so stripping them restores the
+// stock bytes:
+//   read    extension.js, in the comms base (see turnRewindHostFind), ahead
+//           of getSession's get_session_response return: the frames it read
+//           go through ccupStitch
+//   method  extension.js, right after getSession: ccupStitch, which runs the
+//           compiled ccupStitchHost with the session store, the loader's
+//           parse and builder (the callees of a transcript reader, a function
+//           destructuring {entries, delivered} from an awaited parse and
+//           returning the builder's frames), and the budget
+//   row     webview/index.js, in the session class's loadFromServer, ahead of
+//           the statement adding a loaded frame to the rows
+// The halves are all or nothing across the two files, as for session delete.
+// The fragment pattern also takes the /*ccup:phe:<site>*/ fragments of the
+// earlier-prompts push this replaced, so one apply swaps them out.
+//
+// Cost, measured on 2.1.318: the loader already reads the whole file when a
+// compaction preserved a segment (every compaction on disk here did), so the
+// host adds a second read and parse plus one build per epoch, 23 to 92ms for
+// 14 to 42MB transcripts. The view receives two to twelve times the frames (6
+// to 13MB), and a headless load of three such sessions took 0.2 to 0.9s. The
+// view keeps its own cap of 600 rows, which drops the oldest tool rows first,
+// so what it renders stays bounded.
 // ---------------------------------------------------------------------------
-const PHE_END = "/*ccup:pheEnd*/";
-const PHE_SEND = "/*ccup:phe:send*/";
-const PHE_METHOD = "/*ccup:phe:method*/";
-const PHE_FRAG_RE = /\/\*ccup:phe:[-\w]+\*\/[\s\S]*?\/\*ccup:pheEnd\*\//g;
-const PHE_HOST_FILE = "extension.js";
-const PHE_WEBVIEW_FILE = "webview/index.js";
-const pheEdit = (marker: string, e: Edit): Edit => ({
+const CST_END = "/*ccup:cstEnd*/";
+const CST_READ = "/*ccup:cst:read*/";
+const CST_METHOD = "/*ccup:cst:method*/";
+const CST_ROW = "/*ccup:cst:row*/";
+const CST_FRAG_RE =
+  /\/\*ccup:(?:cst|phe):[-\w]+\*\/[\s\S]*?\/\*ccup:(?:cst|phe)End\*\//g;
+const CST_HOST_FILE = "extension.js";
+const CST_WEBVIEW_FILE = "webview/index.js";
+const cstEdit = (marker: string, e: Edit): Edit => ({
   pos: e.pos,
-  text: `${marker}${e.text}${PHE_END}`,
+  text: `${marker}${e.text}${CST_END}`,
 });
-const pheStrip = (c: string): string => c.replace(PHE_FRAG_RE, "");
-// How much of a prompt's text an epoch carries, far more than the list's two
-// lines show and enough for an entry opened in place.
-const PHE_CUT = PROMPT_HIST_CUT;
+const cstStrip = (c: string): string => c.replace(CST_FRAG_RE, "");
+// How many frames a stitched session may carry: about twice the most a
+// compacted session on disk here needed (3052).
+const CST_MAX_FRAMES = 6000;
+// How far ahead of a transcript reader's `delivered:` its function starts.
+const CST_READER_REACH = 4000;
 
-interface PheEpoch {
-  g: string; // the compaction that closed it: "auto" or "manual"
-  p: number; // the tokens before it
-  s: string; // its summary's uuid, "" when none was found
-  r: { u: string; t: string }[]; // the epoch's prompts, oldest first
-}
-
-// The prompts of every epoch a transcript holds before the one the chat
-// loads, oldest epoch first, or null when there is none. Compiled into Claude
-// Code's extension host by toString (see promptEpochsHostFind), so it may use
-// only its parameters.
-function ccupPromptEpochsOf(text: string, cut: number): PheEpoch[] | null {
-  type R = { [k: string]: any };
-  const byId = new Map<string, R>();
-  const order = new Map<string, number>();
-  let n = 0;
-  for (const line of text.split("\n")) {
-    if (
-      !line.startsWith('{"parentUuid"') &&
-      !line.includes('"compact_boundary"')
-    )
-      continue;
-    let r: R;
-    try {
-      r = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!r || typeof r !== "object" || typeof r.uuid !== "string") continue;
-    const t = r.type;
-    if (
-      t !== "user" &&
-      t !== "assistant" &&
-      t !== "system" &&
-      t !== "attachment" &&
-      t !== "progress"
-    )
-      continue;
-    byId.set(r.uuid, r);
-    order.set(r.uuid, n++);
-  }
-  if (byId.size === 0) return null;
-  const parentOf = (r: R): R | undefined =>
-    typeof r.parentUuid === "string" ? byId.get(r.parentUuid) : undefined;
-
-  // The leaf the chat loads: of the kept entries no kept entry descends
-  // from, the last in file order, walked back to a user or assistant
-  // message.
-  const kept = (r: R): boolean =>
-    !r.isSidechain &&
-    !r.teamName &&
-    r.type !== "progress" &&
-    !(r.type === "attachment" && r.attachment?.type === "fork_briefing");
-  const parents = new Set<string>();
-  for (const r of byId.values())
-    if (kept(r) && typeof r.parentUuid === "string") parents.add(r.parentUuid);
-  const leaves = [...byId.values()]
-    .filter((r) => kept(r) && !parents.has(r.uuid))
-    .sort((a, b) => order.get(b.uuid)! - order.get(a.uuid)!);
-  let head: R | undefined;
-  const tried = new Set<string>();
-  for (const leaf of leaves) {
-    for (
-      let r: R | undefined = leaf;
-      r && !tried.has(r.uuid);
-      r = parentOf(r)
-    ) {
-      if (r.type === "user" || r.type === "assistant") {
-        head = r;
-        break;
-      }
-      tried.add(r.uuid);
-    }
-    if (head) break;
-  }
-  if (!head) return null;
-
-  // The chain back from there, split at every boundary into epochs, newest
-  // first, each holding its entries newest first. Past a boundary the walk
-  // goes on from the leaf it closed, and the entries the boundary preserved
-  // (from that leaf back to its segment's head, or its listed uuids) go to
-  // the epoch it opened.
-  type Epoch = { recs: R[]; b: R | null };
-  const epochs: Epoch[] = [];
-  let cur: Epoch = { recs: [], b: null };
-  let keep: {
-    to: Epoch;
-    head: string | null;
-    list: Set<string> | null;
-  } | null = null;
-  const seen = new Set<string>();
-  for (let r: R | undefined = head; r && !seen.has(r.uuid);) {
-    seen.add(r.uuid);
-    if (r.type === "system" && r.subtype === "compact_boundary") {
-      cur.b = r;
-      epochs.push(cur);
-      const m = r.compactMetadata ?? {};
-      const seg = m.preservedSegment;
-      const lst = m.preservedMessages;
-      keep =
-        seg && typeof seg.headUuid === "string" && byId.has(seg.headUuid)
-          ? { to: cur, head: seg.headUuid, list: null }
-          : lst && Array.isArray(lst.uuids)
-            ? {
-                to: cur,
-                head: null,
-                list: new Set<string>(
-                  lst.uuids.filter((u: unknown) => typeof u === "string"),
-                ),
-              }
-            : null;
-      cur = { recs: [], b: null };
-      r =
-        typeof r.logicalParentUuid === "string"
-          ? byId.get(r.logicalParentUuid)
-          : undefined;
-      continue;
-    }
-    if (keep && (keep.list === null || keep.list.has(r.uuid))) {
-      keep.to.recs.push(r);
-      if (keep.head === r.uuid) keep = null;
-    } else {
-      keep = null;
-      cur.recs.push(r);
-    }
-    r = parentOf(r);
-  }
-  epochs.push(cur);
-  if (epochs.length < 2) return null;
-
-  // A prompt in the CLI's tag form, as its command line, or null.
-  const TAGS = [
-    "command-message",
-    "command-name",
-    "command-args",
-    "skill-format",
-    "command-contents",
-  ];
-  const commandOf = (t: string): { line: string; detail: boolean } | null => {
-    const tag = /\s*<([a-z-]+)>([\s\S]*?)<\/\1>/y;
-    const args = /\s*<command-args>([\s\S]*)<\/command-args>\s*$/y;
-    const got = new Map<string, string>();
-    for (let pos = 0; pos < t.length;) {
-      if (!/\S/.test(t.slice(pos))) break;
-      args.lastIndex = pos;
-      const a = args.exec(t);
-      if (a) {
-        if (got.has("command-args")) return null;
-        got.set("command-args", a[1]);
-        break;
-      }
-      tag.lastIndex = pos;
-      const m = tag.exec(t);
-      if (!m || !TAGS.includes(m[1]) || got.has(m[1])) return null;
-      got.set(m[1], m[2]);
-      pos = tag.lastIndex;
-    }
-    const name = (got.get("command-name") ?? "").trim();
-    const fmt = got.get("skill-format");
-    if (!name || (fmt !== undefined && fmt !== "true")) return null;
-    const msg = got.get("command-message")?.trim();
-    const detail =
-      (msg !== undefined && msg !== "" && msg !== name && `/${msg}` !== name) ||
-      got.has("command-contents");
-    const a = (got.get("command-args") ?? "").trim();
-    return { line: a ? `${name} ${a}` : name, detail };
-  };
-  // What the chat shows of a text block: its text, or null for a block it
-  // renders as something other than the prompt's text, or "diag" for an IDE
-  // diagnostics block, which takes the header away.
-  const textOf = (t: string): string | null => {
-    if (
-      t === "[Request interrupted by user]" ||
-      t === "[Request interrupted by user for tool use]"
-    )
-      return null;
-    const s = t.trimStart();
-    if (
-      s.startsWith("<task-notification") ||
-      s.startsWith("<local-command-") ||
-      s.startsWith("<bash-") ||
-      s.startsWith("<tick>") ||
-      s.startsWith("<mcp-resource-update") ||
-      s.startsWith("<mcp-polling-update")
-    )
-      return null;
-    const e = t.trimEnd();
-    const wrapped = (o: string, c: string): boolean =>
-      e.startsWith(o) && e.length >= o.length + c.length && e.endsWith(c);
-    if (
-      wrapped("<ide_selection>", "</ide_selection>") ||
-      wrapped("<ide_opened_file>", "</ide_opened_file>") ||
-      wrapped('<terminal name="', "</terminal>") ||
-      wrapped('<browser tabGroupId="', "</browser>") ||
-      wrapped("<browser_instruction>", "</browser_instruction>")
-    )
-      return null;
-    if (wrapped("<post-tool-use-hook>", "</post-tool-use-hook>")) {
-      const d = e.match(/<ide_diagnostics>([\s\S]*?)<\/ide_diagnostics>/);
-      try {
-        const a = d && JSON.parse(d[1]);
-        if (Array.isArray(a) && a.length > 0) return "diag";
-      } catch {
-        // not diagnostics: the chat shows the text
-      }
-    }
-    const c = commandOf(t);
-    return c && (!c.detail || c.line.startsWith("/")) ? c.line : t;
-  };
-  // A record's text as the list shows it, or null when the chat gives it no
-  // header.
-  const shown = (r: R): string | null => {
-    if (
-      r.type !== "user" ||
-      r.isSidechain ||
-      r.teamName ||
-      r.isMeta ||
-      r.isCompactSummary
-    )
-      return null;
-    const o = r.origin;
-    if (o && typeof o === "object" && o.kind !== "human") return null;
-    const c = r.message?.content;
-    const blocks: R[] =
-      typeof c === "string"
-        ? [{ type: "text", text: c }]
-        : Array.isArray(c)
-          ? c
-          : [];
-    const texts: string[] = [];
-    let att = false;
-    // The chat renders a message's blocks last first.
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      const b = blocks[i];
-      if (!b || typeof b !== "object") continue;
-      if (b.type === "tool_result") return null;
-      if (b.type === "image" || b.type === "document") att = true;
-      else if (b.type === "text" && typeof b.text === "string") {
-        const t = textOf(b.text);
-        if (t === "diag") return null;
-        if (t !== null) texts.push(t.replace(/\r/g, "").trim());
-      }
-    }
-    if (!texts.some((t) => t) && !att) return null;
-    return texts.filter((t) => t).join("\n");
-  };
-
-  // Every epoch but the loaded one, oldest first, each with the compaction
-  // that closed it, whose summary opens the epoch after it.
-  const out: PheEpoch[] = [];
-  for (let i = epochs.length - 1; i >= 1; i--) {
-    const e = epochs[i];
-    const next = epochs[i - 1];
-    const m = next.b?.compactMetadata ?? {};
-    const sum = next.recs.find(
-      (x) => x.type === "user" && x.isCompactSummary === true,
-    );
-    const r: { u: string; t: string }[] = [];
-    for (let k = e.recs.length - 1; k >= 0; k--) {
-      const t = shown(e.recs[k]);
-      if (t !== null)
-        r.push({ u: e.recs[k].uuid, t: t.length > cut ? t.slice(0, cut) : t });
-    }
-    out.push({
-      g: m.trigger === "manual" ? "manual" : "auto",
-      p: typeof m.preTokens === "number" ? m.preTokens : 0,
-      s: sum ? sum.uuid : "",
-      r,
-    });
-  }
-  return out;
-}
-
-// The host end of the push: on a session read for the view, the transcript
-// resolved through the session store (as Claude Code opens it), split into
-// epochs and posted to the view as ccup_prompt_epochs, after the response.
-// Compiled into Claude Code's extension host by toString (see
-// promptEpochsHostFind), so it may use only its parameters and Node's
-// globals. A session without a compaction costs one read.
-function ccupPromptEpochsHost(
+// The frames a session read for the view, with the epochs before its
+// compactions put back ahead of them, or the frames as they were. Compiled
+// into Claude Code's extension host by toString (see compactStitchHostFind),
+// so it may use only its parameters and Node's globals. `parse` and `build`
+// are the loader's own: parse(buffer) gives {entries, delivered}, and
+// build(entries, options, delivered) the frames of the chain whose leaf the
+// entries end on.
+async function ccupStitchHost(
   this: any,
   sid: unknown,
   purpose: unknown,
+  frames: unknown,
   store: any,
-  cut: number,
-  epochsOf: (text: string, cut: number) => unknown,
-): void {
+  parse: unknown,
+  build: unknown,
+  maxFrames: number,
+): Promise<unknown> {
   const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
   if (
     purpose === "diff_refresh" ||
     typeof sid !== "string" ||
     !uuid.test(sid) ||
-    typeof this.send !== "function"
+    !Array.isArray(frames) ||
+    typeof parse !== "function" ||
+    typeof build !== "function"
   )
-    return;
-  const self = this;
-  (async () => {
-    const fs = require("fs");
-    const sessions = await store.load(self.cwd, self.logger);
+    return frames;
+  // A summary marks a frame list that opens on a compaction.
+  const leading = (fs: any[]): any =>
+    fs[0] && fs[0].type === "user" && fs[0].isCompactSummary === true
+      ? fs[0]
+      : undefined;
+  if (!leading(frames)) return frames;
+  try {
+    const sessions = await store.load(this.cwd, this.logger);
     const found = await sessions.resolveSessionFile(sid);
-    const file = found?.hasMessages ? found.filePath : undefined;
-    if (typeof file !== "string") return;
-    const text: string = await fs.promises.readFile(file, "utf8");
-    if (!text.includes('"compact_boundary"')) return;
-    const epochs = epochsOf(text, cut);
-    if (!Array.isArray(epochs) || epochs.length === 0) return;
-    self.send({ type: "ccup_prompt_epochs", sessionId: sid, epochs });
-  })().catch((e: unknown) => {
-    self.logger?.warn?.(
-      `ccup_prompt_epochs: ${e instanceof Error ? e.message : String(e)}`,
+    const file = found && found.hasMessages ? found.filePath : undefined;
+    if (typeof file !== "string") return frames;
+    const parsed = await parse(await require("fs").promises.readFile(file));
+    const entries: any[] =
+      parsed && Array.isArray(parsed.entries) ? parsed.entries : [];
+    const delivered = parsed ? parsed.delivered : undefined;
+    const sameAs = (a: unknown): boolean =>
+      Array.isArray(a) &&
+      a.length === frames.length &&
+      a.every((f: any, k: number) => !!f && f.uuid === frames[k].uuid);
+    if (!sameAs(await build(entries, {}, delivered))) return frames;
+    const at = new Map<string, number>();
+    entries.forEach((e, i) => {
+      if (e && typeof e.uuid === "string") at.set(e.uuid, i);
+    });
+    // The boundary a summary follows: up its parents to a compact_boundary.
+    const boundaryOf = (fs: any[]): number => {
+      const s = leading(fs);
+      let i = s && typeof s.uuid === "string" ? at.get(s.uuid) : undefined;
+      for (let n = 0; i !== undefined && n < 256; n++) {
+        const r = entries[i];
+        if (r.type === "system" && r.subtype === "compact_boundary") return i;
+        i = typeof r.parentUuid === "string" ? at.get(r.parentUuid) : undefined;
+      }
+      return -1;
+    };
+    const parts: { fs: any[]; b: number }[] = [
+      { fs: frames, b: boundaryOf(frames) },
+    ];
+    let total = frames.length;
+    while (parts[0].b >= 0) {
+      const b = parts[0].b;
+      const prev = await build(entries.slice(0, b), {}, delivered);
+      if (!Array.isArray(prev) || prev.length === 0) break;
+      if (total + prev.length > maxFrames) break;
+      // The epoch ends on the leaf the boundary closed, where that leaf is a
+      // message the view shows.
+      const leaf = entries[b].logicalParentUuid;
+      const li = typeof leaf === "string" ? at.get(leaf) : undefined;
+      const lr = li === undefined ? undefined : entries[li];
+      if (
+        lr &&
+        (lr.type === "user" || lr.type === "assistant") &&
+        !prev.some((f: any) => !!f && f.uuid === leaf)
+      )
+        break;
+      const pb = boundaryOf(prev);
+      if (pb >= b) break;
+      parts.unshift({ fs: prev, b: pb });
+      total += prev.length;
+    }
+    if (parts.length < 2) return frames;
+
+    // Oldest first, each frame once, each summary marked with its boundary.
+    const seen = new Set<string>();
+    const out: any[] = [];
+    for (const part of parts) {
+      const m = part.b >= 0 ? entries[part.b].compactMetadata || {} : undefined;
+      part.fs.forEach((f: any, j: number) => {
+        if (f && typeof f.uuid === "string") {
+          if (seen.has(f.uuid)) return;
+          seen.add(f.uuid);
+        }
+        out.push(
+          j === 0 && m
+            ? {
+                ...f,
+                ccupCompact: {
+                  trigger: m.trigger === "manual" ? "manual" : "auto",
+                  preTokens: typeof m.preTokens === "number" ? m.preTokens : 0,
+                },
+              }
+            : f,
+        );
+      });
+    }
+    // A /compact echo right after its summary goes ahead of it.
+    const text = (f: any): string => {
+      const c = f && f.message ? f.message.content : undefined;
+      if (typeof c === "string") return c;
+      if (Array.isArray(c))
+        for (const x of c)
+          if (x && x.type === "text" && typeof x.text === "string")
+            return x.text;
+      return "";
+    };
+    for (let j = 0; j + 1 < out.length; j++) {
+      const next = out[j + 1];
+      if (
+        out[j].ccupCompact &&
+        next &&
+        next.type === "user" &&
+        text(next)
+          .trimStart()
+          .startsWith("<command-name>/compact</command-name>")
+      ) {
+        out[j + 1] = out[j];
+        out[j] = next;
+        j++;
+      }
+    }
+    return out;
+  } catch (e) {
+    this.logger?.warn?.(
+      `ccup_stitch: showing the conversation from its last compaction: ${e instanceof Error ? e.message : String(e)}`,
     );
+    return frames;
+  }
+}
+
+// A transcript reader's parse and builder: in an async function,
+// `let{entries:E,delivered:D}=await P(...)` and then `return B(E,_,D)`.
+function cstReaderPair(f: N): [string, string] | null {
+  if (!f.async || f.body?.type !== "BlockStatement") return null;
+  const decls: N[] = [];
+  const rets: N[] = [];
+  walkOwn(f, (n) => {
+    if (n.type === "VariableDeclarator") decls.push(n);
+    if (n.type === "ReturnStatement") rets.push(n);
   });
+  for (const d of decls) {
+    if (
+      d.id.type !== "ObjectPattern" ||
+      !hasKeys(d.id, ["entries", "delivered"]) ||
+      d.init?.type !== "AwaitExpression" ||
+      d.init.argument.type !== "CallExpression"
+    )
+      continue;
+    const parse = idName(d.init.argument.callee);
+    const ents = boundName(d.id, "entries");
+    const deliv = boundName(d.id, "delivered");
+    if (!parse || !ents || !deliv) continue;
+    for (const r of rets) {
+      const a = r.argument;
+      if (
+        a?.type === "CallExpression" &&
+        a.arguments.length === 3 &&
+        idName(a.arguments[0]) === ents &&
+        idName(a.arguments[2]) === deliv
+      ) {
+        const build = idName(a.callee);
+        if (build && build !== parse) return [parse, build];
+      }
+    }
+  }
+  return null;
 }
 
 // The host's sites and their two insertions, or null.
-function promptEpochsHostFind(
+function compactStitchHostFind(
   c: string,
 ): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
   // The comms base, as turnRewindHostFind finds it.
@@ -8760,27 +8614,23 @@ function promptEpochsHostFind(
   );
   if (bases.length !== 1) return null;
   const base = bases[0];
-  // Its getSession(session, purpose), which reads the session through the
-  // store's readSessionForHost and answers get_session_response from one
-  // return of its own body.
+  // Its async getSession(session, purpose), with one get_session_response
+  // return in the method's own block, whose messages are
+  // this.<stamp>([...<frames>, ...]).
   const gs = sdelMethod(base, "getSession");
+  const fn = gs?.value;
   if (
     !gs ||
-    gs.value.params.length !== 2 ||
-    gs.value.body.type !== "BlockStatement"
+    !fn.async ||
+    fn.params.length !== 2 ||
+    fn.body.type !== "BlockStatement"
   )
     return null;
-  const sid = idName(gs.value.params[0]);
-  const why = idName(gs.value.params[1]);
+  const sid = idName(fn.params[0]);
+  const why = idName(fn.params[1]);
   if (!sid || !why) return null;
-  let reads = false;
   const rets: N[] = [];
-  walkOwn(gs.value, (n) => {
-    if (
-      n.type === "CallExpression" &&
-      memberProp(n.callee) === "readSessionForHost"
-    )
-      reads = true;
+  walkOwn(fn, (n) => {
     if (
       n.type === "ReturnStatement" &&
       n.argument?.type === "ObjectExpression" &&
@@ -8788,62 +8638,246 @@ function promptEpochsHostFind(
     )
       rets.push(n);
   });
-  if (!reads || rets.length !== 1) return null;
+  if (rets.length !== 1 || rets[0].parent !== fn.body) return null;
   const ret = rets[0];
+  const msgs = propOf(ret.argument, "messages")?.value;
+  const arr =
+    msgs?.type === "CallExpression" && msgs.arguments.length === 1
+      ? msgs.arguments[0]
+      : null;
+  const spread = arr?.type === "ArrayExpression" ? arr.elements[0] : null;
+  const frames =
+    spread?.type === "SpreadElement" ? idName(spread.argument) : null;
+  if (!frames) return null;
+  // The frames are a let (or var) of the method, assigned from the awaited
+  // readSessionForHost.
+  let declared = false;
+  let read = false;
+  walkOwn(fn, (n) => {
+    if (
+      n.type === "VariableDeclarator" &&
+      idName(n.id) === frames &&
+      n.parent?.type === "VariableDeclaration" &&
+      n.parent.kind !== "const"
+    )
+      declared = true;
+    if (
+      n.type === "AssignmentExpression" &&
+      idName(n.left) === frames &&
+      n.right.type === "AwaitExpression" &&
+      n.right.argument.type === "CallExpression" &&
+      memberProp(n.right.argument.callee) === "readSessionForHost"
+    )
+      read = true;
+  });
   if (
-    bindingSite(ret, sid, gs.value) !== gs.value ||
-    bindingSite(ret, why, gs.value) !== gs.value
+    !declared ||
+    !read ||
+    bindingSite(ret, sid, fn) !== fn ||
+    bindingSite(ret, why, fn) !== fn ||
+    bindingSite(ret, frames, fn) === null
   )
     return null;
   const store = commsStore(c, base);
   if (!store) return null;
+  // The loader's parse and builder, from a transcript reader, the one
+  // getSession names where there are several copies.
+  const named = new Set<string>();
+  walk(fn, (n) => {
+    if (n.type === "Identifier") named.add(n.name);
+  });
+  let pair: [string, string] | null = null;
+  for (const f of unitsWith(
+    c,
+    "delivered:",
+    "function",
+    isFn,
+    CST_READER_REACH,
+  )) {
+    const p = cstReaderPair(f);
+    if (!p) continue;
+    if (!pair || (f.id && named.has(idName(f.id) ?? ""))) pair = p;
+  }
+  if (!pair || pair.some((name) => c.split(`function ${name}(`).length !== 2))
+    return null;
+  const [parse, build] = pair;
   return {
     units: [[base, isClass]],
     edits: [
-      pheEdit(PHE_SEND, {
+      cstEdit(CST_READ, {
         pos: ret.start,
-        text: `this.ccupPromptEpochs(${sid},${why});`,
+        text: `${frames}=await this.ccupStitch(${sid},${why},${frames});`,
       }),
-      pheEdit(PHE_METHOD, {
+      cstEdit(CST_METHOD, {
         pos: gs.end,
         text:
-          `;ccupPromptEpochs(ccupSid,ccupWhy){return(${ccupPromptEpochsHost.toString()})` +
-          `.call(this,ccupSid,ccupWhy,${store},${PHE_CUT},${ccupPromptEpochsOf.toString()})}`,
+          `;ccupStitch(ccupSid,ccupWhy,ccupFrames){return(${ccupStitchHost.toString()})` +
+          `.call(this,ccupSid,ccupWhy,ccupFrames,${store},` +
+          `typeof ${parse}==="function"?${parse}:null,typeof ${build}==="function"?${build}:null,${CST_MAX_FRAMES})}`,
       }),
     ],
   };
 }
 
-// The native host with its fragments in, or null when a site is missing or
-// an edit would not parse.
-const promptEpochsHostBuild = sdelMemo((native) => {
-  const sites = promptEpochsHostFind(native);
+// `!1` or `false`.
+const cstIsFalse = (n: N | null | undefined): boolean =>
+  !!n &&
+  ((n.type === "Literal" && n.value === false) ||
+    (n.type === "UnaryExpression" &&
+      n.operator === "!" &&
+      n.argument.type === "Literal" &&
+      n.argument.value === 1));
+
+// The webview's site and its insertion, or null.
+function compactStitchWebFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  // The session class, which loads a transcript.
+  const classes = unitsWith(
+    c,
+    "loadFromServer(",
+    "class ",
+    isClass,
+    TRW_CLASS_REACH,
+  ).filter((k) => sdelMethod(k, "loadFromServer"));
+  if (classes.length !== 1) return null;
+  const cls = classes[0];
+  const load = sdelMethod(cls, "loadFromServer")!.value;
+  // In loadFromServer, the one statement adding a loaded frame to the rows,
+  // H(rows, frame, false, {foldedIntoTurn: ...}), in a block.
+  const adds: N[] = [];
+  walk(load, (n) => {
+    if (n.type !== "ExpressionStatement") return;
+    const e = n.expression;
+    if (
+      e.type === "CallExpression" &&
+      idName(e.callee) &&
+      e.arguments.length === 4 &&
+      idName(e.arguments[0]) &&
+      idName(e.arguments[1]) &&
+      cstIsFalse(e.arguments[2]) &&
+      e.arguments[3].type === "ObjectExpression" &&
+      propOf(e.arguments[3], "foldedIntoTurn")
+    )
+      adds.push(n);
+  });
+  if (adds.length !== 1 || adds[0].parent?.type !== "BlockStatement")
+    return null;
+  const add = adds[0];
+  const rows = idName(add.expression.arguments[0])!;
+  const frame = idName(add.expression.arguments[1])!;
+  if (
+    bindingSite(add, rows, load) === null ||
+    bindingSite(add, frame, load) === null
+  )
+    return null;
+  // In its handling of live frames, the row a compact_boundary frame makes,
+  // M(f.compact_metadata.trigger, f.compact_metadata.pre_tokens), and the
+  // normalizer the summary text goes through,
+  // <row>.compactSummary.value = T(f.message.content).
+  const metaOf = (n: N, key: string): boolean =>
+    memberProp(n) === key && memberProp(n.object) === "compact_metadata";
+  const makes = new Set<string>();
+  const norms = new Set<string>();
+  let site: N | null = null;
+  walk(cls, (n) => {
+    if (
+      n.type === "CallExpression" &&
+      idName(n.callee) &&
+      n.arguments.length === 2 &&
+      metaOf(n.arguments[0], "trigger") &&
+      metaOf(n.arguments[1], "pre_tokens")
+    ) {
+      makes.add(idName(n.callee)!);
+      site = n;
+    }
+    if (
+      n.type === "AssignmentExpression" &&
+      memberProp(n.left) === "value" &&
+      memberProp(n.left.object) === "compactSummary" &&
+      n.right.type === "CallExpression" &&
+      idName(n.right.callee) &&
+      n.right.arguments.length === 1 &&
+      memberProp(n.right.arguments[0]) === "content" &&
+      memberProp(n.right.arguments[0].object) === "message"
+    )
+      norms.add(idName(n.right.callee)!);
+  });
+  if (makes.size !== 1 || norms.size !== 1 || !site) return null;
+  const make = [...makes][0];
+  const norm = [...norms][0];
+  // Both come from outside the class.
+  for (const name of [make, norm])
+    if (
+      bindingSite(site, name, cls) !== null ||
+      bindingSite(add, name, cls) !== null
+    )
+      return null;
+  const f = frame;
+  return {
+    units: [[cls, isClass]],
+    edits: [
+      cstEdit(CST_ROW, {
+        pos: add.start,
+        text:
+          `if(${f}&&${f}.ccupCompact){var ccupM=${make}(${f}.ccupCompact.trigger,${f}.ccupCompact.preTokens),` +
+          `ccupT=${f}.message&&${f}.message.content;ccupM.compactSummary.value=${norm}(typeof ccupT==="string"?ccupT:` +
+          `Array.isArray(ccupT)?ccupT.map(function(b){return b&&b.type==="text"?b.text:""}).join(""):"");${rows}.push(ccupM)}else `,
+      }),
+    ],
+  };
+}
+
+// Each half's native file with its fragments in, or null when a site is
+// missing or an edit would not parse.
+const compactStitchHostBuild = sdelMemo((native) => {
+  const sites = compactStitchHostFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+const compactStitchWebBuild = sdelMemo((native) => {
+  const sites = compactStitchWebFind(native);
   if (!sites) return null;
   const out = applyEdits(native, sites.edits);
   return unitsReparse(out, sites.edits, sites.units) ? out : null;
 });
 
-// The ALWAYS_POINTS patch, gated on the list being buildable in the webview.
-function promptEpochsHostPatch(
+// The two ALWAYS_POINTS patches, each gated on the other file's sites.
+function compactStitchWebPatch(
   native: string,
   read: BundleReader,
 ): string | null {
-  const web = read(PHE_WEBVIEW_FILE);
-  if (web === undefined || promptHistBuild(web) === undefined) return null;
-  return promptEpochsHostBuild(native);
+  const host = read(CST_HOST_FILE);
+  if (host === undefined || compactStitchHostBuild(cstStrip(host)) === null)
+    return null;
+  return compactStitchWebBuild(native);
+}
+function compactStitchHostPatch(
+  native: string,
+  read: BundleReader,
+): string | null {
+  const web = read(CST_WEBVIEW_FILE);
+  if (web === undefined || compactStitchWebBuild(cstStrip(web)) === null)
+    return null;
+  return compactStitchHostBuild(native);
 }
 
-// The host bundle as an apply writes this point into it given the webview
-// bundle, or null when a site is gone. scripts/repro's prompt-history.mjs
-// drives it, so it runs exactly what the patcher writes and doubles as the
-// drift canary.
-export function promptEpochsHost(host: string, web: string): string | null {
-  return promptEpochsHostPatch(pheStrip(host), (rel) =>
-    rel === PHE_WEBVIEW_FILE ? web : undefined,
+// Either file as an apply writes this point into it given the other, or null
+// when either half's sites are gone. scripts/repro's prompt-history.mjs serves
+// the webview one, and the host one runs in tests against real transcripts.
+export function compactStitchWebview(web: string, host: string): string | null {
+  return compactStitchWebPatch(cstStrip(web), (rel) =>
+    rel === CST_HOST_FILE ? host : undefined,
   );
 }
-// The epoch splitter itself, for tests over transcripts.
-export const promptEpochsOf = ccupPromptEpochsOf;
+export function compactStitchHost(host: string, web: string): string | null {
+  return compactStitchHostPatch(cstStrip(host), (rel) =>
+    rel === CST_WEBVIEW_FILE ? web : undefined,
+  );
+}
+// The stitch itself, for tests that run it with the loader's functions.
+export const stitchFrames = ccupStitchHost;
 
 // ---------------------------------------------------------------------------
 // Session cards (ON, the sidebar chat only): a strip across the bottom of the
@@ -13930,11 +13964,19 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
   },
   {
     kind: "inline",
-    id: "promptEpochsHost",
-    label: "prompt history across compactions",
-    file: PHE_HOST_FILE,
-    frags: PHE_FRAG_RE,
-    patch: promptEpochsHostPatch,
+    id: "compactStitch",
+    label: "compacted history rows",
+    file: CST_WEBVIEW_FILE,
+    frags: CST_FRAG_RE,
+    patch: compactStitchWebPatch,
+  },
+  {
+    kind: "inline",
+    id: "compactStitchHost",
+    label: "compacted history",
+    file: CST_HOST_FILE,
+    frags: CST_FRAG_RE,
+    patch: compactStitchHostPatch,
   },
   {
     kind: "inline",

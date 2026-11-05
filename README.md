@@ -76,8 +76,8 @@ Behavior
    ├── chatPopupInputMaxLines          # question "Other" + permission box: N lines, 0 -> native
    ├── chatJumpToMessageButtons        # prev/next above input/permission box: jump turns, if On
    ├── chatPromptHistoryButton         # button left of prev/next: pick a message to jump to, if On
-   │                                   #   (lists prompts from before a compaction too; /compact,
-   │                                   #   /model, /effort and text-less messages start folded)
+   │                                   #   (a divider at each compaction; /compact, /model, /effort
+   │                                   #   and text-less messages start folded)
    ├── chatRawMarkdownButton           # response hover button: show its markdown source, if On
    ├── chatScrollToBottomDot           # button above input/permission box: scroll to newest, if On
    │                                   #   also auto-scrolls on a permission/question box only when
@@ -109,7 +109,7 @@ Always applied                         # no setting; installing this patch is th
    ├── session open landing            # an opened session shows its last lines at once, no jump
    ├── inline math spans               # fix for math rendering
    ├── last turn delete                # prompt history: delete the last turn within 30s
-   ├── compaction prompt history       # prompt history: the prompts from before each compaction
+   ├── compacted history               # a reopened session shows its turns from before compactions
    ├── bookmark notes                  # Bookmarks pane rows: annotate a bookmark with your own note
    ├── file link reveal                # a file link goes to the file's open tab in any group
    └── shell here-documents            # shell code blocks: a here-document's body reads as text
@@ -162,10 +162,10 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
 - **`chatSessionCards` shows local sessions in the sidebar chat only.**
   The cards run from the session where you last sent a message, not counting a model or effort change or a slash command.
   A new session gets its card once you send it a message or Claude starts working in it, or once you leave it with an unsent message in its input box.
-- **`chatPromptHistoryButton` lists the whole conversation across compactions.**
-  A conversation reopened after a compaction shows its chat from the last summary on, and the list then begins with the prompts sent before each compaction, read from the transcript, each run closed by a divider worded like the chat's own compaction row.
-  Those earlier entries are not in the chat, so a click opens one in place to its whole text rather than jumping, and the summary that opens a reopened conversation is the divider, not an entry.
-  `/compact`, `/model` and `/effort` echoes and messages with no text, such as an attachment sent alone, start folded, and opening their fold keeps them in view for that conversation.
+- **A reopened conversation shows its turns from before each compaction.**
+  Claude Code reopens a compacted conversation from its last summary, and this patch puts the earlier turns back, with a "Compacted chat" row at each compaction, as the chat showed them before the reload.
+  The chat keeps its own limit of about 600 rows, so a very long conversation still drops its oldest tool calls first, and the longest drop their oldest turns.
+  With `chatPromptHistoryButton` on, each compaction is a divider in the list, and `/compact`, `/model` and `/effort` echoes and messages with no text, such as an attachment sent alone, start folded, while opening their fold keeps them in view for that conversation.
 - **Last turn delete reaches the last turn only, within its first 30 seconds.**
   With `chatPromptHistoryButton` on, only the last prompt history entry's delete button works, and only until Claude uses a tool that can leave changes behind, such as editing a file, running a command, or starting a subagent.
   A first click turns it into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.

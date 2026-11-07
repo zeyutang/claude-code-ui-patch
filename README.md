@@ -76,8 +76,8 @@ Behavior
    ├── chatPopupInputMaxLines          # question "Other" + permission box: N lines, 0 -> native
    ├── chatJumpToMessageButtons        # prev/next above input/permission box: jump turns, if On
    ├── chatPromptHistoryButton         # button left of prev/next: pick a message to jump to, if On
-   │                                   #   (a divider at each compaction; /compact, /model, /effort
-   │                                   #   and text-less messages start folded)
+   │                                   #   (compaction summaries, /compact, /model, /effort and
+   │                                   #   text-less messages start folded)
    ├── chatRawMarkdownButton           # response hover button: show its markdown source, if On
    ├── chatScrollToBottomDot           # button above input/permission box: scroll to newest, if On
    │                                   #   also auto-scrolls on a permission/question box only when
@@ -167,7 +167,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
 - **A reopened conversation shows its turns from before each compaction.**
   Claude Code reopens a compacted conversation from its last summary, and this patch puts the earlier turns back, with a "Compacted chat" row at each compaction, as the chat showed them before the reload.
   The chat keeps its own limit of about 600 rows, so a very long conversation still drops its oldest tool calls first, and the longest drop their oldest turns.
-  With `chatPromptHistoryButton` on, each compaction is a divider in the list, and `/compact`, `/model` and `/effort` echoes and messages with no text, such as an attachment sent alone, start folded, while opening their fold keeps them in view for that conversation.
+  With `chatPromptHistoryButton` on, each compaction is an entry holding its summary, and these entries, `/compact`, `/model` and `/effort` echoes, and messages with no text, such as an attachment sent alone, start folded, while opening their fold keeps them in view for that conversation.
 - **Last turn delete reaches the last turn only, within its first 30 seconds.**
   With `chatPromptHistoryButton` on, only the last prompt history entry's delete button works, and only until Claude uses a tool that can leave changes behind, such as editing a file, running a command, or starting a subagent.
   A first click turns it into "sure?", and a second stops the turn and removes it, its reply, and what it left in the conversation's transcript, as if the prompt had never been sent.

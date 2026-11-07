@@ -11,7 +11,7 @@
 - A conversation reopened after a compaction shows its turns from before each compaction again, with a "Compacted chat" row where each one happened, as the chat showed them before the reopen.
   It had started at the last compaction's summary.
   Always applied, no setting.
-- With `chatPromptHistoryButton` on, each compaction shows as a divider in the list, and a click on it goes to that compaction's row.
+- With `chatPromptHistoryButton` on, each compaction is an entry holding its summary, folded at first like `/compact`, `/model` and `/effort`, and a click on it goes to that compaction's row.
 - With `chatPromptHistoryButton` on, `/compact`, `/model` and `/effort` echoes and messages with no text, such as an attachment sent alone, start folded, and opening their fold keeps them in view for that conversation.
 - With `chatSessionCards` on, a new session gets its card once you send it a message or Claude starts working in it, so a window that opens on a new session no longer shows an "Untitled" card for it.
   Leaving a new session with an unsent message in its input box gives it an "Untitled" card that takes you back to that message.

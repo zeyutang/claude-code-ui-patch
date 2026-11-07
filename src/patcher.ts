@@ -8173,15 +8173,18 @@ function jumpMsgSet(c: string, on: boolean): string {
 // for that conversation (an unhide mark beside the hide marks) until they are
 // hidden again.
 //
-// A compaction divides the list. Each of the chat's compaction rows
-// ("Compacted chat · auto · 974k tokens freed", the row a live compaction
-// adds, and with the compacted history point below the row every earlier
-// compaction of a reopened conversation gets) puts a slim divider worded like
-// it in document order, and a click on the divider lands the row just below
-// the stuck header. A summary header ("This session is being continued...",
-// told by its opening words), which a reopened conversation shows when its
-// earlier turns were not put back, is a divider too rather than an entry, and
-// a click on it jumps to that header. Numbers skip the dividers.
+// A compaction is an entry too, hidden from the start the same way: the
+// summary the session went on from ("This session is being continued...").
+// It is either one of the chat's compaction rows ("Compacted chat · auto ·
+// 974k tokens freed", the row a live compaction adds, and with the compacted
+// history point below the row every earlier compaction of a reopened
+// conversation gets), read off the row's content and placed in document
+// order, or a summary header, told by its opening words, which a reopened
+// conversation shows when its earlier turns were not put back. A click lands
+// the row just below the stuck header, or jumps to the header. A row's entry
+// is named by the row's own line (its trigger and token count), since every
+// summary opens with the same words and a row carries no message id, and it
+// gets no delete button.
 //
 // Every chat entry carries a delete button at its right end once the last turn
 // delete point is in (window.__ccupTurnRewind, see turnRewindWebFind): one
@@ -8273,9 +8276,12 @@ function promptHistBuild(c: string): string | undefined {
   const heading = c.includes(
     `screenReaderTurnHeading:"screenReaderTurnHeading_${sticky}"`,
   );
-  // The row a live compaction adds to its turn, for a divider in its place;
-  // without its class only a reopened summary header divides.
+  // The row a compaction adds to its turn and the content holding its
+  // summary, for an entry in its place; without the row's class only a
+  // reopened summary header is one.
   const compact = c.match(PROMPT_HIST_COMPACT_RE)?.[1];
+  const compactBody =
+    !!compact && c.includes(`compactContent:"compactContent_${compact}"`);
   const perm = c.match(PERM_WRAP_HASH_RE)?.[1];
   const preq = c.match(PERM_REQ_HASH_RE)?.[1];
   const wrap = c.match(BTN_WRAP_HASH_RE)?.[1];
@@ -8307,7 +8313,7 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-row${HOVER}::before,.ccup-hist-row${HOVER}+.ccup-hist-row::before{visibility:hidden}` +
     `.ccup-hist-item${HOVER}{background:var(--app-list-hover-background)}` +
     ".ccup-hist-item[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
-    ".ccup-hist-item:focus-visible,.ccup-hist-fold:focus-visible,.ccup-hist-sep:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
+    ".ccup-hist-item:focus-visible,.ccup-hist-fold:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}" +
     // At least as wide as the hide button, an entry's line (2em at its
     // line-height 2), less the 6px it reaches into the gap, in folds too,
     // whose shorter line keeps the same column.
@@ -8354,15 +8360,6 @@ function promptHistBuild(c: string): string | undefined {
     `.ccup-hist-fold${HOVER}{background:var(--app-list-hover-background);color:var(--app-primary-foreground)}` +
     ".ccup-hist-fold[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
     ".ccup-hist-fold[data-cur] .ccup-hist-fold-r{color:inherit}" +
-    // The divider a compaction leaves: the fold's shape, a pointer only where
-    // a click has a row in the chat to reach.
-    ".ccup-hist-sep{display:flex;align-items:center;gap:8px;padding:1px 8px 1px 2px;line-height:1.6;color:var(--app-secondary-foreground);cursor:default}" +
-    ".ccup-hist-sep[data-go]{cursor:pointer}" +
-    ".ccup-hist-sep .ccup-hist-num{color:inherit}" +
-    ".ccup-hist-sep .ccup-hist-num svg{display:inline-block;width:.9em;height:.9em;vertical-align:-.08em}" +
-    ".ccup-hist-sep-t{flex:1 1 auto;min-width:0;font-size:.85em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
-    `.ccup-hist-sep[data-go]${HOVER}{background:var(--app-list-hover-background);color:var(--app-primary-foreground)}` +
-    ".ccup-hist-sep[data-cur]{background:var(--app-list-active-background);color:var(--app-list-active-foreground)}" +
     btnHideCss(input, wrap, ".ccup-hist-btn") +
     btnHostCss(wrap, perm, preq) +
     HOVER_TIP_CSS;
@@ -8375,9 +8372,6 @@ function promptHistBuild(c: string): string | undefined {
     "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2 12Q12 2 22 12Q12 22 2 12Z'/><circle cx='12' cy='12' r='3'/><path d='M4 4l16 16'/></svg>";
   const chevron =
     "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 6l6 6-6 6'/></svg>";
-  // Two chevrons closing on a line, for a compaction's divider.
-  const pack =
-    "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M4 12h16'/><path d='M9 5l3 3 3-3'/><path d='M9 19l3-3 3 3'/></svg>";
   // The last entry's delete button wears the session list delete's trash.
   const trash = `<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='${SDEL_TRASH_D}'/></svg>`;
   // A message block's text: the expandable's content, or a slash-command echo.
@@ -8388,9 +8382,9 @@ function promptHistBuild(c: string): string | undefined {
     `(function(){try{` +
     `if(window.__ccupPromptHist)return;window.__ccupPromptHist=1;` +
     `var st=document.createElement("style");st.textContent='${css}';document.head.appendChild(st);` +
-    `var BARS="${bars}",EYE="${eyeOff}",CHEV="${chevron}",TRASH="${trash}",PACK="${pack}",T="Prompt History",NL=String.fromCharCode(92)+"n",` +
+    `var BARS="${bars}",EYE="${eyeOff}",CHEV="${chevron}",TRASH="${trash}",T="Prompt History",NL=String.fromCharCode(92)+"n",` +
     `SK="${PROMPT_HIST_STORE}",SUMP="${PROMPT_HIST_SUMMARY}",AUTO=${PROMPT_HIST_AUTO_HIDE},EMPTY="Your message",` +
-    `raf=0,gen=0,gl=0,P=null,on=0,pBox=null,pBtn=null,pFoc=null,pHs=[],pCs=[],items=[],itemOfH=[],lastH=-1,pCur=-1,` +
+    `raf=0,gen=0,gl=0,P=null,on=0,pBox=null,pBtn=null,pFoc=null,pHs=[],pCs=[],pSig="",items=[],itemOfH=[],lastH=-1,pCur=-1,` +
     `pin=-1,pinTop=0,rowOf=[],curEl=null,dT=0;` +
     HOVER_TIP_JS +
     `function sc(){return document.querySelector(".messagesContainer_${chat}")}` +
@@ -8399,6 +8393,13 @@ function promptHistBuild(c: string): string | undefined {
     (compact
       ? `function cc(t){return t?[].slice.call(t.querySelectorAll(".compact_${compact}")):[]}`
       : `function cc(){return[]}`) +
+    // What a compaction row's entry reads: the summary's opening paragraph,
+    // or the placeholder the row shows until the summary arrives.
+    `function body(el){return${compactBody ? ` el.querySelector(".compactContent_${compact}")` : "null"}}` +
+    `function rowLine(el){var s=el.querySelector("summary");s=s?s.textContent.replace(/\\s+/g," ").trim():"";return s||"Compacted chat"}` +
+    `function rowText(el){var c=body(el),p=c&&c.querySelector("p");return((p||c||{}).textContent||"").trim()||rowLine(el)}` +
+    // Whether a row's content changed, so its entry is read again.
+    `function sig(cs){var a=[],i,c;for(i=0;i<cs.length;i++){c=body(cs[i]);a.push(c?c.childElementCount:0)}return a.join()}` +
     `function same(a,b){if(a.length!==b.length)return!1;for(var i=0;i<a.length;i++)if(a[i]!==b[i])return!1;return!0}` +
     // Offset within container t, summed up the offsetParent chain (see jumpMsg).
     `function ot(e,t){var y=0,n=e;while(n&&n!==t){y+=n.offsetTop;n=n.offsetParent}return y}` +
@@ -8437,21 +8438,19 @@ function promptHistBuild(c: string): string | undefined {
     // An entry's key: its message's uuid, else (as marks were kept before)
     // its header's position and a hash of its text, which every entry is
     // still matched under.
-    `function keyOf(x){return x.u?"u:"+x.u:legacy(x)}` +
+    `function keyOf(x){return x.key||(x.u?"u:"+x.u:legacy(x))}` +
     `function legacy(x){return x.h?x.hi+":"+hsh(x.t):""}` +
-    `function auto(x){return!x.t.trim()||AUTO.test(x.t)}` +
-    `function rowText(el){var s=el.querySelector("summary");s=s?s.textContent.replace(/\\s+/g," ").trim():"";return s||"Compacted chat"}` +
+    `function auto(x){return!!x.c||!x.t.trim()||AUTO.test(x.t)}` +
     // The list's items: the chat's headers and compaction rows in document
-    // order, a summary header standing as a divider rather than an entry.
-    // Numbers run over the prompts alone.
+    // order, a compaction (a row, or a summary header) an entry like any.
     `function assemble(hs,cs){var it=[],nodes=[],i,n=0,nd,h,u,s;` +
     `for(i=0;i<hs.length;i++)nodes.push({h:hs[i],hi:i});for(i=0;i<cs.length;i++)nodes.push({c:cs[i]});` +
     `nodes.sort(function(a,b){var x=a.h||a.c,y=b.h||b.c;return x===y?0:x.compareDocumentPosition(y)&4?-1:1});` +
     `itemOfH=[];lastH=-1;` +
     `for(i=0;i<nodes.length;i++){nd=nodes[i];` +
-    `if(nd.c){it.push({k:"c",h:null,el:nd.c});continue}` +
+    `if(nd.c){it.push({k:"p",c:1,key:"c:"+hsh(rowLine(nd.c)),t:rowText(nd.c),h:null,el:nd.c,n:0});continue}` +
     `h=nd.h;u=h.getAttribute("data-ccup-uuid")||"";s=txt(h);itemOfH[nd.hi]=it.length;` +
-    `if(s.indexOf(SUMP)===0){it.push({k:"c",h:h,el:null});continue}` +
+    `if(s.indexOf(SUMP)===0){it.push({k:"p",c:1,u:u,t:s,h:h,hi:nd.hi,n:0});continue}` +
     `lastH=it.length;it.push({k:"p",u:u,t:s,h:h,hi:nd.hi,n:0})}` +
     `for(i=0;i<it.length;i++)if(it[i].k==="p")it[i].n=++n;` +
     `return it}` +
@@ -8461,7 +8460,7 @@ function promptHistBuild(c: string): string | undefined {
     `ld.className="ccup-hist-lead";nu.className="ccup-hist-num";nu.textContent=x.n;tx.className="ccup-hist-txt";fill(tx,x.t||EMPTY);` +
     `hb.type="button";hb.className="ccup-hist-hide";hb.tabIndex=-1;hb.setAttribute("aria-label","Hide "+x.n);hb.innerHTML=EYE;` +
     `ld.appendChild(nu);ld.appendChild(hb);it.appendChild(ld);it.appendChild(tx);` +
-    `if(window.__ccupTurnRewind)it.appendChild(dbtn(i,x.n));return it}` +
+    `if(window.__ccupTurnRewind&&!x.c)it.appendChild(dbtn(i,x.n));return it}` +
     `function fold(a,b){var g=document.createElement("div"),c=document.createElement("span"),` +
     `l=document.createElement("span"),r=document.createElement("span");` +
     `g.className="ccup-hist-row ccup-hist-fold";g.setAttribute("role","option");g.setAttribute("data-a",a);g.setAttribute("data-b",b);g.tabIndex=-1;` +
@@ -8469,12 +8468,6 @@ function promptHistBuild(c: string): string | undefined {
     `r.className="ccup-hist-fold-r";r.textContent=a===b?String(items[a].n):items[a].n+"\\u2013"+items[b].n;` +
     `g.setAttribute("aria-label","Show "+l.textContent+", "+r.textContent);` +
     `g.appendChild(c);g.appendChild(l);g.appendChild(r);return g}` +
-    // A compaction's divider, worded like the chat's own compaction row.
-    `function sep(i,x){var g=document.createElement("div"),c=document.createElement("span"),l=document.createElement("span"),s=x.el?rowText(x.el):"Compacted chat";` +
-    `g.className="ccup-hist-row ccup-hist-sep";g.setAttribute("role","option");g.setAttribute("data-i",i);g.tabIndex=-1;` +
-    `c.className="ccup-hist-num";c.innerHTML=PACK;l.className="ccup-hist-sep-t";l.textContent=s;` +
-    `g.setAttribute("data-go","");g.setAttribute("aria-label",s);` +
-    `g.appendChild(c);g.appendChild(l);return g}` +
     // The first item a row stands for.
     `function anchor(r){var a=r.getAttribute("data-i");return a!==null?+a:+r.getAttribute("data-a")}` +
     // Rows in order, a run of hidden entries folded into one, and rowOf
@@ -8482,10 +8475,10 @@ function promptHistBuild(c: string): string | undefined {
     // and the list's scroll position all survive the rebuild.
     `function build(t){hideTip();var ae=document.activeElement,fi=ae&&ae.parentNode===P?anchor(ae):-1,st=P.scrollTop,` +
     `m=marks(),f=document.createDocumentFragment(),hs=hh(t),cs=cc(t),it=assemble(hs,cs),n=it.length,i,j,q,g,x,hid=[],np=0;` +
-    `pHs=hs;pCs=cs;items=it;rowOf=[];curEl=null;` +
+    `pHs=hs;pCs=cs;pSig=sig(cs);items=it;rowOf=[];curEl=null;` +
     `for(i=0;i<n;i++){x=it[i];if(x.k==="p")np=x.n;` +
     `hid[i]=x.k==="p"&&(m.h.has(keyOf(x))||m.h.has(legacy(x))||(auto(x)&&!m.u.has(keyOf(x))&&!m.u.has(legacy(x))))}` +
-    `for(i=0;i<n;i=j+1){j=i;x=it[i];if(hid[i]){while(j+1<n&&hid[j+1])j++;g=fold(i,j)}else g=x.k==="c"?sep(i,x):entry(i,x);` +
+    `for(i=0;i<n;i=j+1){j=i;x=it[i];if(hid[i]){while(j+1<n&&hid[j+1])j++;g=fold(i,j)}else g=entry(i,x);` +
     `for(q=i;q<=j;q++)rowOf[q]=g;f.appendChild(g)}` +
     `P.textContent="";P.appendChild(f);P.scrollTop=st;P.style.setProperty("--ccup-hist-w",String(np||1).length+"ch");dsync();` +
     `if(pCur>=0)mark(pCur);if(fi>=0&&n)focRow(rowOf[Math.min(fi,n-1)])}` +
@@ -8493,7 +8486,7 @@ function promptHistBuild(c: string): string | undefined {
     // says, with the tip its hover shows, and a pass booked for the moment
     // the open window closes.
     `function dsync(){var api=window.__ccupTurnRewind,i,r,b,st,x,t=0,us=[],ix=[],ss;` +
-    `for(i=0;i<items.length;i++)if(items[i].k==="p"&&items[i].h){us.push(items[i].u);ix.push(i)}` +
+    `for(i=0;i<items.length;i++)if(items[i].h&&!items[i].c){us.push(items[i].u);ix.push(i)}` +
     `ss=api&&api.states?api.states(us):[];if(dT){clearTimeout(dT);dT=0}` +
     `for(i=0;i<ix.length;i++){r=rowOf[ix[i]];b=r&&r.hasAttribute("data-i")&&!r.hasAttribute("data-going")?r.querySelector(".ccup-hist-del"):null;` +
     `if(!b)continue;st=ss[i];x=typeof st==="number"&&st>0;` +
@@ -8546,8 +8539,8 @@ function promptHistBuild(c: string): string | undefined {
     // Marks of a deleted turn, and position marks from its position on: the
     // next prompts take those positions.
     `function forget(x){var m=marks(),c=0;m.h.forEach(function(k){if((x.u&&k==="u:"+x.u)||(/^\\d+:/.test(k)&&parseInt(k,10)>=x.hi)){m.h.delete(k);c++}});if(c)keep(m)}` +
-    // An entry or a summary header's divider jumps to its header, a
-    // compaction row's divider to the row, and a fold brings its run back.
+    // An entry jumps to its header, a compaction row's entry to the row, and
+    // a fold brings its run back.
     `function act(r){if(r.hasAttribute("data-a")){unhide(+r.getAttribute("data-a"),+r.getAttribute("data-b"));return}` +
     `var i=+r.getAttribute("data-i"),x=items[i];if(!x)return;` +
     `if(x.h)jumpTo(i);else if(x.el)jumpEl(i)}` +
@@ -8603,7 +8596,7 @@ function promptHistBuild(c: string): string | undefined {
     `for(i=0;i<boxes.length;i++){b=boxes[i].querySelector(".ccup-hist-btn");if(!b){b=mk();boxes[i].appendChild(b)}ss(b,!0,!n)}` +
     `if(!on)return;` +
     `if(!n||!P.isConnected||!pBox.isConnected||!pBox.getClientRects().length||!pBtn.isConnected){close(0);return}` +
-    `if(!same(hs,pHs)||!same(cs,pCs)){pin=-1;build(t)}else dsync();fit();mark(cur(t,hs))}` +
+    `if(!same(hs,pHs)||!same(cs,pCs)||sig(cs)!==pSig){pin=-1;build(t)}else dsync();fit();mark(cur(t,hs))}` +
     `function que(){if(!raf)raf=requestAnimationFrame(upd)}` +
     `document.addEventListener("scroll",que,!0);window.addEventListener("resize",que);` +
     // Outside the list and the button row: close, and let the press go on.
@@ -8690,15 +8683,30 @@ export function promptHistWebview(
 // (ccupCompact) and stays in the frames, so the view's own handling of a
 // summary frame runs as before, and a /compact echo right after its summary
 // moves ahead of it, so the compaction's row sits in the /compact turn, as it
-// did live.
+// did live. Every frame the view was not given is marked earlier
+// (ccupEarlier), so the view can tell the conversation it loaded natively
+// apart from the turns put back.
 //
 // The view's half turns a marked summary into the row a live boundary makes:
 // in the session's loadFromServer, ahead of the statement that adds a loaded
 // frame to the rows, a marked frame instead adds the row the session's live
 // frame handler makes for a compact_boundary frame, its summary filled from
-// the frame's text through the normalizer a live summary frame goes through.
+// the frame's text through the normalizer a live summary frame goes through,
+// and resets the context meter's token count as that handler does, so the
+// meter reads as it did live.
 //
-// Three fragments, found by structure (src/derive.ts) and wrapped in
+// The load also decides, from the rows it built, whether to ask the CLI to
+// resume a turn a reload interrupted (launchClaude's resumeInterruptedTurn
+// and noReplyNotice) and whether to show an unanswered question again. That
+// decision reaches the CLI, so it must not see the turns put back: its tail
+// scans would pass the compaction row where a native load stops at the
+// summary, and its check for background agents still running would see the
+// earlier epochs' agents. So ahead of it the rows it reads are swapped for
+// the native ones: the summary as the plain row a native load makes, then
+// every row whose frame is not marked earlier, in order. Scans skip
+// compaction rows, so the decision comes out as a native load's.
+//
+// Four fragments, found by structure (src/derive.ts) and wrapped in
 // /*ccup:cst:<site>*/.../*ccup:cstEnd*/, so stripping them restores the
 // stock bytes:
 //   read    extension.js, in the comms base (see turnRewindHostFind), ahead
@@ -8711,6 +8719,8 @@ export function promptHistWebview(
 //           returning the builder's frames), and the budget
 //   row     webview/index.js, in the session class's loadFromServer, ahead of
 //           the statement adding a loaded frame to the rows
+//   tail    webview/index.js, in the same method, ahead of the declaration
+//           of the flag handed to launchClaude as resumeInterruptedTurn
 // The halves are all or nothing across the two files, as for session delete.
 // The fragment pattern also takes the /*ccup:phe:<site>*/ fragments of the
 // earlier-prompts push this replaced, so one apply swaps them out.
@@ -8727,6 +8737,7 @@ const CST_END = "/*ccup:cstEnd*/";
 const CST_READ = "/*ccup:cst:read*/";
 const CST_METHOD = "/*ccup:cst:method*/";
 const CST_ROW = "/*ccup:cst:row*/";
+const CST_TAIL = "/*ccup:cst:tail*/";
 const CST_FRAG_RE =
   /\/\*ccup:(?:cst|phe):[-\w]+\*\/[\s\S]*?\/\*ccup:(?:cst|phe)End\*\//g;
 const CST_HOST_FILE = "extension.js";
@@ -8831,27 +8842,34 @@ async function ccupStitchHost(
     }
     if (parts.length < 2) return frames;
 
-    // Oldest first, each frame once, each summary marked with its boundary.
+    // Oldest first, each frame once, each summary marked with its boundary,
+    // and each frame the view was not given marked as earlier.
+    const given = new Set<string>();
+    for (const f of frames)
+      if (f && typeof f.uuid === "string") given.add(f.uuid);
     const seen = new Set<string>();
     const out: any[] = [];
+    const last = parts[parts.length - 1];
     for (const part of parts) {
       const m = part.b >= 0 ? entries[part.b].compactMetadata || {} : undefined;
       part.fs.forEach((f: any, j: number) => {
-        if (f && typeof f.uuid === "string") {
-          if (seen.has(f.uuid)) return;
-          seen.add(f.uuid);
+        const id = f && typeof f.uuid === "string" ? f.uuid : undefined;
+        if (id !== undefined) {
+          if (seen.has(id)) return;
+          seen.add(id);
         }
-        out.push(
-          j === 0 && m
-            ? {
-                ...f,
-                ccupCompact: {
-                  trigger: m.trigger === "manual" ? "manual" : "auto",
-                  preTokens: typeof m.preTokens === "number" ? m.preTokens : 0,
-                },
-              }
-            : f,
-        );
+        let g = f;
+        if (j === 0 && m)
+          g = {
+            ...g,
+            ccupCompact: {
+              trigger: m.trigger === "manual" ? "manual" : "auto",
+              preTokens: typeof m.preTokens === "number" ? m.preTokens : 0,
+            },
+          };
+        if (part !== last && !(id !== undefined && given.has(id)))
+          g = { ...g, ccupEarlier: true };
+        out.push(g);
       });
     }
     // A /compact echo right after its summary goes ahead of it.
@@ -9144,7 +9162,94 @@ function compactStitchWebFind(
       bindingSite(add, name, cls) !== null
     )
       return null;
+  // The meter's reset a live compact_boundary frame makes,
+  // this.usageData.value = {...this.usageData.value, totalTokens: 0}, when
+  // the class has it.
+  let resets = false;
+  walk(cls, (n) => {
+    if (
+      n.type === "AssignmentExpression" &&
+      memberProp(n.left) === "value" &&
+      sdelIsThisMember(n.left.object, "usageData") &&
+      n.right.type === "ObjectExpression" &&
+      n.right.properties.some(
+        (p: N) =>
+          p.type === "SpreadElement" &&
+          memberProp(p.argument) === "value" &&
+          sdelIsThisMember(p.argument.object, "usageData"),
+      ) &&
+      propOf(n.right, "totalTokens")?.value?.value === 0
+    )
+      resets = true;
+  });
+  // The load's resume decision: the declaration of the flag handed to
+  // this.launchClaude({resumeInterruptedTurn: B, ...}), followed by
+  // this.maybeReplayUnansweredQuestion(_, G, R.liveInOtherSurface), where G
+  // holds V(rows) and R the response.
+  const flags: string[] = [];
+  const replays: N[] = [];
+  walk(load, (n) => {
+    if (n.type !== "CallExpression") return;
+    if (
+      memberProp(n.callee) === "launchClaude" &&
+      n.callee.object.type === "ThisExpression" &&
+      n.arguments[0]?.type === "ObjectExpression"
+    ) {
+      const b = idName(propOf(n.arguments[0], "resumeInterruptedTurn")?.value);
+      if (b) flags.push(b);
+    }
+    if (
+      memberProp(n.callee) === "maybeReplayUnansweredQuestion" &&
+      n.callee.object.type === "ThisExpression" &&
+      n.arguments.length === 3 &&
+      idName(n.arguments[1]) &&
+      memberProp(n.arguments[2]) === "liveInOtherSurface" &&
+      idName(n.arguments[2].object)
+    )
+      replays.push(n);
+  });
+  if (flags.length !== 1 || replays.length !== 1) return null;
+  const flag = flags[0];
+  const replay = replays[0];
+  const G = idName(replay.arguments[1])!;
+  const R = idName(replay.arguments[2].object)!;
+  const decls: N[] = [];
+  const lets: N[] = [];
+  const listers = new Set<string>();
+  walk(load, (n) => {
+    if (n.type !== "VariableDeclarator" && n.type !== "AssignmentExpression")
+      return;
+    if (n.type === "VariableDeclarator" && n.parent) {
+      if (idName(n.id) === flag) decls.push(n.parent);
+      if (idName(n.id) === G && n.parent.kind !== "const") lets.push(n);
+    }
+    if (
+      n.type === "AssignmentExpression" &&
+      idName(n.left) === G &&
+      n.right.type === "CallExpression" &&
+      n.right.arguments.length === 1 &&
+      idName(n.right.arguments[0]) === rows &&
+      idName(n.right.callee)
+    )
+      listers.add(idName(n.right.callee)!);
+  });
+  if (decls.length !== 1 || lets.length !== 1 || listers.size !== 1)
+    return null;
+  const d = decls[0];
+  const lister = [...listers][0];
+  if (
+    d.type !== "VariableDeclaration" ||
+    d.parent?.type !== "BlockStatement" ||
+    replay.start < d.end ||
+    bindingSite(d, G, load) === null ||
+    bindingSite(d, R, load) === null ||
+    bindingSite(d, rows, load) === null ||
+    bindingSite(d, lister, cls) !== null ||
+    bindingSite(d, idName(add.expression.callee)!, cls) !== null
+  )
+    return null;
   const f = frame;
+  const H = idName(add.expression.callee)!;
   return {
     units: [[cls, isClass]],
     edits: [
@@ -9153,7 +9258,19 @@ function compactStitchWebFind(
         text:
           `if(${f}&&${f}.ccupCompact){var ccupM=${make}(${f}.ccupCompact.trigger,${f}.ccupCompact.preTokens),` +
           `ccupT=${f}.message&&${f}.message.content;ccupM.compactSummary.value=${norm}(typeof ccupT==="string"?ccupT:` +
-          `Array.isArray(ccupT)?ccupT.map(function(b){return b&&b.type==="text"?b.text:""}).join(""):"");${rows}.push(ccupM)}else `,
+          `Array.isArray(ccupT)?ccupT.map(function(b){return b&&b.type==="text"?b.text:""}).join(""):"");${rows}.push(ccupM)` +
+          (resets
+            ? `;this.usageData.value={...this.usageData.value,totalTokens:0}`
+            : "") +
+          `}else `,
+      }),
+      cstEdit(CST_TAIL, {
+        pos: d.start,
+        text:
+          `if(${R}&&Array.isArray(${R}.messages)&&${R}.messages.some(function(x){return x&&x.ccupEarlier})){` +
+          `var ccupE=new Set,ccupN=[];${R}.messages.forEach(function(x){if(x&&x.ccupEarlier){if(typeof x.uuid==="string")ccupE.add(x.uuid)}` +
+          `else if(x&&x.ccupCompact&&!ccupN.length)${H}(ccupN,x,!1,{})});` +
+          `${G}=${lister}(ccupN.concat(${rows}.filter(function(m){return!(m&&typeof m.uuid==="string"&&ccupE.has(m.uuid))})))}`,
       }),
     ],
   };

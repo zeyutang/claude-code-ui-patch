@@ -46,14 +46,20 @@
 //             each marked summary renders as the chat's own compaction row
 //             with the summary inside it, the auto one in the turn it
 //             interrupted and the manual one in its /compact turn, and no
-//             summary is a header; the list holds every prompt as a chat
-//             entry, a divider worded like each row, numbers running across,
-//             the /model and /compact echoes and the prompt with no text
-//             ("Your message") folded by themselves; a click on an earlier
-//             entry jumps to it like any entry, a divider's click lands its
-//             row just below the stuck header; hiding an earlier entry
-//             stores its uuid and survives a reload; a compaction that
-//             happens live adds a third divider at its row
+//             summary is a header; the list holds every prompt and every
+//             compaction as an entry, numbers running across, each
+//             compaction, the /model and /compact echoes and the prompt with
+//             no text ("Your message") folded by themselves; a compaction's
+//             entry reads its summary, has no delete button and lands its row
+//             just below the stuck header; a click on an earlier entry jumps
+//             to it like any entry; hiding an earlier entry stores its uuid
+//             and survives a reload; a compaction that happens live adds a
+//             folded entry at its row, reading its summary once it arrives
+//   resume    a reload that interrupted a running turn in a stitched session
+//             asks the CLI to resume it exactly when a native load would:
+//             a background agent launched before the compaction with no end
+//             recorded leaves the decision alone, and the same load served
+//             without the decision fragment does not ask
 //   popup     a permission request hiding the composer closes an open list,
 //             and the button riding the popup's wrapper opens one aligned
 //             to that wrapper
@@ -175,6 +181,24 @@ const STITCHED = [
   ["p", "Ship the fix."],
   ["r"],
 ];
+// Frames ahead of this index are the ones the host marks as earlier
+// (ccupEarlier), since a native load would not hold them: everything before
+// the /compact echo, whose summary opens the loaded conversation.
+const EARLY = 10;
+// The resume session: a reload interrupted a running turn in a reopened
+// conversation. Before its compaction a background agent was launched and
+// never reported back. The record the compaction preserved and a prompt with
+// no reply follow its summary. Kinds as above, plus t an Agent call launched
+// in the background and u its launch result.
+const RESUME = [
+  ["p", "Start the background survey."],
+  ["t"],
+  ["u"],
+  ["r"],
+  ["s", "auto", 500000, summary("the survey")],
+  ["p", "Continue the analysis."],
+];
+const RESUME_EARLY = 3;
 // The uuid of the stitched session's k-th frame.
 const sUuid = (k) =>
   `c${String(k).padStart(7, "0")}-0000-4000-8000-000000000000`;
@@ -223,7 +247,8 @@ const WHICH = new URLSearchParams(location.search).get("s");
 const PROMPTS = WHICH === "short" ? ${JSON.stringify(SHORT)}
   : WHICH === "empty" ? [] : ${JSON.stringify(PROMPTS)};
 const REPLIES = ${JSON.stringify(PROMPTS.map((_, i) => reply(i)))};
-const STITCHED = ${JSON.stringify(STITCHED)};
+const STITCHED = ${JSON.stringify(STITCHED)}, EARLY = ${EARLY};
+const RESUME = ${JSON.stringify(RESUME)}, RESUME_EARLY = ${RESUME_EARLY};
 const sUuid = ${sUuid.toString()};
 const at = (i) => new Date(NOW - (PROMPTS.length - i) * 60e3).toISOString();
 const MESSAGES = PROMPTS.flatMap((p, i) => [
@@ -236,20 +261,37 @@ const MESSAGES = PROMPTS.flatMap((p, i) => [
       content: [{ type: "text", text: REPLIES[i] }], stop_reason: "end_turn",
       usage: { input_tokens: 1, output_tokens: 1 } } },
 ]);
-const COMPACT = STITCHED.map((f, k) => {
+const frameOf = (f, k) => {
   const base = { uuid: sUuid(k), session_id: R, parent_tool_use_id: null, timestamp: at(k % 14) };
   const user = (content, more) => ({ type: "user", ...base, ...more, message: { role: "user", content } });
+  const said = (content) => ({ type: "assistant", ...base,
+    message: { id: "msg_s" + k, type: "message", role: "assistant", model: "claude-fable-5",
+      content, stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } });
   switch (f[0]) {
     case "p": return user([{ type: "text", text: f[1] }]);
     case "i": return user([{ type: "image", source: { type: "base64", media_type: "image/png", data: ${JSON.stringify(PNG1)} } }]);
     case "o": return user(f[1], { isCompletedLocalCommand: true });
     case "s": return user(f[3], { is_meta: true, isCompactSummary: true, ccupCompact: { trigger: f[1], preTokens: f[2] } });
-    default: return { type: "assistant", ...base,
-      message: { id: "msg_s" + k, type: "message", role: "assistant", model: "claude-fable-5",
-        content: [{ type: "text", text: REPLIES[k % REPLIES.length] }], stop_reason: "end_turn",
-        usage: { input_tokens: 1, output_tokens: 1 } } };
+    case "t": return said([{ type: "tool_use", id: "toolu_bg1", name: "Agent",
+      input: { description: "survey", prompt: "Survey the repo.", subagent_type: "general-purpose", run_in_background: true } }]);
+    case "u": return user([{ type: "tool_result", tool_use_id: "toolu_bg1",
+      content: "Async agent launched successfully. (This tool result is internal metadata for the agent harness.)\\nagentId: agsurvey1 (use it to check on progress)" }]);
+    default: return said([{ type: "text", text: REPLIES[k % REPLIES.length] }]);
   }
+};
+const marked = (list, early) =>
+  list.map((f, k) => Object.assign(frameOf(f, k), k < early ? { ccupEarlier: true } : {}));
+const COMPACT = marked(STITCHED, EARLY);
+// What a native load of the resume session holds: the loaded conversation
+// alone, its summary a plain summary frame.
+const RESUME_NATIVE = RESUME.slice(RESUME_EARLY).map((f, k) => {
+  const x = frameOf(f, k + RESUME_EARLY);
+  delete x.ccupCompact;
+  return x;
 });
+const SAVED = WHICH === "resume" || WHICH === "resume-native"
+  ? { sessionID: R, sessionUpdatedAt: NOW } : undefined;
+window.__launches = [];
 const SESSION = { id: R, summary: "History pane", customTitle: "History pane",
   lastModified: NOW, lastActivity: NOW, archived: false, fileSize: 4096,
   gitBranch: "develop", isCurrentWorkspace: true };
@@ -258,10 +300,13 @@ const deliver = (message) => window.dispatchEvent(
 const MODEL = { value: "default", label: "Default", resolvedModel: "claude-fable-5",
   supportsAutoMode: true, supportsFastMode: false, supportedEffortLevels: [] };
 window.acquireVsCodeApi = () => ({
-  getState() { return undefined; },
+  getState() { return SAVED; },
   setState() {},
   postMessage(msg) {
-    if (msg && msg.type === "launch_claude") window.__chan = msg.channelId;
+    if (msg && msg.type === "launch_claude") {
+      window.__chan = msg.channelId;
+      window.__launches.push(msg);
+    }
     if (!msg || msg.type !== "request") return;
     const r = msg.request;
     let resp = {};
@@ -289,7 +334,9 @@ window.acquireVsCodeApi = () => ({
         break;
       case "get_session_request":
         resp = { type: "get_session_response",
-          messages: r.sessionId !== R ? [] : WHICH === "compact" ? COMPACT : MESSAGES, sessionDiffs: [] };
+          messages: r.sessionId !== R ? [] : WHICH === "compact" ? COMPACT
+            : WHICH === "resume" ? marked(RESUME, RESUME_EARLY)
+            : WHICH === "resume-native" ? RESUME_NATIVE : MESSAGES, sessionDiffs: [] };
         break;
     }
     deliver({ type: "response", requestId: msg.requestId, response: resp });
@@ -324,6 +371,14 @@ export async function run(ctx) {
     full: P.promptHistWebview(stitched, true, true),
     alone: P.promptHistWebview(stitched, false, false),
   };
+  // The same bundle without the decision fragment, to show the resume check
+  // tells the two apart.
+  const untailed =
+    variants &&
+    variants.full.replace(
+      /\/\*ccup:cst:tail\*\/[\s\S]*?\/\*ccup:cstEnd\*\//,
+      "",
+    );
   const cls = (key) =>
     native.match(new RegExp(`${key}:"(${key}_[-\\w]+)"`))?.[1];
   const SC = `.${cls("messagesContainer")}`;
@@ -341,8 +396,12 @@ export async function run(ctx) {
   };
   if (
     !check(
-      "the patcher builds the compaction rows and the line in both slots",
-      !!variants && !!variants.full && !!variants.alone,
+      "the patcher builds the compaction rows, the resume decision, and the line in both slots",
+      !!variants &&
+        !!variants.full &&
+        !!variants.alone &&
+        variants.full.includes("/*ccup:cst:tail*/") &&
+        untailed !== variants.full,
     )
   )
     return false;
@@ -1116,19 +1175,14 @@ export async function run(ctx) {
     let cr = await rowsOf();
     const shape = cr.map((r) => `${r.k}:${r.n}`).join(" ");
     check(
-      "compact: every prompt an entry, a divider at each row, numbers across, echoes and the text-less prompt folded",
-      shape ===
-        "item:1 fold:2 item:3 sep: item:4 fold:5 sep: fold:6 item:7 item:8",
+      "compact: every prompt and compaction an entry, numbers across, compactions, echoes and the text-less prompt folded",
+      shape === "item:1 fold:2 item:3 fold:4 item:5 fold:6–8 item:9 item:10",
       shape,
     );
     check(
-      "compact: the dividers read like the rows, and every entry has a delete button",
-      cr[3].t === crows[0].row &&
-        cr[6].t === crows[1].row &&
-        cr[3].go &&
-        cr[6].go &&
-        cr.filter((r) => r.k === "item").every((r) => r.del),
-      JSON.stringify([cr[3].t, cr[6].t]),
+      "compact: every prompt entry in view has a delete button",
+      cr.filter((r) => r.k === "item").every((r) => r.del),
+      JSON.stringify(cr.map((r) => r.del)),
     );
     check(
       "compact: the entries read their prompts",
@@ -1136,8 +1190,8 @@ export async function run(ctx) {
         cr[2].t ===
           "Three things:\\n1. fix the lint\\n2. bump the lockfile\\n\\n3. rerun the build" &&
         cr[4].t === STITCHED[8][1] &&
-        cr[8].t === "What did the earlier run conclude?\\nList the open items.",
-      JSON.stringify([cr[0].t, cr[2].t, cr[4].t, cr[8].t]),
+        cr[6].t === "What did the earlier run conclude?\\nList the open items.",
+      JSON.stringify([cr[0].t, cr[2].t, cr[4].t, cr[6].t]),
     );
     await ctx.shot("compact");
     // A row of the list, scrolled to the list's middle, then clicked.
@@ -1162,24 +1216,49 @@ export async function run(ctx) {
       "compact: and it reads current",
       cr[0].cur && !cr.some((r, i) => i !== 0 && r.cur),
     );
-    // A divider lands its row just below the stuck header.
+    // A compaction's entry: its fold opened, it reads the summary, has no
+    // delete button, keeps an unhide mark of its own, and lands its row just
+    // below the stuck header.
     const rowTop = (k) =>
       ctx.evaluate(
         `(function(){var t=${q(SC)},el=document.querySelectorAll('details[class*="compact_"]')[${k}],hs=t.querySelectorAll(${JSON.stringify(HDR)}),h=null,y=0,n=el,i;` +
           `for(i=0;i<hs.length;i++){if(hs[i].compareDocumentPosition(el)&4)h=hs[i];else break}` +
           `while(n&&n!==t){y+=n.offsetTop;n=n.offsetParent}if(h)y-=h.offsetHeight;return Math.max(0,Math.min(y,t.scrollHeight-t.clientHeight))})()`,
       );
+    await clickRow('.ccup-hist-fold[data-a="3"]');
+    await ctx.sleep(100);
+    cr = await rowsOf();
+    let cs = await stored();
+    check(
+      "compact: the auto compaction's fold opens to an entry reading its summary, with no delete button",
+      cr[3].k === "item" &&
+        cr[3].n === "4" &&
+        cr[3].t.startsWith(
+          "This session is being continued from a previous conversation that ran out of context.",
+        ) &&
+        !cr[3].del,
+      JSON.stringify(cr[3]),
+    );
+    check(
+      "compact: and keeps it open with an unhide mark named by its row",
+      !!cs[R] &&
+        cs[R].u.length === 1 &&
+        cs[R].u[0].startsWith("c:") &&
+        cs[R].k.length === 0,
+      JSON.stringify(cs),
+    );
     const want0 = await rowTop(0);
-    await clickRow(".ccup-hist-sep");
+    await clickRow('.ccup-hist-item[data-i="3"]');
     await ctx.sleep(350);
     check(
-      "compact: the auto divider lands its row just below the stuck header",
+      "compact: its click lands the row just below the stuck header",
       Math.abs((await scrollTop()) - want0) < 1,
       `${await scrollTop()} vs ${want0}`,
     );
+    await ctx.evaluate(`localStorage.removeItem("ccup-prompt-history-hidden")`);
     // Hiding an earlier entry stores its uuid, and the mark survives a reload.
     await hideVia(0);
-    let cs = await stored();
+    cs = await stored();
     cr = await rowsOf();
     check(
       "compact: hiding an earlier entry stores its uuid, and it joins the /model fold",
@@ -1214,7 +1293,8 @@ export async function run(ctx) {
       JSON.stringify(cs),
     );
     await ctx.evaluate(`localStorage.removeItem("ccup-prompt-history-hidden")`);
-    // A compaction that happens live adds its divider at the chat's row.
+    // A compaction that happens live adds a folded entry at the chat's row,
+    // which reads its summary once the summary arrives.
     await ctx.evaluate(
       `deliver({type:"io_message",channelId:window.__chan,done:false,message:{type:"system",subtype:"compact_boundary",` +
         `compact_metadata:{trigger:"manual",pre_tokens:123456}}});` +
@@ -1222,28 +1302,74 @@ export async function run(ctx) {
         `message:{role:"user",content:"This session is being continued from a previous conversation that ran out of context. Live."}}})`,
     );
     const liveRow = await until(
-      `document.querySelectorAll('details[class*="compact_"]').length===3&&${q(PANE)}.querySelectorAll(".ccup-hist-sep").length===3`,
+      `document.querySelectorAll('details[class*="compact_"]').length===3&&!!${q(`${PANE} .ccup-hist-fold[data-a="10"]`)}`,
       3000,
     );
     cr = await rowsOf();
     const last = cr[cr.length - 1];
     check(
-      "compact: a live compaction adds a third divider after the last entry, reading the chat's row",
-      !!liveRow &&
-        last.k === "sep" &&
-        last.go &&
-        /^Compacted chat · manual · 123k tokens freed$/.test(last.t),
+      "compact: a live compaction adds a folded entry after the last one",
+      !!liveRow && last.k === "fold" && last.n === "11",
       JSON.stringify(last),
     );
+    await clickRow('.ccup-hist-fold[data-a="10"]');
+    await ctx.sleep(150);
+    cr = await rowsOf();
+    check(
+      "compact: opened, it reads the summary that arrived",
+      cr[cr.length - 1].t ===
+        "This session is being continued from a previous conversation that ran out of context. Live.",
+      JSON.stringify(cr[cr.length - 1]),
+    );
     const want = await rowTop(2);
-    await clickRow(".ccup-hist-sep:last-child");
+    await clickRow('.ccup-hist-item[data-i="10"]');
     await ctx.sleep(350);
     check(
       "compact: its click lands the row just under the stuck header",
       Math.abs((await scrollTop()) - want) < 1,
       `${await scrollTop()} vs ${want}`,
     );
+    await ctx.evaluate(`localStorage.removeItem("ccup-prompt-history-hidden")`);
     await key("Escape", "Escape", 27);
+    await ctx.sleep(100);
+
+    // Resume: a reload interrupted a running turn. The view restores the
+    // session from its saved state and decides whether to ask the CLI to
+    // resume, which must come out as a native load's decision.
+    const launchedWith = async (query) => {
+      await ctx.navigate(base + query);
+      const got = await until(
+        "window.__launches&&window.__launches.length>0",
+        8000,
+      );
+      return got
+        ? json(
+            "window.__launches.map(function(m){return m.resumeInterruptedTurn})",
+          )
+        : null;
+    };
+    const nativeAsk = await launchedWith("?s=resume-native");
+    check(
+      "resume: a native load of the session asks the CLI to resume the turn",
+      !!nativeAsk && nativeAsk[0] === true,
+      JSON.stringify(nativeAsk),
+    );
+    const sti = await launchedWith("?s=resume");
+    check(
+      "resume: the stitched load asks the same, past the earlier background agent",
+      !!sti && sti[0] === true,
+      JSON.stringify(sti),
+    );
+    serve = untailed;
+    const unt = await launchedWith("?s=resume");
+    serve = variants.full;
+    check(
+      "resume: served without the decision fragment, the stitched load does not",
+      !!unt && unt.length > 0 && !unt[0],
+      JSON.stringify(unt),
+    );
+
+    // Popup: a permission request replaces the composer under an open list.    await key("Escape", "Escape", 27);
     await ctx.sleep(100);
 
     // Popup: a permission request replaces the composer under an open list.

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- On Claude Code 2.1.319 and later, with `chatDiffCardLineNumbers` on, diff cards number their lines from the file again, as they did through 2.1.318, instead of from 1.
 - With `editor.scrollbar.vertical` or `editor.scrollbar.horizontal` set to `hidden`, the chat and the rest of the Claude Code view hide their scrollbars on that axis too, as VS Code's editors do, and the wheel still scrolls.
   It follows those two settings, with no setting of its own.
 - Turning the mouse wheel back at the end of the chat now scrolls at once.

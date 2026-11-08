@@ -676,7 +676,7 @@ const DIFF_CONTAINER_HASH_RE = /\.diffEditorContainer_([-\w]+)\{/g;
 // (an older patch layout reads as off and upgrades in place on the next apply).
 // The six sites are located by their structure (src/derive.ts), from four
 // locally parsed units: the diff component (its params destructure
-// original/modified/language/filePath), which holds the arg, fx and mprop sites
+// original/modified/filePath), which holds the arg, fx and mprop sites
 // and the create effect that names the build's useEffect alias; the class
 // around the Edit card (whose body method renders that same component with the
 // tool input's strings); the function around the store's result-pairing loop;
@@ -728,10 +728,13 @@ const ABS_LN_HELPER =
   ':{lineNumbers:"on",lineNumbersMinChars:1};' +
   "ed.updateOptions(o)}catch(e){}}}catch(e){}})();";
 
-// The props the diff component destructures (ccupStart joins them). A
-// destructured prop sits close after its function keyword, while a token deep
-// in a function body or a class may sit far from where that unit starts.
-const ABS_LN_DIFF_KEYS = ["original", "modified", "language", "filePath"];
+// The props the diff component destructures (ccupStart joins them), which its
+// expand click hands on too. Through Claude Code 2.1.318 a language prop came
+// with them, and 2.1.319 dropped it, so it is not required; the three still
+// pick the one component on 2.1.286 through 2.1.318. A destructured prop sits
+// close after its function keyword, while a token deep in a function body or a
+// class may sit far from where that unit starts.
+const ABS_LN_DIFF_KEYS = ["original", "modified", "filePath"];
 const ABS_LN_PARAMS_REACH = 2000;
 const ABS_LN_UNIT_REACH = 200000;
 
@@ -815,7 +818,7 @@ function absLnThread(c: string): string {
   // callback ends in the models push and whose deps hold both strings), the
   // create effect (whose callee is the build's useEffect alias, the hook the fx
   // fragment declares its own effect with), and the expand click (a call handed
-  // the component's own four strings).
+  // the component's own strings).
   const comps = unitsWith(
     c,
     "filePath:",
@@ -1147,6 +1150,21 @@ function diffLinesSet(c: string, on: boolean): string {
   if (out !== c && absLnSameModuloHelper(c, out)) out = c;
   diffLnMemoOn = { input: c, output: out };
   return out;
+}
+
+// The webview bundle with the line numbers on, as an apply writes it, or null
+// when the absolute numbering block did not land. The block skips as a unit
+// and the base swap alone still reads as on, so only this and the anchor
+// audit notice a drift. scripts/repro's diff-line-numbers.mjs serves it, so
+// it runs exactly what an apply writes and doubles as the drift canary.
+export function diffLinesWebview(web: string): string | null {
+  const out = diffLinesSet(web, true);
+  const thread = out.match(
+    /\/\*ccup:absLn:(?:tur|prop|arg|fx|mprop|modal)\*\//g,
+  );
+  return thread?.length === 6 && out.includes(ABS_LN_HELPER_MARKER)
+    ? out
+    : null;
 }
 
 // Effort reload-sync (ON): close the settings.json -> actual-call gap. Claude

@@ -74,6 +74,10 @@
 //   relist    a session the feed reports that the list has not read asks
 //             for one re-read, and its card then shows
 //   reload    the time of a sent prompt survives a reload
+//   shared    with two windows' sidebars on the one store, a prompt sent in
+//             the first keeps its time through a later write by the second,
+//             which read the store before that prompt, and the first window,
+//             reloaded on a new session, shows that session's card first
 //   shares    at rest only whole cards show, one more for every 300px of the
 //             space between the buttons, each an equal share of it, the next
 //             card starting at the edge, at every width from 900px to 250px,
@@ -225,7 +229,9 @@ window.IS_SESSION_LIST_ONLY = false;
 const S = ${JSON.stringify(S)}, TITLES = ${JSON.stringify(TITLES)};
 const ACTIVITY = ${JSON.stringify(ACTIVITY)}, PROMPT = ${JSON.stringify(PROMPT)};
 const EMPTY = Q.get("s") === "none", NOW = Date.now(), ago = (m) => NOW - m * 60e3;
-if (!EMPTY) document.getElementById("root").dataset.initialSession = S.A;
+// A boots on screen, or with ?boot=new a new session does, as a view whose
+// saved session went stale boots.
+if (!EMPTY && Q.get("boot") !== "new") document.getElementById("root").dataset.initialSession = S.A;
 const KEY = Object.fromEntries(Object.entries(S).map(([k, v]) => [v, k]));
 const entry = (k) => ({ id: S[k], summary: TITLES[k], customTitle: TITLES[k],
   lastModified: ago(ACTIVITY[k]), lastActivity: ago(ACTIVITY[k]), archived: k === "Z",
@@ -379,6 +385,22 @@ const outer = `<!doctype html><html><head><meta charset="utf-8"></head>
 <iframe id="view" src="/" style="position:fixed;left:0;top:0;width:100%;height:100%;border:0"></iframe>
 </body></html>`;
 
+// The sidebars of two windows at once, one above the other: VS Code gives
+// the view one origin in every window, so the two share one localStorage,
+// emptied here before either boots.
+const two = `<!doctype html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;background:#1f1f1f">
+<script>
+localStorage.removeItem("ccup-session-cards");
+[["one", "0"], ["two", "50%"]].forEach(function (p) {
+  var f = document.createElement("iframe");
+  f.id = p[0]; f.src = "/";
+  f.style.cssText = "position:fixed;left:0;top:" + p[1] + ";width:100%;height:50%;border:0";
+  document.body.appendChild(f);
+});
+</script>
+</body></html>`;
+
 const TYPES = {
   ".css": "text/css",
   ".js": "text/javascript",
@@ -494,7 +516,7 @@ export async function run(ctx) {
     } else
       res
         .writeHead(200, { "content-type": "text/html" })
-        .end(rel === "/__outer" ? outer : page);
+        .end(rel === "/__outer" ? outer : rel === "/__two" ? two : page);
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}/`;
@@ -2765,6 +2787,88 @@ export async function run(ctx) {
         in2.has &&
         in2.on === "ccup-probe-box",
       JSON.stringify(in2),
+    );
+
+    // Shared: the sidebars of two windows on the one store, each storing A's
+    // transcript time as it boots. A prompt sent in A in the first is
+    // stored; the second, which read the store before that prompt, then
+    // opens D and stores its time, and A's time from the first survives
+    // that write. The first window, reloaded on a new session (as a window
+    // whose saved session went stale boots, A then held nowhere), shows A's
+    // card first, ahead of the others' activity times.
+    await ctx.navigate(base + "__two");
+    const fwin = (f) =>
+      `document.getElementById(${JSON.stringify(f)}).contentWindow`;
+    const fx = (f, expr) =>
+      ctx.evaluate(`${fwin(f)}.eval(${JSON.stringify(expr)})`);
+    const fjson = async (f, expr) =>
+      JSON.parse(await fx(f, `JSON.stringify(${expr})`));
+    const funtil = (f, expr, ms) =>
+      until(
+        `(function(){try{return ${fwin(f)}.eval(${JSON.stringify(expr)})}catch(e){return false}})()`,
+        ms,
+      );
+    const STORE = `(function(){try{return JSON.parse(localStorage.getItem("ccup-session-cards")).sent||{}}catch(e){return{}}})()`;
+    const viewUp = `!!${q(INPUT)}&&!!window.__ccupSessionCards&&document.querySelectorAll(${JSON.stringify(CARD)}).length>=4`;
+    const pair =
+      !!(await funtil("one", viewUp)) && !!(await funtil("two", viewUp));
+    // Both boot writes land before the prompt.
+    await ctx.sleep(1300);
+    const t0 = Date.now();
+    await fx("one", `${q(INPUT)}.focus()`);
+    await ctx.insertText("A prompt in the first window");
+    await key("Enter", "Enter", 13);
+    const firstA = await until(`${STORE}[${JSON.stringify(S.A)}]>=${t0}`, 4000);
+    // The second window opens D with a click on its card, in the lower frame.
+    await fx(
+      "two",
+      `(function(){var b=${q(LIST)},e=${cardEl("D")};if(!b||!e)return;var a=e.offsetLeft-8,z=e.offsetLeft+e.offsetWidth+8;` +
+        `if(a<b.scrollLeft)b.scrollLeft=Math.max(0,a);else if(z>b.scrollLeft+b.clientWidth)b.scrollLeft=z-b.clientWidth})()`,
+    );
+    await ctx.sleep(50);
+    const lower = await ctx.evaluate(
+      `document.getElementById("two").getBoundingClientRect().top`,
+    );
+    const dBox = await fjson(
+      "two",
+      `(function(){var r=${cardEl("D")}.getBoundingClientRect();return{x:r.x,y:r.y,w:r.width,h:r.height}})()`,
+    );
+    await click({ x: dBox.x + dBox.w / 2, y: lower + dBox.y + dBox.h / 2 });
+    const openedD = await funtil(
+      "two",
+      `!!${q(TITLE)}&&${q(TITLE)}.textContent===${JSON.stringify(TITLES.D)}`,
+    );
+    const wroteD = await until(
+      `typeof ${STORE}[${JSON.stringify(S.D)}]==="number"`,
+      4000,
+    );
+    const shared = await json(STORE);
+    check(
+      "shared: a later write by a window that read the store before a prompt keeps that prompt's time",
+      pair && !!firstA && !!openedD && !!wroteD && shared[S.A] >= t0,
+      JSON.stringify({
+        pair,
+        firstA: !!firstA,
+        openedD: !!openedD,
+        wroteD: !!wroteD,
+        aSinceSend: shared[S.A] - t0,
+      }),
+    );
+    await fx("one", `window.__gone=true;location.replace("/?boot=new");true`);
+    const reloaded = await funtil("one", `!window.__gone&&${viewUp}`);
+    await ctx.sleep(400);
+    const order1 = (
+      await fjson(
+        "one",
+        `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){return[b.dataset.id,b.hasAttribute("data-active")]})`,
+      )
+    )
+      .map(([i, a]) => `${LETTER[i] ?? "?"}${a ? "*" : ""}`)
+      .join(" ");
+    check(
+      "shared: the first window, reloaded on a new session, shows the card of the session it last sent to first",
+      !!reloaded && order1.startsWith("A ") && !order1.includes("*"),
+      order1,
     );
 
     // Editor tab: no strip at all.

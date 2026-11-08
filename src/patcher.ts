@@ -9656,10 +9656,11 @@ export const stitchFrames = ccupStitchHost;
 //            never counts; and for one held elsewhere (an editor tab, a
 //            terminal, another window), the moment the host reports it
 //            leaving idle, the turn your message starts there. The times
-//            persist in the webview's localStorage, so a session that leaves
-//            this view keeps its place; one seen in neither way sorts by
-//            Claude Code's own activity time, which is at least as late as
-//            its last prompt
+//            persist in the webview's localStorage, one store that the
+//            sidebars of all windows share, each write keeping a session's
+//            latest time, so a session that leaves this view keeps its place;
+//            one seen in neither way sorts by Claude Code's own activity
+//            time, which is at least as late as its last prompt
 //   at work  for a session this view holds, a turn in progress (one waiting
 //            on you included) or a background agent of its still running, as
 //            Claude Code itself reports a session running; for any other one,
@@ -9815,19 +9816,30 @@ function ccupSessionCardsWeb(
   const api: { rows: any[] } = { rows: [] };
   g.__ccupSessionCards = api;
 
-  // Last message times by session id, kept across reloads.
-  let sent: Record<string, number> = {};
-  try {
-    const o = JSON.parse(g.localStorage.getItem(cfg.store) || "{}");
-    if (o && typeof o.sent === "object" && o.sent) sent = o.sent;
-  } catch {
-    // no storage: times start over
-  }
+  // Last message times by session id, kept across reloads. The sidebar of
+  // every window reads and writes the same store, since VS Code gives a
+  // view one origin in all windows, so each write first takes in the times
+  // the others stored since, a session keeping the later time, rather than
+  // putting back over theirs the times this view read as it booted.
+  const sent: Record<string, number> = {};
+  const fold = (): void => {
+    try {
+      const o = JSON.parse(g.localStorage.getItem(cfg.store) || "{}")?.sent;
+      if (o && typeof o === "object")
+        for (const id of Object.keys(o))
+          if (typeof o[id] === "number" && !(sent[id] >= o[id]))
+            sent[id] = o[id];
+    } catch {
+      // no storage, or nothing readable in it: this view's own times stand
+    }
+  };
+  fold();
   let saveT = 0;
   const save = (): void => {
     if (saveT) return;
     saveT = g.setTimeout(() => {
       saveT = 0;
+      fold();
       try {
         const ids = Object.keys(sent);
         if (ids.length > cfg.cap) {

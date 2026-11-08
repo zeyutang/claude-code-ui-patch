@@ -1,10 +1,12 @@
 # Changelog
 
-## 1.7.2
+## Unreleased
 
 - When the window reloads or the extensions restart while Claude is working, the chat now comes back on that session, and Claude Code picks up the interrupted step where it can.
   A turn running for more than 10 minutes had come back as a new session instead, with the interrupted one left in the session history.
   Always applied, no setting.
+- With `chatSessionCards` on and more than one window open, a session's card now keeps its place after a window reload.
+  The card of the session you last sent a message to could come back in the middle of the strip, moving first only once you opened that session.
 
 ## 1.7.1
 

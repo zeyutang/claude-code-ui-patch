@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.1
 
 - With `chatSessionCards` on, clicking a card while you are working outside the chat, such as in an editor or the terminal, now puts the cursor in that session's input box, as a click from within the chat already did.
   The strip's New session button does the same for the new session, and a card for a session open in an editor tab still brings up that tab.

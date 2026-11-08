@@ -3449,6 +3449,270 @@ export function untitledStaysWebview(web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Reload during a turn (always on): a view that reloads while its session is
+// working, or whose extension host restarts then, comes back on that session,
+// where Claude Code's own resume can pick up the step the reload cut off.
+//
+// A view keeps the session it shows in its webview state, stamped with
+// Date.now() (sessionUpdatedAt) by an effect that runs again whenever the
+// active session, its id, lastModifiedTime, busy, hasPromptOrReply or
+// hasPersistedTitle changes. A booting view reopens that session only while
+// the stamp is under 10 minutes old, marking it to resume a turn the reload
+// interrupted, and otherwise opens a new session. None of those signals moves
+// while the session's own turn streams, so the stamp keeps the moment its
+// prompt went out, and a reload more than 10 minutes into a turn opens a new
+// session: the turn's transcript stays intact on disk, reachable only from
+// the session history, and nothing resumes it.
+//
+// So while the active session is busy, the effect stamps the state again once
+// a minute, through a timer its own cleanup clears (the signals effect runs a
+// function its callback returns before its next run and on dispose). The 10
+// minutes then count from the last minute the view saw the turn alive: a
+// reload during a turn reopens its session, while a window closed during a
+// turn and opened again later still starts a new session, as natively. Under
+// the openNewInTab setting the native stamp stays undefined, which counts as
+// fresh at any age, so the fragment adds nothing there.
+//
+// One fragment, /*ccup:busyStamp*/.../*ccup:busyStampEnd*/, after the
+// effect's last statement, found by structure: the call
+// `<E>.update({sessionID:<S>,sessionUpdatedAt:<O>?void 0:Date.now(),...})`
+// ending the body of an arrow that is the one argument of the effect
+// function, <S> declared in that body as `<R>.sessionId.value` and <O> as a
+// read of `.openNewInTab`, the body reading `<R>.busy.value`, and the effect
+// function (declared once) constructing a runner from the arrow whose
+// prototype keeps a function the arrow returns.
+// ---------------------------------------------------------------------------
+const BSTAMP_MARKER = "/*ccup:busyStamp*/";
+const BSTAMP_END = "/*ccup:busyStampEnd*/";
+const BSTAMP_FRAG_RE =
+  /\/\*ccup:busyStamp\*\/[\s\S]*?\/\*ccup:busyStampEnd\*\//g;
+const BSTAMP_FILE = "webview/index.js";
+// How far ahead of the save its enclosing function may start (about 600
+// bytes on 2.1.319).
+const BSTAMP_REACH = 4000;
+// The stamp's period while a turn runs, well inside the native 10 minutes.
+const BSTAMP_PERIOD_MS = 60000;
+
+// `void 0`.
+const bstampIsVoid0 = (n: N | null | undefined): boolean =>
+  !!n &&
+  n.type === "UnaryExpression" &&
+  n.operator === "void" &&
+  n.argument.type === "Literal" &&
+  n.argument.value === 0;
+
+// `this.<f>`, giving f.
+const bstampThisField = (n: N | null | undefined): string | null =>
+  n?.type === "MemberExpression" && n.object.type === "ThisExpression"
+    ? memberProp(n)
+    : null;
+
+// Whether method `m` runs `this.<x>()`, for an x in `fields`, into a local
+// and keeps that local as `this.<u>` when it is a function.
+function bstampKeepsResult(m: N, fields: Set<string>): boolean {
+  const results = new Set<string>();
+  walkOwn(m, (n) => {
+    if (
+      n.type === "VariableDeclarator" &&
+      idName(n.id) &&
+      n.init?.type === "CallExpression" &&
+      n.init.arguments.length === 0 &&
+      fields.has(bstampThisField(n.init.callee) ?? "")
+    )
+      results.add(idName(n.id)!);
+  });
+  let kept = false;
+  walkOwn(m, (n) => {
+    if (kept) return false;
+    const t = n.type === "IfStatement" ? n.test : null;
+    if (t?.type !== "BinaryExpression" || !["==", "==="].includes(t.operator))
+      return;
+    const typed = [t.left, t.right].find(
+      (x: N) => x.type === "UnaryExpression" && x.operator === "typeof",
+    );
+    const v = idName(typed?.argument);
+    const other = typed === t.left ? t.right : t.left;
+    if (!v || !results.has(v) || !isStr(other, "function")) return;
+    walk(n.consequent, (k) => {
+      if (
+        k.type === "AssignmentExpression" &&
+        bstampThisField(k.left) &&
+        idName(k.right) === v
+      )
+        kept = true;
+    });
+  });
+  return kept;
+}
+
+// Whether the function declared as `name`, once in the bundle, is an effect
+// that keeps a function its callback returns as the cleanup: it constructs
+// `new <G>(<its first parameter>)`, G (declared once) stores its own first
+// parameter as `this.<x>`, and a method assigned on `<G>.prototype` runs
+// `this.<x>()` and keeps a function result.
+function bstampIsEffect(c: string, name: string): boolean {
+  const unique = (fn: string): N | null => {
+    const decl = `function ${fn}(`;
+    const at = c.indexOf(decl);
+    if (at < 0 || c.indexOf(decl, at + 1) >= 0) return null;
+    return parseUnitAt(c, at, isFn);
+  };
+  const eff = unique(name);
+  const p = idName(eff?.params[0]);
+  if (!eff || !p) return false;
+  const runners = new Set<string>();
+  walkOwn(eff, (n) => {
+    if (
+      n.type === "NewExpression" &&
+      n.arguments.length === 1 &&
+      idName(n.arguments[0]) === p &&
+      idName(n.callee)
+    )
+      runners.add(idName(n.callee)!);
+  });
+  if (runners.size !== 1) return false;
+  const g = [...runners][0];
+  const ctor = unique(g);
+  const q = idName(ctor?.params[0]);
+  if (!ctor || !q) return false;
+  const fields = new Set<string>();
+  walkOwn(ctor, (n) => {
+    const f =
+      n.type === "AssignmentExpression" ? bstampThisField(n.left) : null;
+    if (f && idName(n.right) === q) fields.add(f);
+  });
+  if (!fields.size) return false;
+  const proto = `${g}.prototype.`;
+  for (let i = c.indexOf(proto); i >= 0; i = c.indexOf(proto, i + 1)) {
+    if (i > 0 && /[\w$]/.test(c[i - 1])) continue;
+    const m = /^[\w$]+=function\b/.exec(c.slice(i + proto.length, i + 200));
+    if (!m) continue;
+    const fn = parseUnitAt(
+      c,
+      i + proto.length + m[0].indexOf("function"),
+      isFn,
+    );
+    if (fn && bstampKeepsResult(fn, fields)) return true;
+  }
+  return false;
+}
+
+// The function holding the effect that saves the view's session, and the
+// insertion that keeps the save's stamp fresh while that session works, or
+// null.
+function busyStampFind(c: string): { unit: N; edit: Edit } | null {
+  const sites: { unit: N; edit: Edit }[] = [];
+  for (const unit of unitsWith(
+    c,
+    "sessionUpdatedAt:",
+    "function",
+    isFn,
+    BSTAMP_REACH,
+  )) {
+    walk(unit, (n) => {
+      if (!hasKeys(n, ["sessionID", "sessionUpdatedAt"])) return;
+      const stamp: N = propOf(n, "sessionUpdatedAt")!.value;
+      const o = idName(stamp.test);
+      const s = idName(propOf(n, "sessionID")!.value);
+      if (
+        stamp.type !== "ConditionalExpression" ||
+        !o ||
+        !s ||
+        !bstampIsVoid0(stamp.consequent) ||
+        !isCallOf(stamp.alternate, "Date", "now")
+      )
+        return;
+      // `<E>.update(<the object>)`, the last statement of an arrow's body,
+      // the arrow the one argument of a call to the effect function.
+      const call = n.parent;
+      if (
+        call?.type !== "CallExpression" ||
+        call.arguments.length !== 1 ||
+        memberProp(call.callee) !== "update"
+      )
+        return;
+      const e = idName(call.callee.object);
+      const st = call.parent;
+      const body = st?.parent;
+      const arrow = body?.parent;
+      const eff = arrow?.parent;
+      if (
+        !e ||
+        st?.type !== "ExpressionStatement" ||
+        body?.type !== "BlockStatement" ||
+        body.body[body.body.length - 1] !== st ||
+        arrow?.type !== "ArrowFunctionExpression" ||
+        arrow.body !== body ||
+        eff?.type !== "CallExpression" ||
+        eff.arguments.length !== 1 ||
+        !idName(eff.callee) ||
+        bindingSite(call, e, arrow) !== null
+      )
+        return;
+      // O and S are the arrow's own: O reads openNewInTab, and S is
+      // `<R>.sessionId.value`, R the arrow's own too.
+      const own = (name: string): N | null => {
+        const ds: N[] = [];
+        walkOwn(arrow, (k) => {
+          if (k.type === "VariableDeclarator" && idName(k.id) === name)
+            ds.push(k);
+        });
+        return ds.length === 1 && bindingSite(st, name, arrow) === body
+          ? ds[0]
+          : null;
+      };
+      const oInit = own(o)?.init;
+      const sInit = own(s)?.init;
+      const unchain = (x: N | null | undefined) =>
+        x?.type === "ChainExpression" ? x.expression : x;
+      const r =
+        memberProp(sInit) === "value" &&
+        memberProp(sInit.object) === "sessionId"
+          ? idName(sInit.object.object)
+          : null;
+      if (memberProp(unchain(oInit)) !== "openNewInTab" || !r || !own(r))
+        return;
+      let readsBusy = false;
+      walkOwn(arrow, (k) => {
+        if (memberProp(k) === "value" && isMember(k.object, r, "busy"))
+          readsBusy = true;
+      });
+      if (!readsBusy || !bstampIsEffect(c, idName(eff.callee)!)) return;
+      sites.push({
+        unit,
+        edit: {
+          pos: st.end,
+          text:
+            `${BSTAMP_MARKER};if(!${o}&&${r}.busy.value){let ccupT=setInterval(` +
+            `()=>${e}.update({sessionUpdatedAt:Date.now()}),${BSTAMP_PERIOD_MS});` +
+            `return()=>clearInterval(ccupT)}${BSTAMP_END}`,
+        },
+      });
+    });
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The native webview bundle with the fragment in, or null when a site is
+// missing or the edit would not parse.
+const busyStampBuild = sdelMemo((native) => {
+  const site = busyStampFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, [site.edit]);
+  return unitsReparse(out, [site.edit], [[site.unit, isFn]]) ? out : null;
+});
+function busyStampPatch(native: string): string | null {
+  return busyStampBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its sites are gone. scripts/repro's busy-stamp.mjs serves this,
+// so it runs exactly what the patcher writes and doubles as the drift canary.
+export function busyStampWebview(web: string): string | null {
+  return busyStampBuild(web.replace(BSTAMP_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
 // Last turn delete (always on, two halves): the prompt history list
 // (promptHist) gives every entry a delete button, and a confirmed click on
 // the last one takes that turn out of the conversation as if it had never
@@ -14471,6 +14735,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: STAY_FILE,
     frags: STAY_FRAG_RE,
     patch: untitledStaysPatch,
+  },
+  {
+    kind: "inline",
+    id: "busyStamp",
+    label: "reload during a turn",
+    file: BSTAMP_FILE,
+    frags: BSTAMP_FRAG_RE,
+    patch: busyStampPatch,
   },
   {
     kind: "inline",

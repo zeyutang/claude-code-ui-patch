@@ -114,7 +114,8 @@ Always applied                         # no setting; installing this patch is th
    ├── compacted history               # a reopened session shows its turns from before compactions
    ├── bookmark notes                  # Bookmarks pane rows: annotate a bookmark with your own note
    ├── file link reveal                # a file link goes to the file's open tab in any group
-   └── shell here-documents            # shell code blocks: a here-document's body reads as text
+   ├── shell here-documents            # shell code blocks: a here-document's body reads as text
+   └── reload during a turn            # a reload while Claude is working reopens that session
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native
    ├── chat panel and tab  (fenced code + inline code)

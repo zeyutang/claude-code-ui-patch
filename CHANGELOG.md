@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.2
+
+- When the window reloads or the extensions restart while Claude is working, the chat now comes back on that session, and Claude Code picks up the interrupted step where it can.
+  A turn running for more than 10 minutes had come back as a new session instead, with the interrupted one left in the session history.
+  Always applied, no setting.
+
 ## 1.7.1
 
 - With `chatSessionCards` on, clicking a card while you are working outside the chat, such as in an editor or the terminal, now puts the cursor in that session's input box, as a click from within the chat already did.

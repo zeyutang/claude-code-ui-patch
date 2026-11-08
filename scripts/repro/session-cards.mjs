@@ -70,7 +70,7 @@
 //   keys      the strip is one tab stop, arrows move between its buttons
 //             and cards (Home and End reaching the buttons), and Enter opens
 //             a card
-//   press     a press keeps focus where it was
+//   press     a press within the view keeps focus where it was
 //   relist    a session the feed reports that the list has not read asks
 //             for one re-read, and its card then shows
 //   reload    the time of a sent prompt survives a reload
@@ -112,6 +112,14 @@
 //             the patcher would from window.density.layout); the card on
 //             screen first sits in the band's rounded end, the chat all
 //             around it
+//   outside   with the view in a frame of a page whose editor holds the
+//             focus, a card pressed brings the focus into the view and to
+//             the input box of the session it opens here, the card on
+//             screen to its own and New session to the new session's, while
+//             a session open in an editor tab is left to that tab; within
+//             the view a press still leaves the focus to Claude Code (the
+//             input box of the session it opens, or a text box of the view's
+//             own that holds it)
 //   editor    an editor tab (IS_SIDEBAR false) gets no strip
 //   empty     with no session to show the strip stays hidden and the input
 //             box keeps its native 16px
@@ -361,6 +369,16 @@ window.acquireVsCodeApi = () => ({
 <script type="module" src="/wv/index.js"></script>
 </body></html>`;
 
+// The page around the view, as VS Code's workbench frames each webview, with
+// an editor's text box (off to the side) to hold the focus outside the view.
+// The frame shares the page's origin so the scenario can read into it, and
+// focus crosses frames alike in and out of process.
+const outer = `<!doctype html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;background:#1f1f1f">
+<textarea id="editor" style="position:fixed;left:-400px;top:0;width:200px;height:40px"></textarea>
+<iframe id="view" src="/" style="position:fixed;left:0;top:0;width:100%;height:100%;border:0"></iframe>
+</body></html>`;
+
 const TYPES = {
   ".css": "text/css",
   ".js": "text/javascript",
@@ -473,7 +491,10 @@ export async function run(ctx) {
           "content-type": TYPES[extname(rel)] ?? "application/octet-stream",
         })
         .end(data);
-    } else res.writeHead(200, { "content-type": "text/html" }).end(page);
+    } else
+      res
+        .writeHead(200, { "content-type": "text/html" })
+        .end(rel === "/__outer" ? outer : page);
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}/`;
@@ -2577,6 +2598,174 @@ export async function run(ctx) {
       JSON.stringify({ arrowL, tipL }),
     );
     await fetch(base + "__look/line");
+
+    // Outside: the view framed by the page around it, an editor there
+    // holding the focus. A card pressed from the editor brings the focus into
+    // the view and to the input box of the session it opens here, the card
+    // on screen to its own, New session to the new session's; a session open
+    // in an editor tab is left to that tab (which the host focuses), the view
+    // taking nothing. Within the view a press leaves the focus to Claude Code
+    // as before: into the input box of the session it opens, unless a text
+    // box of the view's own holds it. The headless page counts as focused
+    // from here on, so the frame's document.hasFocus() follows where the
+    // focus really sits.
+    await ctx.cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await ctx.navigate(base + "__outer");
+    const V = `document.getElementById("view").contentWindow`;
+    const vx = (expr) => ctx.evaluate(`${V}.eval(${JSON.stringify(expr)})`);
+    const vjson = async (expr) =>
+      JSON.parse(await vx(`JSON.stringify(${expr})`));
+    const vuntil = (expr, ms) =>
+      until(
+        `(function(){try{return ${V}.eval(${JSON.stringify(expr)})}catch(e){return false}})()`,
+        ms,
+      );
+    const vbox = (expr) =>
+      vjson(
+        `(function(){var e=${expr};if(!e)return null;var r=e.getBoundingClientRect();` +
+          `return{x:r.x,y:r.y,w:r.width,h:r.height,r:r.right,b:r.bottom}})()`,
+      );
+    // The frame sits at the page's origin, so its points are the page's.
+    const vClickCard = async (k) => {
+      await vx(
+        `(function(){var b=${q(LIST)},e=${cardEl(k)};if(!b||!e)return;var a=e.offsetLeft-8,z=e.offsetLeft+e.offsetWidth+8;` +
+          `if(a<b.scrollLeft)b.scrollLeft=Math.max(0,a);else if(z>b.scrollLeft+b.clientWidth)b.scrollLeft=z-b.clientWidth})()`,
+      );
+      await ctx.sleep(50);
+      await click(center(await vbox(cardEl(k))));
+    };
+    const showing = (k) =>
+      vuntil(
+        `!!${q(TITLE)}&&${q(TITLE)}.textContent===${JSON.stringify(TITLES[k])}`,
+      );
+    const toEditor = async () => {
+      await ctx.evaluate(`document.getElementById("editor").focus()`);
+      await ctx.sleep(100);
+    };
+    // Where the focus is: the page's own (the editor, or the view's frame),
+    // and in the view whether it has the focus, on what, and whether that is
+    // the input box, with the session on screen and whether it has a card.
+    const where = async () => ({
+      page: await ctx.evaluate(
+        `document.activeElement&&document.activeElement.id`,
+      ),
+      ...(await vjson(
+        `(function(){var a=document.activeElement;return{has:document.hasFocus(),input:a===${q(INPUT)},` +
+          `on:a&&(a.id||a.getAttribute("aria-label")||a.tagName),title:${q(TITLE)}&&${q(TITLE)}.textContent,` +
+          `card:window.__ccupSessionCards.rows.some(function(r){return r.active})}})()`,
+      )),
+    });
+    const framed = await vuntil(
+      `!!${q(INPUT)}&&!!window.__ccupSessionCards&&document.querySelectorAll(${JSON.stringify(CARD)}).length>=4`,
+    );
+    await vx(
+      `window.__push({type:"session_states_update",sessions:[],activeSessionId:"${S.A}",` +
+        `openSessionIds:["${S.C}"],unreadSessionKeys:[]});true`,
+    );
+    await ctx.sleep(200);
+    await toEditor();
+    const out0 = await where();
+    check(
+      "outside: the editor holds the focus, the view none",
+      !!framed && out0.page === "editor" && !out0.has,
+      JSON.stringify(out0),
+    );
+    await vClickCard("B");
+    await showing("B");
+    await ctx.sleep(400);
+    const out1 = await where();
+    check(
+      "outside: a card pressed from the editor opens its session here, the focus in its input box",
+      out1.title === TITLES.B && out1.page === "view" && out1.has && out1.input,
+      JSON.stringify(out1),
+    );
+    await toEditor();
+    let vmark = (await vjson("window.__sent")).length;
+    await vClickCard("B");
+    await ctx.sleep(400);
+    const out2 = await where();
+    const sent2 = (await vjson("window.__sent")).slice(vmark);
+    check(
+      "outside: the card on screen, pressed from the editor, takes the focus to its input box",
+      out2.title === TITLES.B &&
+        out2.page === "view" &&
+        out2.has &&
+        out2.input &&
+        !sent2.some(
+          (m) =>
+            m.type === "launch_claude" ||
+            m.type === "request:get_session_request",
+        ),
+      JSON.stringify({ out2, sent2 }),
+    );
+    // Left long enough for any retry of a focus request to show.
+    await toEditor();
+    vmark = (await vjson("window.__sent")).length;
+    await vClickCard("C");
+    await ctx.sleep(1800);
+    const out3 = await where();
+    const sent3 = (await vjson("window.__sent")).slice(vmark);
+    check(
+      "outside: a session open in an editor tab is left to that tab, the view taking no focus",
+      out3.page === "editor" &&
+        !out3.has &&
+        out3.title === TITLES.B &&
+        sent3.filter(
+          (m) => m.type === "request:open_in_editor" && m.sessionId === S.C,
+        ).length === 1,
+      JSON.stringify({ out3, sent3 }),
+    );
+    await toEditor();
+    await vx(
+      `window.__heads=0;document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest(${JSON.stringify(HEAD_NEW)});if(b)window.__heads++},true);true`,
+    );
+    await click(center(await vbox(q(NEW))));
+    await vuntil(
+      `!(${q(TITLE)}&&${q(TITLE)}.textContent===${JSON.stringify(TITLES.B)})`,
+    );
+    await ctx.sleep(400);
+    const out4 = await where();
+    const heads = await vx("window.__heads");
+    check(
+      "outside: New session pressed from the editor opens the new session, the focus in its input box",
+      heads === 1 &&
+        out4.title !== TITLES.B &&
+        !out4.card &&
+        out4.page === "view" &&
+        out4.has &&
+        out4.input,
+      JSON.stringify({ heads, out4 }),
+    );
+    // Within the view: from the input box, the session a card opens takes
+    // the focus into its own, as Claude Code leaves it.
+    await vx(`${q(INPUT)}.focus();true`);
+    await vClickCard("D");
+    await showing("D");
+    await ctx.sleep(400);
+    const in1 = await where();
+    check(
+      "inside: a card pressed within the view leaves the focus to Claude Code, in the input box of the session it opens",
+      in1.title === TITLES.D && in1.page === "view" && in1.has && in1.input,
+      JSON.stringify(in1),
+    );
+    // A text box of the view's own, outside the chat, keeps the focus.
+    await vx(
+      `(function(){var i=document.createElement("input");i.id="ccup-probe-box";` +
+        `i.style.cssText="position:fixed;left:4px;top:4px;width:80px";document.body.appendChild(i);i.focus();return true})()`,
+    );
+    await vClickCard("E");
+    await showing("E");
+    await ctx.sleep(400);
+    const in2 = await where();
+    await vx(`document.getElementById("ccup-probe-box").remove();true`);
+    check(
+      "inside: a text box of the view's own keeps the focus through a press",
+      in2.title === TITLES.E &&
+        in2.page === "view" &&
+        in2.has &&
+        in2.on === "ccup-probe-box",
+      JSON.stringify(in2),
+    );
 
     // Editor tab: no strip at all.
     await ctx.navigate(base + "?editor=1");

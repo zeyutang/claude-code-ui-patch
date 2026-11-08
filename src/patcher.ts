@@ -9428,7 +9428,12 @@ export const stitchFrames = ccupStitchHost;
 // strip's left end, pushing the others right. Each card is a button with its
 // whole title in a hover tip and its state in the accessible name, the strip
 // is a toolbar (one tab stop, arrow keys between its buttons), and a press
-// keeps focus where it was, as the jump buttons do.
+// within the view keeps the focus where it was, as the jump buttons do.
+// Pressed while the focus is elsewhere (for instance, in an editor or the
+// terminal), a card or New session brings it to the input box of the
+// session it opens here, and the card on screen to its own, as a click on
+// the header's buttons or a pick in its dropdown leaves it. A session open
+// in an editor tab gets that tab focused, as ever.
 //
 // The strip lives in the session body (sessionBody_<hash>), the flex column
 // holding the chat, which a session switch keeps: the chat inside it remounts
@@ -10005,9 +10010,14 @@ function ccupSessionCardsWeb(
     }
     ownIcon = true;
   };
-  // What the header's button does, else (no header) its fallback.
+  // What the header's button does, else (no header) its fallback. With the
+  // focus outside the view, the view takes it first, as a click on the
+  // header's button does, so the new session's chat takes it into its input
+  // box as it mounts (or, where openNewInTab opens the session in an editor
+  // tab, that tab takes it).
   const newSession = (): void => {
     try {
+      if (!doc.hasFocus()) g.focus();
       const h = header();
       if (h) h.click();
       else void Promise.resolve(mgr.createSession()).catch(() => {});
@@ -10210,12 +10220,29 @@ function ccupSessionCardsWeb(
     if (!raf) raf = g.requestAnimationFrame(render);
   };
 
-  // What picking the session in the Session history dropdown does.
+  // What picking the session in the Session history dropdown does. With the
+  // focus outside the view, the view takes it first, as a click into it
+  // would. A session opening here then lands as it does from within, its
+  // chat taking the focus into the input box as it mounts, which Claude Code
+  // does only in a view that has the focus. The card on screen, its chat
+  // mounted already, asks that chat for it the way Claude Code does when the
+  // view takes the focus: an empty at-mention, which focuses the input box
+  // (or the permission or question card waiting there). A session open in an
+  // editor tab is left to that tab, which the host focuses.
   const open = (id: string): void => {
     const r = rows.find((x) => x.id === id);
-    if (!r || r.active) return;
+    if (!r) return;
+    const away = !doc.hasFocus();
     try {
+      if (r.active) {
+        if (away) {
+          g.focus();
+          mgr.context?.atMentionEvents?.emit?.("");
+        }
+        return;
+      }
       if (mgr.focusTabShowing(r.s, { includeSidebarChat: true })) return;
+      if (away) g.focus();
       mgr.activeSession.value = r.s;
     } catch {
       // the session stays where it was

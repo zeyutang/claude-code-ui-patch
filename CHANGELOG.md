@@ -4,6 +4,7 @@
 
 - With `chatSessionCards` on, clicking a card while you are working outside the chat, such as in an editor or the terminal, now puts the cursor in that session's input box, as a click from within the chat already did.
   The strip's New session button does the same for the new session, and a card for a session open in an editor tab still brings up that tab.
+- The panel's Behavior rows now say what each toggle adds or changes, such as "A button above the input box that scrolls the chat down to the latest message" in place of "Chat panel or tab: add scroll-to-bottom button".
 
 ## 1.7.0
 

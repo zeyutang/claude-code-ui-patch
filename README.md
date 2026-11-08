@@ -88,7 +88,7 @@ Behavior
    │                                   #   (breathes while working, clay when it needs attention,
    │                                   #   green when a finished turn is unseen)
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
-   ├── chatPermissionCodeMatchChatCodeBlock      # chatCodeBlockFontSize (On) or chat.fontSize (Off)
+   ├── chatPermissionCodeMatchChatCodeBlock  # permission cmd: IN block's .85em (On) or .9em (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)
    ├── effortSyncFix                   # push persisted effort level to a reloaded session if On
    ├── planPreviewCommentInputCtrlEnterToSend  # Cmd/Ctrl+Enter sends, plain Enter newlines if On

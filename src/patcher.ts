@@ -123,8 +123,8 @@ function knobOrder(id: string): number {
 // surfaces while its setting still applies and still counts toward the apply /
 // reload state (that logic reads the toggle states, not this knob list). The
 // effort-level indicator sync is a set-and-forget fix, not something to tune by
-// hand. The plan comment send key is settings-only: the panel's "Cmd/Ctrl +
-// Enter to send everywhere" row already reaches the plan comment box (the
+// hand. The plan comment send key is settings-only: the panel's
+// useCtrlEnterToSendEverywhere row already reaches the plan comment box (the
 // readToggles fold), so a dedicated row was noise.
 export const HIDDEN_KNOBS = new Set<string>([
   "effortSyncFix",
@@ -13886,7 +13886,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "permCode",
     section: "Behavior",
-    label: "Chat panel or tab: permission request syncs code block font size",
+    label:
+      "Permission requests show the command slightly smaller, like a tool call's IN block",
     key: "chatPermissionCodeMatchChatCodeBlock",
     defaultOn: false,
     file: "webview/index.css",
@@ -13897,7 +13898,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "permNoWrap",
     section: "Behavior",
-    label: "Chat panel or tab: permission request code block no-wrap",
+    label:
+      "Permission requests scroll long command lines sideways instead of wrapping them",
     key: "chatPermissionCodeNoWrap",
     defaultOn: false,
     file: "webview/index.css",
@@ -13927,7 +13929,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "scrollDot",
     section: "Behavior",
-    label: "Chat panel or tab: add scroll-to-bottom button",
+    label:
+      "A button above the input box that scrolls the chat down to the latest message",
     key: "chatScrollToBottomDot",
     defaultOn: false,
     file: "webview/index.js",
@@ -13938,7 +13941,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "jumpMsg",
     section: "Behavior",
-    label: "Chat panel or tab: jump to previous/next msg in chat history",
+    label:
+      "Buttons above the input box that jump to the previous or next message you sent",
     key: "chatJumpToMessageButtons",
     defaultOn: false,
     file: "webview/index.js",
@@ -13950,7 +13954,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
     // After scrollDot and jumpMsg: its button's slot reads both markers.
     id: "promptHist",
     section: "Behavior",
-    label: "Chat panel or tab: list history of sent msgs to jump to one",
+    label:
+      "A button above the input box listing your sent messages, to jump to any of them",
     key: "chatPromptHistoryButton",
     defaultOn: false,
     file: "webview/index.js",
@@ -13961,7 +13966,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "sessionCards",
     section: "Behavior",
-    label: "Chat sidebar: cards of recent sessions below the input box",
+    label:
+      "Cards of your recent sessions below the sidebar's input box, to switch in one click",
     key: "chatSessionCards",
     defaultOn: false,
     file: SCARD_FILE,
@@ -13972,7 +13978,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "rawMd",
     section: "Behavior",
-    label: "Chat panel or tab: show an agent response as raw markdown",
+    label:
+      "A button beside each agent response, on hover, that shows its markdown source",
     key: "chatRawMarkdownButton",
     defaultOn: false,
     file: "webview/index.js",
@@ -13986,7 +13993,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "histKeys",
     section: "Behavior",
-    label: "Chat panel or tab: Cmd/Ctrl + Up/Down to recall previous/next msg",
+    label:
+      "Cmd/Ctrl+Up/Down recalls sent messages, so plain Up/Down only moves the cursor",
     key: "chatInputCtrlUpDownToHistory",
     defaultOn: false,
     file: "webview/index.js",
@@ -13997,7 +14005,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "findBar",
     section: "Behavior",
-    label: "Chat panel or tab: add FindBar (Cmd/Ctrl+F)",
+    label:
+      "Cmd/Ctrl+F opens a find bar that searches the chat and steps through each match",
     key: "chatFindBar",
     defaultOn: false,
     file: "webview/index.js",
@@ -14023,7 +14032,8 @@ const TOGGLE_POINTS: TogglePoint[] = [
   {
     id: "ctrlEnterEverywhere",
     section: "Behavior",
-    label: "Cmd/Ctrl + Enter to send everywhere",
+    label:
+      "Every box, not just the chat input, follows Claude Code's Cmd/Ctrl+Enter to send",
     key: "useCtrlEnterToSendEverywhere",
     defaultOn: false,
     file: "webview/index.js",

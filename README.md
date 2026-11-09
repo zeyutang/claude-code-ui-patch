@@ -85,8 +85,9 @@ Behavior
    │                                   #   (either button On: a question box dims the history like a
    │                                   #   permission box, and an open find bar lifts the dim)
    ├── chatSessionCards                # sidebar: recent session cards below the input box, if On
-   │                                   #   (breathes while working, clay when it needs attention,
-   │                                   #   green when a finished turn is unseen)
+   │                                   #   (unsent drafts first, with a still dot; breathes while
+   │                                   #   working, clay when it needs attention, green when a
+   │                                   #   finished turn is unseen)
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeBlock  # permission cmd: IN block's .85em (On) or .9em (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)
@@ -163,7 +164,7 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
   The Match Case, Match Whole Word, and Use Regular Expression toggles in its input work as in the editor's find widget, with JavaScript regular expression syntax.
   Math in agent responses matches by its TeX source, as its raw markdown reads, so `\frac{a}{b}` finds that fraction while the symbols it renders do not match.
 - **`chatSessionCards` shows local sessions in the sidebar chat only.**
-  The cards run from the session where you last sent a message, not counting a model or effort change or a slash command.
+  Sessions you left with an unsent message in the sidebar's input box come first, in the order you left them, then the rest from the session where you last sent a message or answered a permission or question prompt, not counting a model or effort change or a slash command.
   A new session gets its card once you send it a message or Claude starts working in it, or once you leave it with an unsent message in its input box.
 - **A reopened conversation shows its turns from before each compaction.**
   Claude Code reopens a compacted conversation from its last summary, and this patch puts the earlier turns back, with a "Compacted chat" row at each compaction, as the chat showed them before the reload.

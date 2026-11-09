@@ -7,6 +7,8 @@
   Always applied, no setting.
 - With `chatSessionCards` on and more than one window open, a session's card now keeps its place after a window reload.
   The card of the session you last sent a message to could come back in the middle of the strip, moving first only once you opened that session.
+- With `chatSessionCards` on, sessions you leave with an unsent message in the input box come first, in the order you left them, their circle a still dot, until you send that message or leave its box empty.
+  Answering a permission or question prompt now moves a session's card forward as sending a message does, behind those sessions.
 
 ## 1.7.1
 

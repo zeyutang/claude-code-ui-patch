@@ -9614,12 +9614,15 @@ export const stitchFrames = ccupStitchHost;
 // sidebar, below the input box, with one card per recent local session,
 // shaped like the modern UI's connected editor tabs turned upside down, so
 // that switching sessions takes one click instead of the Session history
-// dropdown. The cards run left to right from the session where you last sent
-// a message, a click does what picking that row in the dropdown does (a
-// session open in an editor tab gets that tab focused, any other one opens
-// here), and each card leads with a circle where a tab shows its file icon: a
-// ring while the session is idle, a breathing dot while it works, a clay dot
-// while it needs you, and a green one while a turn that ended is unseen.
+// dropdown. The cards run left to right from the sessions you left with a
+// message unsent in the input box, in the order you left them, then from the
+// session where you last sent a message or answered what Claude asked, a
+// click does what picking that row in the dropdown does (a session open in an
+// editor tab gets that tab focused, any other one opens here), and each card
+// leads with a circle where a tab shows its file icon: a ring while the
+// session is idle, a still dot while its input box holds a draft, a breathing
+// dot while it works, a clay dot while it needs you, and a green one while a
+// turn that ended is unseen.
 //
 // One fragment, /*ccup:scard*/.../*ccup:scardEnd*/, at the end of the webview
 // session manager's constructor (the class with doListSessions, one per
@@ -9643,24 +9646,38 @@ export const stitchFrames = ccupStitchHost;
 //            change counts no more here than in the order. The exception is a
 //            new session you move off with a message left unsent in its input
 //            box, which Claude Code keeps for you: it gets a card ("Untitled",
-//            placed by when the session was created) while that draft lasts,
-//            and keeps it while you are back on it. A session a surface
-//            reports that the list has not read yet asks for a re-read, at
-//            most every 5s, under the "state_sync" entry point the session
-//            list view uses for the same reason
-//   order    the time of your last message in the session: for a session this
-//            view holds, the newest prompt among its messages and queued sends
-//            (createdAt, the transcript's own timestamp, so a reload keeps
-//            it), a prompt being a row Claude Code stamps as yours (origin
-//            human) that is no slash command, so a model or effort change
-//            never counts; and for one held elsewhere (an editor tab, a
-//            terminal, another window), the moment the host reports it
-//            leaving idle, the turn your message starts there. The times
-//            persist in the webview's localStorage, one store that the
-//            sidebars of all windows share, each write keeping a session's
-//            latest time, so a session that leaves this view keeps its place;
-//            one seen in neither way sorts by Claude Code's own activity
-//            time, which is at least as late as its last prompt
+//            placed among the drafts) while that draft lasts, and keeps it
+//            while you are back on it. A session a surface reports that the
+//            list has not read yet asks for a re-read, at most every 5s,
+//            under the "state_sync" entry point the session list view uses
+//            for the same reason
+//   drafts   first, the sessions you left with a message unsent in the input
+//            box (text other than whitespace, or an attachment), each behind
+//            the ones left before it, keeping its place while the draft
+//            lasts: a prompt sent from it, or leaving it with the box empty,
+//            gives the place up. The card on screen stays where it is while
+//            you type, taking a place as you leave it. The box on screen is
+//            read as it changes, any other session's draft as Claude Code
+//            keeps it, written as the box unmounts. An editor tab's box is
+//            another webview's, which this one cannot read, so a session
+//            open there has no draft here; and Claude Code keeps drafts in
+//            memory alone, so a reload ends them all
+//   order    then the time of your last message in the session: for a
+//            session this view holds, the newest prompt among its messages and
+//            queued sends (createdAt, the transcript's own timestamp, so a
+//            reload keeps it), a prompt being a row Claude Code stamps as
+//            yours (origin human) that is no slash command, so a model or
+//            effort change never counts, or your answer to a permission or
+//            question request of its (allowed, denied, or answered, though
+//            not one Claude Code takes back, as when its turn stops); and for
+//            one held elsewhere (an editor tab, a terminal, another window),
+//            the moment the host reports it leaving idle, the turn your
+//            message starts there, or going from waiting on you to work, your
+//            answer. The times persist in the webview's localStorage, one
+//            store that the sidebars of all windows share, each write keeping
+//            a session's latest time, so a session that leaves this view
+//            keeps its place; one seen in neither way sorts by Claude Code's
+//            own activity time, which is at least as late as its last prompt
 //   at work  for a session this view holds, a turn in progress (one waiting
 //            on you included) or a background agent of its still running, as
 //            Claude Code itself reports a session running; for any other one,
@@ -9716,7 +9733,9 @@ export const stitchFrames = ccupStitchHost;
 // member read above), a class carrying the host's session feed
 // (sessionStates, openSessionIds, unreadSessionKeys, liveElsewhereSessions),
 // and the session body and chat input container class map entries. If any
-// is gone the point reports missing and the bundle stays native.
+// is gone the point reports missing and the bundle stays native. Without the
+// input box's entry (messageInput) the card on screen shows no draft, while
+// the others still do.
 // ---------------------------------------------------------------------------
 const SCARD_MARKER = "/*ccup:scard*/";
 const SCARD_END = "/*ccup:scardEnd*/";
@@ -9786,6 +9805,7 @@ const SCARD_FEED_FIELDS = [
 
 interface ScardCfg {
   body: string; // the session body's class
+  input: string; // the input box's class, or "" where the bundle has none
   css: string;
   store: string;
   cap: number;
@@ -9934,17 +9954,85 @@ function ccupSessionCardsWeb(
   // you come back to it: text or an attachment in its input box. Claude Code
   // 2.1.300 and later keep one per session, the text written as the box
   // unmounts, which no signal reports (see mount).
+  const attached = (s: any): boolean =>
+    (s.composerAttachments?.value?.length ?? 0) > 0;
   const drafted = (s: any): boolean =>
     (typeof s.composerDraft === "string" && s.composerDraft.trim() !== "") ||
-    (s.composerAttachments?.value?.length ?? 0) > 0;
+    attached(s);
+  // The input box on screen, the session it belongs to (the one on screen as
+  // it mounted, since the chat mounts anew for each session), and whether it
+  // holds text, read as it changes, since Claude Code hands the text to the
+  // session only as the box unmounts, and empties the box after a send with
+  // no input event. Found again once the one watched has gone.
+  let boxEl: any = null;
+  let boxOf: any = null;
+  let boxText = false;
+  let boxWatch: any = null;
+  const typed = (b: any): boolean => (b.textContent ?? "").trim() !== "";
+  const readBox = (): void => {
+    const has = !!boxEl?.isConnected && typed(boxEl);
+    if (has === boxText) return;
+    boxText = has;
+    refresh();
+  };
+  const findBox = (): void => {
+    if (!cfg.input || boxEl?.isConnected) return;
+    const b = doc.querySelector("." + cfg.input);
+    if (b === boxEl) return;
+    try {
+      boxWatch?.disconnect();
+      boxEl = b;
+      boxOf = b
+        ? (mgr.activeSession.peek?.() ?? mgr.activeSession.value)
+        : null;
+      boxText = !!b && typed(b);
+      if (b) {
+        boxWatch ??= new g.MutationObserver(readBox);
+        boxWatch.observe(b, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+      }
+    } catch {
+      // unwatched: its text is read again at the next count
+    }
+    refresh();
+  };
+  // The drafts' places, by when each session took one: as you left it with
+  // a draft (the card on screen stays where it is while you type).
+  const queued = new WeakMap<object, number>();
   // A card for a new session that holds no conversation (a draft you left in
   // it) has a key of its own rather than the session's id, which comes and
   // goes with its process, and keeps it while this view holds the session.
-  // And the sessions with a card at the last count, so the one you come back
-  // to keeps its card.
   const keyOf = new WeakMap<object, string>();
   let keys = 0;
-  let carded = new WeakSet<object>();
+  // Each request of a session this view holds, followed to its end: your
+  // answer counts as a message you sent (a permission allowed or denied, a
+  // question answered, a dialog completed), while one Claude Code takes back
+  // does not, as when its turn stops, which a permission request ends as a
+  // denial that reads "Aborted".
+  const followed = new WeakSet<object>();
+  const follow = (s: any, q: any): void => {
+    if (!q || followed.has(q) || typeof q.onResolved !== "function") return;
+    followed.add(q);
+    q.onResolved((r: any) => {
+      // Never throws: Claude Code's own listeners after this one would not run.
+      try {
+        const b = r?.behavior;
+        if (
+          b === "allow" ||
+          b === "completed" ||
+          (b === "deny" && r.message !== "Aborted")
+        ) {
+          note(s.sessionId.peek?.() ?? s.sessionId.value, Date.now());
+          refresh();
+        }
+      } catch {
+        // the order stands
+      }
+    });
+  };
 
   // Turns that ended in a held session while another one was on screen, and
   // whether every other session was last reported at work or idle, for its
@@ -9977,11 +10065,35 @@ function ccupSessionCardsWeb(
       const id = s.sessionId.value;
       if (id) known.add(id);
       if (s.isRemote.value || s.archived.value || s.unreadable.value) continue;
+      // Its draft: the box's text while the box on screen is its own, else
+      // the one it keeps, with its attachments either way. An editor tab
+      // holding the session has a box of its own, out of this view's reach,
+      // and a build that keeps no draft per session (before 2.1.300) drops
+      // what the box held as you move off.
+      const tab = !!id && tabs.has(id);
+      const draft =
+        !tab &&
+        typeof s.composerDraft === "string" &&
+        (s === boxOf && boxEl?.isConnected
+          ? boxText || attached(s)
+          : (s !== active || !!cfg.input) && drafted(s));
+      // Its place among the drafts, taken as you leave it with one and kept
+      // while the draft lasts, the card on screen staying where it is
+      // meanwhile: a prompt sent from it gives the place up, and so does
+      // leaving it with the box empty.
+      let since = queued.get(s);
+      if (since !== undefined) {
+        const p = promptAt(s);
+        if ((p !== undefined && p > since) || (s !== active && !draft)) {
+          queued.delete(s);
+          since = undefined;
+        }
+      } else if (s !== active && draft) queued.set(s, (since = Date.now()));
       // A conversation, else a new session keeping a draft you left in it:
-      // its card comes as you move off it and stays while the draft lasts,
-      // and while you are back on it.
+      // its card comes as you move off it and stays while the draft keeps its
+      // place, as it does while you are back on it.
       const begun = holds(s);
-      if (!begun && !(s === active ? carded.has(s) : drafted(s))) continue;
+      if (!begun && since === undefined) continue;
       let key = keyOf.get(s);
       if (key === undefined && !begun) keyOf.set(s, (key = `new-${++keys}`));
       key ??= id;
@@ -9994,9 +10106,12 @@ function ccupSessionCardsWeb(
       // claudeChannelId getter peeks, which an effect would not follow.
       const held = s.claudeChannelIdSignal.value !== undefined;
       if (held) {
-        waiting =
-          s.permissionRequests.value.length > 0 ||
-          s.userDialogRequests.value.length > 0;
+        const asks = [
+          ...s.permissionRequests.value,
+          ...s.userDialogRequests.value,
+        ];
+        for (const q of asks) follow(s, q);
+        waiting = asks.length > 0;
         ongoing = s.busy.value || s.backgroundTaskIds.value.size > 0;
         if (ongoing || s === active) done.delete(s);
         else if (worked.get(s)) done.add(s);
@@ -10010,15 +10125,29 @@ function ccupSessionCardsWeb(
         const act = tabs.has(id) ? undefined : away.get(id)?.activity;
         waiting = now === "waiting_input" || act === "waiting";
         ongoing = now === "running" || waiting || act === "running";
-        // Leaving idle there: the turn your message starts.
-        const phase = ongoing ? "work" : now || act ? "idle" : "";
-        if (seen.get(id) === "idle" && phase === "work") note(id, Date.now());
+        // Leaving idle there: the turn your message starts; and going from
+        // waiting on you to work: your answer.
+        const phase = waiting
+          ? "wait"
+          : ongoing
+            ? "work"
+            : now || act
+              ? "idle"
+              : "";
+        const was = seen.get(id);
+        if (
+          (was === "idle" && (phase === "work" || phase === "wait")) ||
+          (was === "wait" && phase === "work")
+        )
+          note(id, Date.now());
         if (phase) seen.set(id, phase);
       }
       // The circle, by the first of these that holds: a prompt or question
       // waiting on you (solid clay), work that asks nothing of you (breathing),
-      // a turn that ended unseen (solid green), else a ring. The session on
-      // screen takes neither mark, what it asks being in front of you.
+      // a turn that ended unseen (solid green), a draft in its input box (a
+      // still dot, the session on screen's in its own color), else a ring.
+      // The session on screen takes neither the clay nor the green, what it
+      // asks being in front of you.
       const working = ongoing && !waiting;
       const pending =
         s === active
@@ -10036,14 +10165,18 @@ function ccupSessionCardsWeb(
         pending,
         ongoing,
         working,
+        draft,
         why: waiting
           ? "awaiting input"
           : working
             ? "running"
             : pending
               ? "turn finished"
-              : "",
-        tab: !!id && tabs.has(id),
+              : draft
+                ? "draft"
+                : "",
+        tab,
+        since,
         at: (id && sent[id]) || s.lastModifiedTime.value || 0,
         mod: s.lastModifiedTime.value || 0,
       });
@@ -10064,10 +10197,16 @@ function ccupSessionCardsWeb(
         }
       }, 0);
     }
-    rows.sort((a, b) => b.at - a.at || b.mod - a.mod || (a.id < b.id ? -1 : 1));
-    const out = rows.slice(0, cfg.max);
-    carded = new WeakSet(out.map((r) => r.s));
-    return out;
+    // The drafts first, in the order they took their places, then the rest
+    // from your latest message.
+    const late = (r: any): number => (r.since === undefined ? 1 : 0);
+    rows.sort(
+      (a, b) =>
+        late(a) - late(b) ||
+        (late(a) ? b.at - a.at || b.mod - a.mod : a.since - b.since) ||
+        (a.id < b.id ? -1 : 1),
+    );
+    return rows.slice(0, cfg.max);
   };
 
   // The strip: its two buttons, and between them the scroller with the
@@ -10378,6 +10517,7 @@ function ccupSessionCardsWeb(
       b.setAttribute("data-pending", r.pending);
     b.toggleAttribute("data-ongoing", r.ongoing);
     b.toggleAttribute("data-working", r.working);
+    b.toggleAttribute("data-draft", r.draft);
     if (r.active) b.setAttribute("aria-current", "true");
     else b.removeAttribute("aria-current");
     // The tip is the full title, which the label may cut; the label read out
@@ -10415,6 +10555,7 @@ function ccupSessionCardsWeb(
           r.why,
           r.ongoing,
           r.working,
+          r.draft,
           r.tab,
         ]),
       ]);
@@ -10700,7 +10841,9 @@ function ccupSessionCardsWeb(
   });
 
   // The rows counted again and drawn: whenever a signal they read changes,
-  // and after a session switch remounts the chat (see mount).
+  // after a session switch remounts the chat (see mount), as the box on
+  // screen comes and goes or gains or loses its text, and when you answer a
+  // request.
   function refresh(): void {
     try {
       rows = compute();
@@ -10712,7 +10855,10 @@ function ccupSessionCardsWeb(
   }
   effect(() => refresh());
   try {
-    new g.MutationObserver(mount).observe(doc.body, {
+    new g.MutationObserver(() => {
+      mount();
+      findBox();
+    }).observe(doc.body, {
       childList: true,
       subtree: true,
     });
@@ -10785,10 +10931,12 @@ function scardSide(): ScardSide {
 // scrolling sideways with no scrollbar of its own: cards with a leading
 // state circle (in the card's own color a hollow ring while the session is
 // idle, filled and breathing while it works with nothing asked of you, and
-// filled and still while the session on screen waits on you; solid clay while
-// a prompt or question waits on you, and solid green, the transcript's own
-// dot for a tool call that succeeded, while a turn that ended is unseen; the
-// breath moves opacity alone, which the compositor runs by itself),
+// filled and still while its input box holds a draft or the session on
+// screen waits on you, as an editor tab's dot for unsaved changes takes the
+// tab's text color; solid clay while a prompt or question waits on you, and
+// solid green, the transcript's own dot for a tool call that succeeded,
+// while a turn that ended is unseen, each over a draft's dot; the breath
+// moves opacity alone, which the compositor runs by itself),
 // the card on screen in the chat's background with its corners
 // and shoulders and the look's line, its text in the input box's color (the
 // editor tab's white read as distracting, and the others' grey would not set
@@ -10846,7 +10994,7 @@ function scardCss(chat: string, look: ScardLook): string {
     `.ccup-card{position:relative;display:flex;align-items:center;gap:6px;flex:0 0 var(--ccup-card-w,auto);width:var(--ccup-card-w,auto);height:var(--ccup-card-h);box-sizing:border-box;margin:0;padding:0 10px 0 8px;border:none;border-radius:var(--ccup-card-r);background:transparent;color:${grey};font-family:var(--vscode-font-family);font-size:var(--vscode-fontSize-body1,var(--vscode-font-size,13px));line-height:var(--ccup-card-h);text-align:left;cursor:pointer;outline:none}` +
     ".ccup-card-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
-    ".ccup-card[data-ongoing] .ccup-card-dot{background:currentColor}" +
+    ".ccup-card[data-ongoing] .ccup-card-dot,.ccup-card[data-draft] .ccup-card-dot{background:currentColor}" +
     "@keyframes ccup-card-breathe{0%,to{opacity:1}50%{opacity:.4}}" +
     `.ccup-card[data-working] .ccup-card-dot{animation:${SCARD_BREATH_MS}ms ease-in-out infinite ccup-card-breathe}` +
     `.ccup-card[data-pending=input] .ccup-card-dot{border-color:${clay};background:${clay}}` +
@@ -10872,6 +11020,7 @@ interface ScardSite {
   effect: string;
   chat: string;
   body: string;
+  input: string;
 }
 function sessionCardsFind(c: string): ScardSite | null {
   const chat = c.match(JUMP_MSG_CHAT_HASH_RE)?.[1];
@@ -10945,7 +11094,16 @@ function sessionCardsFind(c: string): ScardSite | null {
   ).filter((k) => SCARD_FEED_FIELDS.every((f) => sdelField(k, f)));
   if (!feeds.length) return null;
 
-  return { unit: mgr, pos: ctor.value.body.end - 1, effect, chat, body };
+  // The input box, whose text the card on screen reads; optional.
+  const input = c.match(/messageInput:"(messageInput_[-\w]+)"/)?.[1] ?? "";
+  return {
+    unit: mgr,
+    pos: ctor.value.body.end - 1,
+    effect,
+    chat,
+    body,
+    input,
+  };
 }
 
 // The native bundle with the fragment in for a look, or null when a site is
@@ -10979,6 +11137,7 @@ function sessionCardsBuild(
   if (site) {
     const cfg: ScardCfg = {
       body: site.body,
+      input: site.input,
       css: scardCss(site.chat, look),
       store: SCARD_STORE,
       cap: SCARD_STORE_CAP,

@@ -174,7 +174,7 @@
         "claudeCodeUiPatch.chatSessionCards": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show your local sessions as cards along the bottom of the sidebar chat, below its input box, the one where you last sent a message first, scrolling sideways through every session that is not archived. Clicking one opens it as the Session history list does. Buttons at the strip's ends start a new session and hide the secondary side bar. A card's circle breathes while the session is working, turns solid clay while a permission or question prompt waits on you, and solid green while a finished turn is unseen. The open session's card follows `#window.density.layout#`."
+          "markdownDescription": "Show your local sessions as cards along the bottom of the sidebar chat, below its input box, scrolling sideways through every session that is not archived: first those you left with an unsent message, in the order you left them, then the rest from the one where you last sent a message or answered a prompt. Clicking one opens it as the Session history list does. Buttons at the strip's ends start a new session and hide the secondary side bar. A card's circle is a still dot while its input box holds an unsent message, breathes while the session is working, turns solid clay while a permission or question prompt waits on you, and solid green while a finished turn is unseen. The open session's card follows `#window.density.layout#`."
         },
         "claudeCodeUiPatch.chatRawMarkdownButton": {
           "type": "boolean",

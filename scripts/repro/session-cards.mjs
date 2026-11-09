@@ -106,6 +106,18 @@
 //             Untitled card, first, none while you type; back on it the same
 //             card shows the draft in the box, emptied and left it goes, and
 //             sent from it the same card stays
+//   drafts    sessions you leave with a message unsent in the input box come
+//             first, each behind the ones left before it, a still dot in the
+//             card's grey for their circle; the card on screen stays where it
+//             is while you type, its dot in its own color; clay over the dot
+//             while a request waits on you, a breath while its turn runs,
+//             green once that turn ends unseen, each keeping the draft's
+//             place, which a prompt sent from it gives up, as does leaving it
+//             with the box emptied
+//   answers   allowing a permission prompt moves its session first behind
+//             the drafts, and so does a session an editor tab holds going
+//             from waiting on you to work, while a prompt taken back, or a
+//             tab's session going idle from a wait, moves nothing
 //   settle    an idle strip mutates nothing
 //   look      the strip follows VS Code's layout density: at the default
 //             density no groove, the cards on the view's bottom edge, no
@@ -401,6 +413,12 @@ localStorage.removeItem("ccup-session-cards");
 </script>
 </body></html>`;
 
+// The store emptied by a page that runs no view, so no strip writes it back
+// before the next boot.
+const fresh = `<!doctype html><html><head><meta charset="utf-8"></head><body>
+<script>localStorage.removeItem("ccup-session-cards");</script>
+</body></html>`;
+
 const TYPES = {
   ".css": "text/css",
   ".js": "text/javascript",
@@ -516,7 +534,15 @@ export async function run(ctx) {
     } else
       res
         .writeHead(200, { "content-type": "text/html" })
-        .end(rel === "/__outer" ? outer : rel === "/__two" ? two : page);
+        .end(
+          rel === "/__outer"
+            ? outer
+            : rel === "/__two"
+              ? two
+              : rel === "/__fresh"
+                ? fresh
+                : page,
+        );
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}/`;
@@ -2870,6 +2896,259 @@ export async function run(ctx) {
       !!reloaded && order1.startsWith("A ") && !order1.includes("*"),
       order1,
     );
+
+    // Drafts and answers, on a view booted afresh on an empty store (A on
+    // screen, the rest by the list's activity): a session left with a
+    // message unsent takes a place at the front, the next one behind it,
+    // while the card on screen stays where it is as you type; an answer
+    // moves its session first behind the drafts.
+    await ctx.navigate(base + "__fresh");
+    const freshUp =
+      !!(await boot()) &&
+      !!(await until(
+        `document.querySelectorAll(${JSON.stringify(CARD)}).length===6`,
+      ));
+    await ctx.sleep(400);
+    const go = async (k) => {
+      await clickCard(k);
+      await until(
+        `${q(TITLE)}&&${q(TITLE)}.textContent===${JSON.stringify(TITLES[k])}`,
+      );
+      await ctx.sleep(300);
+    };
+    const typeIn = async (text) => {
+      await ctx.evaluate(`${q(INPUT)}.focus()`);
+      await ctx.insertText(text);
+      await ctx.sleep(300);
+    };
+    const aria = (k) => ctx.evaluate(`${cardEl(k)}.getAttribute("aria-label")`);
+    // What a build that keeps no draft per session (before 2.1.300) shows
+    // instead: the box's text goes as you move off, so no card moves for
+    // it and none takes the dot, while an answer still moves its session
+    // first.
+    const X = keepsDrafts
+      ? {
+          fill1: "B- C- A+ D- E- F-",
+          order2: "A B C* D E F",
+          fill2: "A+ B- C- D- E- F-",
+          order3: "A B C* D E F",
+          order4: "A C B D* E F",
+          an0: "A C B D* E F",
+          an1: "A C D* B E F",
+          an2: "A C D* B E! F!",
+          an3: "A C E D* B F",
+        }
+      : {
+          fill1: "B- C- A- D- E- F-",
+          order2: "B C* A D E F",
+          fill2: "B- C- A- D- E- F-",
+          order3: "B C* A D E F",
+          order4: "B C A D* E F",
+          an0: "B C A D* E F",
+          an1: "D* B C A E F",
+          an2: "D* B C A E! F!",
+          an3: "E D* B C A F",
+        };
+    const dq0 = await strip();
+    await typeIn("Draft in A");
+    const dq1 = {
+      order: await strip(),
+      fill: await fills(),
+      a: await ring("A"),
+    };
+    await go("C");
+    const dq2 = {
+      order: await strip(),
+      fill: await fills(),
+      a: await ring("A"),
+      why: await aria("A"),
+    };
+    await typeIn("Draft in C");
+    const dq3 = await strip();
+    await go("D");
+    const dq4 = await strip();
+    if (keepsDrafts) {
+      check(
+        "drafts: typing in the session on screen moves no card, its circle a still dot in its own color",
+        freshUp &&
+          dq0 === "B C A* D E F" &&
+          dq1.order === dq0 &&
+          dq1.fill === X.fill1 &&
+          dq1.a.bg === composer &&
+          dq1.a.ink === composer,
+        JSON.stringify({ dq0, dq1 }),
+      );
+      check(
+        "drafts: left with a draft, a session moves first, a still dot in the card's grey, its label saying so",
+        dq2.order === X.order2 &&
+          dq2.fill === X.fill2 &&
+          dq2.a.bg === "rgb(157, 157, 157)" &&
+          dq2.a.ink === "rgb(157, 157, 157)" &&
+          dq2.why === `${TITLES.A} ${String.fromCharCode(8212)} draft`,
+        JSON.stringify(dq2),
+      );
+      check(
+        "drafts: a later draft queues behind the earlier one, the card on screen staying put as you type",
+        dq3 === X.order3 && dq4 === X.order4,
+        `${dq3} -> ${dq4}`,
+      );
+    } else
+      check(
+        "drafts: a build that keeps no draft per session moves no card for a box's text and shows no draft's dot",
+        freshUp &&
+          dq0 === "B C A* D E F" &&
+          dq1.order === dq0 &&
+          dq1.fill === X.fill1 &&
+          dq2.order === X.order2 &&
+          dq2.fill === X.fill2 &&
+          dq2.why === TITLES.A &&
+          dq3 === X.order3 &&
+          dq4 === X.order4,
+        JSON.stringify({ dq0, dq1, dq2, dq3, dq4 }),
+      );
+    // Answers in D, on screen: a prompt taken back moves nothing, and one you
+    // allow (its Yes pressed once Claude Code arms it) moves D first behind
+    // the drafts.
+    const ridD = await ctx.evaluate(`window.__permit(${JSON.stringify(S.D)})`);
+    await ctx.sleep(300);
+    await ctx.evaluate(`window.__unpermit(${JSON.stringify(ridD)})`);
+    await ctx.sleep(300);
+    const an0 = await strip();
+    const YES = `[].find.call(document.querySelectorAll("button"),function(b){return /(^|\\s)Yes$/.test(b.textContent.trim())&&!b.disabled&&b.offsetParent!==null})`;
+    await ctx.evaluate(`window.__permit(${JSON.stringify(S.D)})`);
+    const armed = await until(`!!(${YES})`, 5000);
+    if (armed) await click(center(await box(YES)));
+    await ctx.sleep(300);
+    const an1 = { order: await strip(), left: await ctx.evaluate(`!(${YES})`) };
+    check(
+      "answers: allowing a permission prompt moves its session first behind the drafts, a prompt taken back does not",
+      an0 === X.an0 && !!armed && an1.left && an1.order === X.an1,
+      JSON.stringify({ an0, armed: !!armed, an1 }),
+    );
+    // E and F in editor tabs, both waiting on you; then E works on (your
+    // answer there) and F goes idle (its turn stopped).
+    const tabsEF = (e, f) =>
+      ctx.evaluate(
+        `window.__push({type:"session_states_update",sessions:[{sessionId:"${S.E}",state:"${e}",title:"${TITLES.E}"},` +
+          `{sessionId:"${S.F}",state:"${f}",title:"${TITLES.F}"}],activeSessionId:"${S.D}",` +
+          `openSessionIds:["${S.E}","${S.F}"],unreadSessionKeys:[],liveElsewhereSessions:[]})`,
+      );
+    await tabsEF("waiting_input", "waiting_input");
+    await ctx.sleep(200);
+    const an2 = await strip();
+    await tabsEF("running", "idle");
+    await ctx.sleep(200);
+    const an3 = { order: await strip(), fill: await fills() };
+    check(
+      "answers: a session in an editor tab going from waiting on you to work moves first behind the drafts, one going idle does not",
+      an2 === X.an2 &&
+        an3.order === X.an3 &&
+        an3.fill.includes("E~") &&
+        an3.fill.includes("F-"),
+      JSON.stringify({ an2, an3 }),
+    );
+    if (keepsDrafts) {
+      // A request waiting on you in A, a draft behind the one on screen: clay
+      // over the draft's dot, which is back once the host takes it back.
+      const ridA = await ctx.evaluate(
+        `window.__permit(${JSON.stringify(S.A)})`,
+      );
+      await ctx.sleep(300);
+      const dq5 = { order: await strip(), why: await aria("A") };
+      await ctx.evaluate(`window.__unpermit(${JSON.stringify(ridA)})`);
+      await ctx.sleep(300);
+      const dq6 = {
+        order: await strip(),
+        fill: await fills(),
+        why: await aria("A"),
+      };
+      check(
+        "drafts: a request waiting on you shows clay over the draft's dot, the dot back once it is taken back, the place kept",
+        dq5.order === "A! C E D* B F" &&
+          dq5.why.endsWith("awaiting input") &&
+          dq6.order === "A C E D* B F" &&
+          dq6.fill.startsWith("A+ ") &&
+          dq6.why.endsWith("draft"),
+        JSON.stringify({ dq5, dq6 }),
+      );
+      // Back in A, its draft in the box and its card where it was; sent, the
+      // draft gives up its place, A first behind the draft left (C).
+      await go("A");
+      const dq7 = { order: await strip(), text: await boxText() };
+      await ctx.evaluate(`${q(INPUT)}.focus()`);
+      await key("Enter", "Enter", 13);
+      const ranA = await until(
+        `Object.keys(window.__lives).some(function(c){return window.__lives[c].sid===${JSON.stringify(S.A)}})`,
+        5000,
+      );
+      await ctx.sleep(300);
+      const dq8 = await strip();
+      check(
+        "drafts: back on a draft its card stays put; sent, the draft gives up its place, its session first behind the drafts left",
+        dq7.order === "A* C E D B F" &&
+          dq7.text === "Draft in A" &&
+          !!ranA &&
+          dq8 === "C A* E D B F",
+        JSON.stringify({ dq7, ranA: !!ranA, dq8 }),
+      );
+      // A new draft in A while its turn runs, left for B: it queues behind C,
+      // breathing; its turn ends unseen, green; back in A, a still dot in its
+      // own color, the place kept throughout.
+      await typeIn("Second draft in A");
+      const dq9 = await strip();
+      await go("B");
+      const dq10 = { order: await strip(), fill: await fills() };
+      await ctx.evaluate(`window.__finish(${JSON.stringify(S.A)})`);
+      await ctx.sleep(300);
+      const dq11 = await strip();
+      await go("A");
+      const dq12 = {
+        order: await strip(),
+        fill: await fills(),
+        a: await ring("A"),
+        text: await boxText(),
+      };
+      check(
+        "drafts: a draft whose turn runs breathes, turns green once the turn ends unseen, and keeps its place throughout",
+        dq9 === "C A* E D B F" &&
+          dq10.order === "C A E D B* F" &&
+          dq10.fill.includes("A~") &&
+          dq11 === "C A+ E D B* F",
+        JSON.stringify({ dq9, dq10, dq11 }),
+      );
+      check(
+        "drafts: back on it, a still dot in its own color, the draft in the box, the card where it was",
+        dq12.order === "C A* E D B F" &&
+          dq12.fill.includes("A+") &&
+          dq12.a.bg === composer &&
+          dq12.text === "Second draft in A",
+        JSON.stringify(dq12),
+      );
+      // C emptied while on screen keeps its card where it is, its circle a
+      // ring; left, it gives up its place, back among the rest by its last
+      // prompt.
+      await go("C");
+      await ctx.evaluate(
+        `${q(INPUT)}.focus();document.execCommand("selectAll");true`,
+      );
+      await key("Backspace", "Backspace", 8);
+      await ctx.sleep(300);
+      const dq13 = {
+        order: await strip(),
+        fill: await fills(),
+        text: await boxText(),
+      };
+      await go("B");
+      const dq14 = await strip();
+      check(
+        "drafts: emptied, a draft's card stays put while on screen; left, it gives up its place, back among the rest by its last message",
+        dq13.text === "" &&
+          dq13.order === "C* A E D B F" &&
+          dq13.fill.startsWith("C- ") &&
+          dq14 === "A E D B* C F",
+        JSON.stringify({ dq13, dq14 }),
+      );
+    }
 
     // Editor tab: no strip at all.
     await ctx.navigate(base + "?editor=1");

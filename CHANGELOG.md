@@ -9,6 +9,8 @@
   The card of the session you last sent a message to could come back in the middle of the strip, moving first only once you opened that session.
 - With `chatSessionCards` on, sessions you leave with an unsent message in the input box come first, in the order you left them, their circle a still dot, until you send that message or leave its box empty.
   Answering a permission or question prompt now moves a session's card forward as sending a message does, behind those sessions.
+- With `chatSessionCards` on, a working session's circle now breathes in the orange of the context usage indicator rather than grey, and a session waiting on a permission or question prompt shows an amber circle with its title breathing.
+  A session whose turn ended while a background task such as a shell command is still running keeps breathing until that task finishes, rather than turning green as if done.
 - With `chatFindBar` on, a query now lands on the first match from where you were reading when you began typing it, so a word typed letter by letter lands where the same word pasted whole does.
   Each letter had searched on from wherever the letter before it landed, which could leave the chat far from where you started, and at the top of a long conversation after a first letter as common as `e` or `t`.
   A match already in view no longer scrolls the chat, and the message pinned at the top no longer comes ahead of the matches under it.

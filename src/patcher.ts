@@ -9620,9 +9620,10 @@ export const stitchFrames = ccupStitchHost;
 // click does what picking that row in the dropdown does (a session open in an
 // editor tab gets that tab focused, any other one opens here), and each card
 // leads with a circle where a tab shows its file icon: a ring while the
-// session is idle, a still dot while its input box holds a draft, a breathing
-// dot while it works, a clay dot while it needs you, and a green one while a
-// turn that ended is unseen.
+// session is idle, a still dot while its input box holds a draft, a dot
+// breathing in the orange of Claude Code's context gauge while it works, an
+// amber one under a breathing title while it needs you, and a green one
+// while a turn that ended is unseen.
 //
 // One fragment, /*ccup:scard*/.../*ccup:scardEnd*/, at the end of the webview
 // session manager's constructor (the class with doListSessions, one per
@@ -9679,13 +9680,17 @@ export const stitchFrames = ccupStitchHost;
 //            keeps its place; one seen in neither way sorts by Claude Code's
 //            own activity time, which is at least as late as its last prompt
 //   at work  for a session this view holds, a turn in progress (one waiting
-//            on you included) or a background agent of its still running, as
-//            Claude Code itself reports a session running; for any other one,
-//            the state the host relays from the surface holding it (running
-//            or waiting_input, or a terminal or window holding it running or
-//            waiting). A reload closes every channel the view held, and a
-//            host restart every CLI the host ran, so neither leaves a session
-//            that stopped reading as at work
+//            on you included) or a background task of its still running,
+//            whose report is still to come: an agent or a workflow, as
+//            Claude Code itself counts a session running, and also a shell,
+//            a monitor, or any other kind, which it does not (a turn that
+//            ended with one still running would otherwise read as finished
+//            before the task reports back); for any other one, the state the
+//            host relays from the surface holding it (running or
+//            waiting_input, or a terminal or window holding it running or
+//            waiting), which counts no such task. A reload closes every
+//            channel the view held, and a host restart every CLI the host
+//            ran, so neither leaves a session that stopped reading as at work
 //   pending  for a session this view holds, its own pending permission and
 //            question requests, and a turn that ended while another session was
 //            shown here, until you open it; for any other one, the state the
@@ -9768,8 +9773,10 @@ const SCARD_BTN_ICON = 20;
 // the running label ("Thinking…", "Running Bash…") on a Focus view fold row
 // (focusFoldPulse, 2.1.317), but from full opacity down to .4 and back
 // rather than the label's .55, since this is a dot (the depth of Claude
-// Code's own pending glyph). Opacity alone, so the compositor runs it with no
-// work for the page's main thread.
+// Code's own pending glyph). The title of a session waiting on you breathes
+// in the same time down to the label's own .55, a gentler breath for text.
+// Opacity alone, so the compositor runs it with no work for the page's main
+// thread.
 const SCARD_BREATH_MS = 1600;
 // A card's slide to a new place, about the length of Claude Code's own
 // transform transitions (.15s to .2s), quick to start and easing into place,
@@ -10112,7 +10119,13 @@ function ccupSessionCardsWeb(
         ];
         for (const q of asks) follow(s, q);
         waiting = asks.length > 0;
-        ongoing = s.busy.value || s.backgroundTaskIds.value.size > 0;
+        // A turn, or a background task still to report: the agents and
+        // workflows Claude Code counts as running, and the rest it lists
+        // (a shell, a monitor), which it does not.
+        ongoing =
+          s.busy.value ||
+          s.backgroundTaskIds.value.size > 0 ||
+          (s.backgroundTasks?.value?.size ?? 0) > 0;
         if (ongoing || s === active) done.delete(s);
         else if (worked.get(s)) done.add(s);
         worked.set(s, ongoing);
@@ -10143,11 +10156,11 @@ function ccupSessionCardsWeb(
         if (phase) seen.set(id, phase);
       }
       // The circle, by the first of these that holds: a prompt or question
-      // waiting on you (solid clay), work that asks nothing of you (breathing),
-      // a turn that ended unseen (solid green), a draft in its input box (a
-      // still dot, the session on screen's in its own color), else a ring.
-      // The session on screen takes neither the clay nor the green, what it
-      // asks being in front of you.
+      // waiting on you (solid amber, the title breathing), work that asks
+      // nothing of you (breathing orange), a turn that ended unseen (solid
+      // green), a draft in its input box (a still dot, the session on
+      // screen's in its own color), else a ring. The session on screen takes
+      // neither the amber nor the green, what it asks being in front of you.
       const working = ongoing && !waiting;
       const pending =
         s === active
@@ -10328,15 +10341,24 @@ function ccupSessionCardsWeb(
       away = off;
     }
   };
-  // The breathing circles keep one beat, each breath counted from the
-  // document's start rather than from whenever its card began working or was
-  // last moved (a node moved in the document starts its animations over), so
-  // several breathe as one.
+  // The breathing circles and titles keep one beat, each breath counted from
+  // the document's start rather than from whenever its card began working or
+  // waiting or was last moved (a node moved in the document starts its
+  // animations over), so several breathe as one.
   const beat = (): void => {
-    if (!list.querySelector(":scope > [data-working]")) return;
+    if (
+      !list.querySelector(
+        ":scope > [data-working],:scope > [data-pending=input]",
+      )
+    )
+      return;
     try {
       for (const a of list.getAnimations({ subtree: true }))
-        if (a.animationName === "ccup-card-breathe" && a.startTime !== 0)
+        if (
+          (a.animationName === "ccup-card-breathe" ||
+            a.animationName === "ccup-card-breathe-title") &&
+          a.startTime !== 0
+        )
           a.startTime = 0;
     } catch {
       // each keeps its own
@@ -10930,13 +10952,16 @@ function scardSide(): ScardSide {
 // row's background, groove included, so it stands apart from them,
 // scrolling sideways with no scrollbar of its own: cards with a leading
 // state circle (in the card's own color a hollow ring while the session is
-// idle, filled and breathing while it works with nothing asked of you, and
-// filled and still while its input box holds a draft or the session on
-// screen waits on you, as an editor tab's dot for unsaved changes takes the
-// tab's text color; solid clay while a prompt or question waits on you, and
-// solid green, the transcript's own dot for a tool call that succeeded,
-// while a turn that ended is unseen, each over a draft's dot; the breath
-// moves opacity alone, which the compositor runs by itself),
+// idle, and filled and still while its input box holds a draft or the
+// session on screen waits on you, as an editor tab's dot for unsaved changes
+// takes the tab's text color; filled in the orange of Claude Code's context
+// gauge, the used arc of the pie beside the input box's menu, and
+// breathing, while it works with nothing asked of you; solid amber, Claude
+// Code's warning accent, under a title breathing in the same time but only
+// down to .55, while a prompt or question waits on you; and solid green, the transcript's own
+// dot for a tool call that succeeded, while a turn that ended is unseen,
+// each over a draft's dot; a breath moves opacity alone, which the
+// compositor runs by itself),
 // the card on screen in the chat's background with its corners
 // and shoulders and the look's line, its text in the input box's color (the
 // editor tab's white read as distracting, and the others' grey would not set
@@ -10957,7 +10982,10 @@ function scardSide(): ScardSide {
 // strip's ends stay that far in from the sides, clear of that clip.
 function scardCss(chat: string, look: ScardLook): string {
   const tab = (k: string, d: string) => `var(--vscode-tab-${k},${d})`;
-  const clay = "var(--app-claude-orange,#d97757)";
+  // Claude Code's own colors: the orange of its context gauge's used arc
+  // (the send button's), and the amber of its warning notices.
+  const run = "var(--app-claude-clay-button-orange,#c6613f)";
+  const amber = "var(--app-warning-accent,#e5a54b)";
   const green = "#74c991"; // the transcript's dot for a tool call that succeeded
   const grey = tab("inactiveForeground", "var(--app-secondary-foreground)");
   const hover = `background:var(--app-ghost-button-hover-background);color:${tab("hoverForeground", "var(--app-primary-foreground)")}`;
@@ -10996,8 +11024,10 @@ function scardCss(chat: string, look: ScardLook): string {
     ".ccup-card-dot{flex:none;box-sizing:border-box;width:8px;height:8px;border:1.5px solid currentColor;border-radius:50%;background:transparent}" +
     ".ccup-card[data-ongoing] .ccup-card-dot,.ccup-card[data-draft] .ccup-card-dot{background:currentColor}" +
     "@keyframes ccup-card-breathe{0%,to{opacity:1}50%{opacity:.4}}" +
-    `.ccup-card[data-working] .ccup-card-dot{animation:${SCARD_BREATH_MS}ms ease-in-out infinite ccup-card-breathe}` +
-    `.ccup-card[data-pending=input] .ccup-card-dot{border-color:${clay};background:${clay}}` +
+    "@keyframes ccup-card-breathe-title{0%,to{opacity:1}50%{opacity:.55}}" +
+    `.ccup-card[data-working] .ccup-card-dot{border-color:${run};background:${run};animation:${SCARD_BREATH_MS}ms ease-in-out infinite ccup-card-breathe}` +
+    `.ccup-card[data-pending=input] .ccup-card-dot{border-color:${amber};background:${amber}}` +
+    `.ccup-card[data-pending=input] .ccup-card-label{animation:${SCARD_BREATH_MS}ms ease-in-out infinite ccup-card-breathe-title}` +
     `.ccup-card[data-pending=done] .ccup-card-dot{border-color:${green};background:${green}}` +
     `.ccup-card:not([data-active])${HOVER}{${hover}}` +
     ".ccup-card[data-flying]{z-index:1}" +

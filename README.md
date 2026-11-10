@@ -85,9 +85,10 @@ Behavior
    │                                   #   (either button On: a question box dims the history like a
    │                                   #   permission box, and an open find bar lifts the dim)
    ├── chatSessionCards                # sidebar: recent session cards below the input box, if On
-   │                                   #   (unsent drafts first, with a still dot; breathes while
-   │                                   #   working, clay when it needs attention, green when a
-   │                                   #   finished turn is unseen)
+   │                                   #   (unsent drafts first, with a still dot; breathes orange
+   │                                   #   while working, background tasks included, amber with a
+   │                                   #   breathing title when it needs you, green when a finished
+   │                                   #   turn is unseen)
    ├── chatShowMoreAndLessAlign        # "left" / "right", empty "" -> native
    ├── chatPermissionCodeMatchChatCodeBlock  # permission cmd: IN block's .85em (On) or .9em (Off)
    ├── chatPermissionCodeNoWrap        # permission cmd: no-wrap + h-scroll (On) or wrap (Off)

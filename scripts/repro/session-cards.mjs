@@ -39,16 +39,22 @@
 //             out to assistive tech
 //   tip       the hover tip is the full title alone, where the card cuts it
 //   circle    each card leads with a circle: a ring in the card's color while
-//             the session is idle, solid clay while a prompt or question waits
-//             on you, solid green while a turn that ended is unseen
+//             the session is idle, solid amber (Claude Code's warning accent)
+//             under a title breathing in the circle's time, though only down
+//             to .55, while a prompt or question waits on you, solid green
+//             while a turn that ended is unseen
 //   at work   a turn running here (on screen or behind it) or reported from
-//             an editor tab or a terminal fills the circle and breathes it on
+//             an editor tab or a terminal fills the circle in the orange of
+//             Claude Code's context gauge (the used arc of the pie beside the
+//             input box's menu, as the bundle draws it) and breathes it on
 //             its opacity alone, with the timing and keyframe offsets the live
 //             stylesheet gives the native running label ("Thinking…") but down
 //             to .4, a dot's depth, every breathing circle in step, a card
 //             that moves or remounts included; one waiting on you holds still
-//             (solid clay, or in the card's color on screen), a finished one
-//             turns green, and after a reload every card is a ring
+//             (solid amber, or in the card's color on screen), a finished one
+//             turns green, a turn that ends while a background task of its
+//             still runs (a shell here) keeps breathing until the task is
+//             gone, and after a reload every card is a ring
 //   seamless  the card on screen is the chat's own background, joined to
 //             the chat above with no edge, its bottom corners rounded and the
 //             strip curving into it at the top, on the screen's pixels, and
@@ -66,7 +72,7 @@
 //   held      a turn that ends in a session this view holds while another
 //             is on screen turns its circle green until you open it, a grey
 //             ring once you move on, and a permission request arriving there
-//             turns it clay
+//             turns it amber, its title breathing in step
 //   keys      the strip is one tab stop, arrows move between its buttons
 //             and cards (Home and End reaching the buttons), and Enter opens
 //             a card
@@ -109,7 +115,7 @@
 //   drafts    sessions you leave with a message unsent in the input box come
 //             first, each behind the ones left before it, a still dot in the
 //             card's grey for their circle; the card on screen stays where it
-//             is while you type, its dot in its own color; clay over the dot
+//             is while you type, its dot in its own color; amber over the dot
 //             while a request waits on you, a breath while its turn runs,
 //             green once that turn ends unseen, each keeping the draft's
 //             place, which a prompt sent from it gives up, as does leaving it
@@ -436,12 +442,16 @@ const HEAD_NEW = 'button[aria-label="New session"]:not(.ccup-cards-btn)';
 const INPUT = '[aria-label="Message input"]';
 const HIDE_TIP = "Hide Secondary Side Bar";
 const RELOAD = "Reload the window to start using the side bar hide button.";
-// The circle's colors as computed: clay (Claude Code's orange) for a session
-// waiting on you, green (the transcript's dot for a tool call that succeeded)
-// for a turn that ended unseen; and the name of the breathing keyframes.
-const CLAY = "rgb(217, 119, 87)";
+// The circle's colors as computed: amber (Claude Code's warning accent) for a
+// session waiting on you, orange (its context gauge's used arc) for one at
+// work, green (the transcript's dot for a tool call that succeeded) for a turn
+// that ended unseen; and the names of the breathing keyframes, a circle's and
+// a title's.
+const AMBER = "rgb(229, 165, 75)";
+const RUN = "rgb(198, 97, 63)";
 const GREEN = "rgb(116, 201, 145)";
 const BREATH = "ccup-card-breathe";
+const TITLE_BREATH = "ccup-card-breathe-title";
 
 export async function run(ctx) {
   const dir = liveBundleDir();
@@ -460,6 +470,12 @@ export async function run(ctx) {
   // patcher writes it, whose geometry the strip's buttons take.
   const PILL = native.match(
     /pill:"(pill_[-\w]+)",icon:"icon_[-\w]+",thumbIcon:"thumbIcon_[-\w]+"/,
+  )?.[1];
+  // The variable Claude Code's context gauge (the pie beside the input box's
+  // menu) strokes its used arc with, whose color a working card's circle
+  // takes.
+  const PIE_VAR = native.match(
+    /stroke:"var\((--[\w-]+)\)",strokeWidth:"1\.5",strokeLinecap:"round"\}\)\]\}\)\}var [\w$]+=\{usage:"usage_[-\w]+",pie:"pie_[-\w]+"\}/,
   )?.[1];
   const patcherJs = readFileSync(
     join(
@@ -599,14 +615,14 @@ export async function run(ctx) {
     }
   };
   // The cards as shown: session letter, then * for the one on screen, ! for a
-  // solid clay circle (waiting on you) and + for a solid green one (a turn
+  // solid amber circle (waiting on you) and + for a solid green one (a turn
   // that ended unseen).
   const LETTER = Object.fromEntries(Object.entries(S).map(([k, v]) => [v, k]));
   const strip = async () =>
     (
       await json(
         `[].map.call(document.querySelectorAll(${JSON.stringify(CARD)}),function(b){var c=getComputedStyle(b.firstChild).backgroundColor;` +
-          `return[b.dataset.id,b.hasAttribute("data-active"),c===${JSON.stringify(CLAY)}?"!":c===${JSON.stringify(GREEN)}?"+":""]})`,
+          `return[b.dataset.id,b.hasAttribute("data-active"),c===${JSON.stringify(AMBER)}?"!":c===${JSON.stringify(GREEN)}?"+":""]})`,
       )
     )
       .map(([i, a, p]) => `${LETTER[i] ?? "?"}${a ? "*" : ""}${p}`)
@@ -904,7 +920,7 @@ export async function run(ctx) {
     await ctx.sleep(200);
     const s1 = await strip();
     check(
-      "pending: awaiting input marks the card clay and unread green, never the session on screen",
+      "pending: awaiting input marks the card amber and unread green, never the session on screen",
       s1 === "B! C A* D+ E F",
       s1,
     );
@@ -912,13 +928,23 @@ export async function run(ctx) {
       `(function(){var b=${cardEl("E")},d=b.firstChild,s=getComputedStyle(d),c=getComputedStyle(b);` +
         `return{bg:s.backgroundColor,edge:s.borderTopColor,ink:c.color,aria:b.getAttribute("aria-label")}})()`,
     );
+    // A color as the live stylesheet resolves a variable, on a probe.
+    const resolve = (v) =>
+      ctx.evaluate(
+        `(function(){var d=document.createElement("span");d.style.color="var(${v})";` +
+          `document.body.appendChild(d);var c=getComputedStyle(d).color;d.remove();return c})()`,
+      );
+    const pie = PIE_VAR ? await resolve(PIE_VAR) : null;
+    const warn = await resolve("--app-warning-accent");
     check(
-      "circle: filled in the card's own grey while the session is at work, its label saying so",
-      re.bg === re.ink &&
-        re.edge === re.ink &&
+      "circle: filled in the orange of Claude Code's context gauge while the session is at work, its label saying so",
+      !!pie &&
+        re.bg === pie &&
+        re.edge === pie &&
+        pie === RUN &&
         re.ink === "rgb(157, 157, 157)" &&
         re.aria === `${TITLES.E} — running`,
-      JSON.stringify(re),
+      JSON.stringify({ re, PIE_VAR, pie }),
     );
     // Circles: C idle, A on screen and idle, B waiting on you mid-turn, D
     // unread.
@@ -957,13 +983,45 @@ export async function run(ctx) {
         ra.ink !== rc.ink,
       JSON.stringify({ ra, composer }),
     );
+    // A card's title as it breathes, or not: its animation's name, timing
+    // and opacity keyframes, and where its cycle starts.
+    const title = (k) =>
+      json(
+        `(function(){var l=${cardEl(k)}.lastChild,s=getComputedStyle(l),a=l.getAnimations()[0];` +
+          `return{name:s.animationName,dur:s.animationDuration,ease:s.animationTimingFunction,start:a?a.startTime:null,` +
+          `values:a?a.effect.getKeyframes().map(function(f){return[f.offset,f.opacity]}):[]}})()`,
+      );
+    const [tb, tc, td, te] = [
+      await title("B"),
+      await title("C"),
+      await title("D"),
+      await title("E"),
+    ];
+    const [db, de] = [await breath("B"), await breath("E")];
     check(
-      "circle: solid clay while a turn waits on you, solid green for a finished one unseen",
-      rb.bg === CLAY &&
-        rb.edge === CLAY &&
-        rd.bg === GREEN &&
-        rd.edge === GREEN,
-      JSON.stringify({ rb, rd }),
+      "circle: solid amber, Claude Code's warning accent, still, under a title breathing in the circle's time down to .55 while a turn waits on you",
+      rb.bg === warn &&
+        rb.edge === warn &&
+        warn === AMBER &&
+        db.name === "none" &&
+        tb.name === TITLE_BREATH &&
+        tb.dur === de.dur &&
+        tb.ease === de.ease &&
+        JSON.stringify(tb.values) === '[[0,"1"],[0.5,"0.55"],[1,"1"]]' &&
+        tb.start === 0 &&
+        [tc, td, te].every((t) => t.name === "none"),
+      JSON.stringify({
+        rb,
+        warn,
+        db: db.name,
+        tb,
+        others: [tc.name, td.name, te.name],
+      }),
+    );
+    check(
+      "circle: solid green for a finished turn unseen",
+      rd.bg === GREEN && rd.edge === GREEN,
+      JSON.stringify(rd),
     );
     // The breath: E works with nothing asked of you, so its circle breathes
     // on its opacity alone, counted from the document's start, in the time
@@ -1593,7 +1651,7 @@ export async function run(ctx) {
     // Other surfaces: C, open in a tab, is reported idle and then running
     // there (the turn a message starts), and so is F, which a terminal holds.
     // Each moves first and breathes while it runs, and F waiting on you in
-    // the terminal turns solid clay, still, until it is idle again.
+    // the terminal turns solid amber, still, until it is idle again.
     const feed = (sessions, live) =>
       ctx.evaluate(
         `window.__push({type:"session_states_update",sessions:${JSON.stringify(sessions)},activeSessionId:"${S.A}",` +
@@ -1660,7 +1718,7 @@ export async function run(ctx) {
       JSON.stringify(o2),
     );
     check(
-      "at work: waiting on you in a terminal holds the circle still in solid clay, a ring again once idle",
+      "at work: waiting on you in a terminal holds the circle still in solid amber, a ring again once idle",
       o3.order.startsWith("F! ") &&
         o3.fill.includes("F+") &&
         o4.order.startsWith("F ") &&
@@ -1756,28 +1814,40 @@ export async function run(ctx) {
       }),
     );
     // On screen, a prompt waiting on you holds A's circle still, filled in
-    // its own color (never clay there), its label saying what it waits for;
-    // once the host withdraws the prompt, A breathes again, in step.
+    // its own color (never amber there, its title still), its label saying
+    // what it waits for; once the host withdraws the prompt, A breathes again
+    // in step, in the context gauge's orange as the others do.
     const rid = await ctx.evaluate(`window.__permit(${JSON.stringify(S.A)})`);
     await ctx.sleep(300);
     const holdA = await json(
       `(function(){var b=${cardEl("A")},s=getComputedStyle(b.firstChild);` +
-        `return{name:s.animationName,bg:s.backgroundColor,ink:getComputedStyle(b).color,aria:b.getAttribute("aria-label")}})()`,
+        `return{name:s.animationName,bg:s.backgroundColor,ink:getComputedStyle(b).color,aria:b.getAttribute("aria-label"),` +
+        `title:getComputedStyle(b.lastChild).animationName}})()`,
     );
     const sHold = await strip();
     await ctx.evaluate(`window.__unpermit(${JSON.stringify(rid)})`);
     await ctx.sleep(300);
     const backA = await breath("A");
+    const backBg = await ctx.evaluate(
+      `getComputedStyle(${cardEl("A")}.firstChild).backgroundColor`,
+    );
     check(
-      "breath: the session on screen holds still while a prompt waits on you, filled in its own color, then breathes on in step",
+      "breath: the session on screen holds still while a prompt waits on you, filled in its own color, then breathes on in step, orange",
       holdA.name === "none" &&
         holdA.bg === holdA.ink &&
-        holdA.ink !== CLAY &&
+        holdA.bg !== AMBER &&
+        holdA.title === "none" &&
         holdA.aria.endsWith("awaiting input") &&
         /(^| )A\*( |$)/.test(sHold) &&
         backA.name === BREATH &&
-        backA.start === 0,
-      JSON.stringify({ holdA, sHold, backA: [backA.name, backA.start] }),
+        backA.start === 0 &&
+        backBg === RUN,
+      JSON.stringify({
+        holdA,
+        sHold,
+        backA: [backA.name, backA.start],
+        backBg,
+      }),
     );
     await feed(tabC("idle"), termF("idle"));
     await ctx.sleep(150);
@@ -2002,10 +2072,14 @@ export async function run(ctx) {
     await ctx.sleep(300);
     const s7 = await strip();
     const why = await ctx.evaluate(`${cardEl("A")}.getAttribute("aria-label")`);
+    const t7 = await title("A");
     check(
-      "held: a permission request in the background turns its circle solid clay",
-      s7.includes("A!") && why.endsWith("awaiting input"),
-      `${s7} / ${why}`,
+      "held: a permission request in the background turns its circle solid amber, its title breathing in step",
+      s7.includes("A!") &&
+        why.endsWith("awaiting input") &&
+        t7.name === TITLE_BREATH &&
+        t7.start === 0,
+      JSON.stringify({ s7, why, t7 }),
     );
 
     // Keys: one tab stop; arrows move, Home and End reaching the buttons;
@@ -2060,7 +2134,10 @@ export async function run(ctx) {
     // where it was: the chat its session remounts moves the strip back below
     // it, which starts the scroller over, and the reveal from there would
     // show the card in the right slot instead (a card here that opens here,
-    // not one open in a tab, with a card after it).
+    // not one open in a tab, with a card after it). The switch Enter made
+    // settles first, so its own remount does not put back the offset the
+    // strip had before this scroll (once seen on 2.1.300 and .286).
+    await ctx.sleep(300);
     const perK = await ctx.evaluate(
       `parseFloat(${q(LIST)}.style.getPropertyValue("--ccup-card-w"))`,
     );
@@ -3048,7 +3125,7 @@ export async function run(ctx) {
       JSON.stringify({ an2, an3 }),
     );
     if (keepsDrafts) {
-      // A request waiting on you in A, a draft behind the one on screen: clay
+      // A request waiting on you in A, a draft behind the one on screen: amber
       // over the draft's dot, which is back once the host takes it back.
       const ridA = await ctx.evaluate(
         `window.__permit(${JSON.stringify(S.A)})`,
@@ -3063,7 +3140,7 @@ export async function run(ctx) {
         why: await aria("A"),
       };
       check(
-        "drafts: a request waiting on you shows clay over the draft's dot, the dot back once it is taken back, the place kept",
+        "drafts: a request waiting on you shows amber over the draft's dot, the dot back once it is taken back, the place kept",
         dq5.order === "A! C E D* B F" &&
           dq5.why.endsWith("awaiting input") &&
           dq6.order === "A C E D* B F" &&
@@ -3149,6 +3226,59 @@ export async function run(ctx) {
         JSON.stringify({ dq13, dq14 }),
       );
     }
+
+    // Background: a turn that ends while a background task of its still runs
+    // (a shell here, which Claude Code itself does not count as running)
+    // keeps its card breathing orange, never green, until the CLI lists the
+    // task no more; then the turn that ended unseen turns it green.
+    await ctx.navigate(base + "__fresh");
+    const bgUp = !!(await boot());
+    await ctx.sleep(400);
+    const tasksA = (list) =>
+      ctx.evaluate(
+        `window.__io(window.__chan[${JSON.stringify(S.A)}],{type:"system",subtype:"background_tasks_changed",` +
+          `tasks:${JSON.stringify(list)},session_id:${JSON.stringify(S.A)},uuid:crypto.randomUUID()});true`,
+      );
+    await send("Run the tests in the background.");
+    const bgRan = await until(
+      `Object.keys(window.__lives).some(function(c){return window.__lives[c].sid===${JSON.stringify(S.A)}})`,
+      5000,
+    );
+    await ctx.sleep(300);
+    await tasksA([
+      { task_id: "bash_1", task_type: "local_bash", description: "npm test" },
+    ]);
+    await ctx.sleep(200);
+    await go("C");
+    await ctx.evaluate(`window.__finish(${JSON.stringify(S.A)})`);
+    await ctx.sleep(400);
+    const bg1 = {
+      strip: await strip(),
+      fill: await fills(),
+      why: await aria("A"),
+      busy: await ctx.evaluate(
+        `window.__ccupSessionCards.rows.find(function(r){return r.id===${JSON.stringify(S.A)}}).s.busy.value`,
+      ),
+      bg: await ctx.evaluate(
+        `getComputedStyle(${cardEl("A")}.firstChild).backgroundColor`,
+      ),
+    };
+    await tasksA([]);
+    await ctx.sleep(300);
+    const bg2 = { strip: await strip(), fill: await fills() };
+    check(
+      "at work: a turn that ends while a background shell of its runs keeps the card breathing orange, not green, until the shell is gone",
+      bgUp &&
+        !!bgRan &&
+        bg1.busy === false &&
+        bg1.fill.includes("A~") &&
+        !bg1.strip.includes("A+") &&
+        bg1.bg === RUN &&
+        bg1.why.endsWith("running") &&
+        bg2.strip.includes("A+") &&
+        bg2.fill.includes("A+"),
+      JSON.stringify({ bgRan: !!bgRan, bg1, bg2 }),
+    );
 
     // Editor tab: no strip at all.
     await ctx.navigate(base + "?editor=1");

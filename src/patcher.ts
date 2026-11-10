@@ -11339,6 +11339,9 @@ export function sidebarHideHost(host: string): string | null {
 //           single-line query can never match across; hidden text is skipped
 //           via checkVisibility (collapsed "Show more" content stays
 //           unsearchable, matching native find's visible-only semantics).
+//           Text set out for screen readers alone is skipped by its class,
+//           since it passes that check while clipped to a pixel: each turn
+//           carries its prompt a second time that way, as a heading.
 //           Rendered math reads as its TeX, the way the raw markdown does:
 //           each formula is one unit, fenced by "\n" so no match crosses its
 //           edge, holding its TeX body in either native render state (KaTeX
@@ -11446,6 +11449,9 @@ const FINDBAR_CSS_ANCHOR_RE = /\.messagesContainer_[-\w]+/;
 // Set by native math's formula component alone (its scroll helpers only read
 // it), on a span it keeps while swapping raw source and KaTeX inside.
 const FINDBAR_MATH_ATTR = "data-redrawn";
+// A class map entry for text shown to screen readers alone: the key and the
+// class share the name, as in visuallyHidden:"visuallyHidden_<hash>".
+const FINDBAR_SR_RE = /\b(visuallyHidden|srOnly):"(\1_[-\w]+)"/g;
 // The option toggles' codicons, by toggle: case-sensitive, whole-word, regex.
 const FINDBAR_GLYPHS: [string, number][] = [
   ["c", 0xeab1],
@@ -12013,22 +12019,42 @@ function ccupFindBarWebview(): void {
       return m ? (m[1] || m[2] || m[3] || m[4] || "").trim() : raw;
     };
 
+    // Text set out for screen readers alone: each turn's "You: ..." heading
+    // (a second copy of the prompt), a "Show more" kept for the keyboard,
+    // a spinner's status. It is clipped to a pixel, which checkVisibility
+    // passes, so it is told by the bundle's own classes for it, baked into
+    // the cfg.
+    const SR = (cfg.sr || []).map((c: string) => "." + c).join(",");
+
     // Visible text nodes of the transcript, concatenated with per-node
     // offsets; "\n" separates blocks (a single-line query can't cross it).
     // A formula enters as its unit element and TeX, fenced by "\n" on both
-    // sides, and the walk skips what renders inside it.
+    // sides, and the walk skips what renders inside it. Text for screen
+    // readers alone shows nowhere and stays out.
     const collect = (): any => {
       const nodes: any[] = [];
       const offs: number[] = [];
       let hay = "";
       const root = container();
       if (!root) return { nodes, offs, hay };
+      // Every element of the screen-reader subtrees, which are few and
+      // small, so a text node's parent is one lookup away.
+      const hid = new Set();
+      if (SR) {
+        const hs = root.querySelectorAll(SR);
+        for (let i = 0; i < hs.length; i++) {
+          hid.add(hs[i]);
+          const ds = hs[i].getElementsByTagName("*");
+          for (let j = 0; j < ds.length; j++) hid.add(ds[j]);
+        }
+      }
       const vis = new Map();
       const visible = (el: any): boolean => {
         let v = vis.get(el);
         if (v === undefined) {
           const t = el.tagName;
-          v = t !== "SCRIPT" && t !== "STYLE" && t !== "NOSCRIPT";
+          v =
+            t !== "SCRIPT" && t !== "STYLE" && t !== "NOSCRIPT" && !hid.has(el);
           if (v && el.checkVisibility) {
             try {
               v = el.checkVisibility();
@@ -13466,6 +13492,13 @@ function findBarCfgBuild(c: string): string | undefined {
   // Native math's formula wrapper attribute (2.1.301+), the engine's math
   // unit; "" on a build without it leaves .ccup-math and .katex.
   const math = c.includes(`"${FINDBAR_MATH_ATTR}"`) ? FINDBAR_MATH_ATTR : "";
+  // The classes that set text out for screen readers alone, one per module
+  // that declares such a class, which the engine leaves unsearched. None on
+  // a build without them searches that text as before.
+  const sr: string[] = [];
+  for (const m of c.matchAll(FINDBAR_SR_RE)) {
+    if (!sr.includes(m[2])) sr.push(m[2]);
+  }
   // The chat header, whose right end the bar covers, named by the hash its
   // module's headerSpacer key carries; "" keeps the bar in its corner.
   const hs = c.match(/headerSpacer:"headerSpacer_([-\w]+)"/)?.[1];
@@ -13479,6 +13512,7 @@ function findBarCfgBuild(c: string): string | undefined {
     head,
     blocks,
     math,
+    sr,
     open: k.open,
     next: k.next,
     prev: k.prev,

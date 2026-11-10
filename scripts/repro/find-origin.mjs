@@ -16,6 +16,9 @@
 //           from there and the shorter one comes back to it. A landing's own
 //           scroll leaves the origin alone, while a wheel turn, a press, and
 //           a key in the chat each hand it back to the reading position
+//   hidden  a prompt's text matches once: its second copy, a heading for
+//           screen readers clipped to a pixel, is no match, and neither is
+//           a "Show more" that shows nowhere
 //   wrap    with no match from the origin on, the first match overall
 //   flip    an option flipped on and off again ends on the same match
 //   swap    a new session, which has no transcript at all, takes the
@@ -292,6 +295,8 @@ const TYPES = {
 const PROBES = `(() => {
   const sc = () => document.querySelector('[class*="messagesContainer_"]');
   const STICKY = '[class*="stickyHeader_"]';
+  // Text set out for screen readers alone, clipped to a pixel.
+  const SR = '[class*="visuallyHidden_"],[class*="srOnly_"]';
   const pr = document.createRange();
   window.__fg = {
     sc,
@@ -329,8 +334,9 @@ const PROBES = `(() => {
       }
       return e;
     },
-    // The transcript's visible text nodes, in document order.
-    nodes() {
+    // The transcript's visible text nodes, in document order: none of the
+    // text for screen readers alone, unless all is asked for.
+    nodes(all) {
       const out = [], vis = new Map();
       const w = document.createTreeWalker(sc(), 4);
       while (w.nextNode()) {
@@ -338,12 +344,35 @@ const PROBES = `(() => {
         if (!p || !n.nodeValue) continue;
         let v = vis.get(p);
         if (v === undefined) {
-          v = !["SCRIPT", "STYLE", "NOSCRIPT"].includes(p.tagName) && p.checkVisibility();
+          v = !["SCRIPT", "STYLE", "NOSCRIPT"].includes(p.tagName) && p.checkVisibility() &&
+            (!!all || !p.closest(SR));
           vis.set(p, v);
         }
         if (v) out.push(n);
       }
       return out;
+    },
+    // How often q occurs in the text that shows, and in the text for screen
+    // readers alone, with the registered ranges that start in the latter.
+    copies(q) {
+      const Q = q.toLowerCase();
+      const count = (ns) => {
+        let c = 0;
+        for (const n of ns) {
+          const t = n.nodeValue.toLowerCase();
+          for (let k = t.indexOf(Q); k >= 0; k = t.indexOf(Q, k + Q.length)) c++;
+        }
+        return c;
+      };
+      const shown = count(__fg.nodes()), every = count(__fg.nodes(true));
+      let ranges = 0;
+      for (const name of ["ccup-find", "ccup-find-active"]) {
+        for (const r of CSS.highlights.get(name) || []) {
+          const e = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement;
+          if (e && e.closest(SR)) ranges++;
+        }
+      }
+      return { shown, hidden: every - shown, ranges };
     },
     // b cut to the boxes that clip node n: a pinned header, a folded row.
     clipped(n, b) {
@@ -953,6 +982,39 @@ export async function run(ctx) {
       "moves: and so does a key in the chat",
       byKey.same && !keyed.wrapped,
       J({ ...byKey, rank: keyed.rank }),
+    );
+
+    // hidden: each turn carries its prompt a second time, as a heading for
+    // screen readers, and a "Show more" for the keyboard, both clipped to a
+    // pixel. Neither is a match.
+    await openAt(places[0]);
+    const prompt = "Turn 12:";
+    await paste(prompt);
+    const once = {
+      count: await ev("__fg.count()"),
+      ...(await ev(`__fg.copies(${J(prompt)})`)),
+    };
+    check(
+      "hidden: a prompt's text matches once, its copy for screen readers left out",
+      once.shown === 1 &&
+        once.hidden >= 1 &&
+        once.ranges === 0 &&
+        once.count === "1 of 1",
+      J(once),
+    );
+    await paste("Show more");
+    const button = {
+      count: await ev("__fg.count()"),
+      ...(await ev(`__fg.copies("Show more")`)),
+    };
+    check(
+      'hidden: so is a "Show more" that shows nowhere',
+      button.hidden >= 5 &&
+        button.ranges === 0 &&
+        (button.shown
+          ? button.count.endsWith(` of ${button.shown}`)
+          : button.count === "No results"),
+      J(button),
     );
 
     // wrap: at the end, the token's matches all lie above.

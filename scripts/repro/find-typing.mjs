@@ -333,7 +333,9 @@ const PROBES = `(() => {
       let want = 0, miss = 0;
       while (w.nextNode()) {
         const n = w.currentNode;
-        if (!n.parentElement || !n.parentElement.checkVisibility()) continue;
+        // Text for screen readers alone (each turn's second copy of its
+        // prompt, clipped to a pixel) is no match, though visible to this.
+        if (!n.parentElement || !n.parentElement.checkVisibility() || n.parentElement.closest('[class*="visuallyHidden_"]')) continue;
         const t = n.nodeValue.toLowerCase();
         for (let i = t.indexOf(Q); i >= 0; i = t.indexOf(Q, i + Q.length)) {
           pr.setStart(n, i);
@@ -605,8 +607,8 @@ export async function run(ctx) {
     );
     c = await ev(`__ft.cover("${MARK}")`);
     check(
-      "the pinned header's matches and the view's are painted",
-      h.painted + h.active >= 2 && c.miss === 0,
+      "the pinned header's match and the view's are painted",
+      h.painted === 1 && h.active === 0 && c.miss === 0,
       `${J(h)} ${J(c)}`,
     );
     await query("e");

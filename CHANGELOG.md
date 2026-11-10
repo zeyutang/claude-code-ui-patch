@@ -17,6 +17,8 @@
   The block ruler and the match count had stayed on screen from the previous session, over a new session with nothing in it too.
   The count reads `? of n` there until you step to a match or change the query.
 - With `chatFindBar` on, the match count is exact up to 200000 matches, where it read `20000+`.
+- With `chatFindBar` on, text that only screen readers get, such as the hidden copy the chat keeps of each of your messages, no longer counts as a match.
+  A message's text had matched twice, and the first of the two matches highlighted nothing.
 
 ## 1.7.1
 

@@ -163,6 +163,9 @@ Install from the **Open VSX Registry**: [Claude Code UI Patch](https://open-vsx.
 - **`chatFindBar` replaces native `Cmd`/`Ctrl`+`F` widget inside the chat webview** (tab and sidebar alike).
   The Match Case, Match Whole Word, and Use Regular Expression toggles in its input work as in the editor's find widget, with JavaScript regular expression syntax.
   Math in agent responses matches by its TeX source, as its raw markdown reads, so `\frac{a}{b}` finds that fraction while the symbols it renders do not match.
+  A query lands on the first match from where you were reading when you began typing it, then wraps to the first in the conversation.
+  Stepping to a match, or scrolling or clicking in the chat, moves that starting place.
+  After a session switch the count reads `? of n` until you step to a match or change the query.
 - **`chatSessionCards` shows local sessions in the sidebar chat only.**
   Sessions you left with an unsent message in the sidebar's input box come first, in the order you left them, then the rest from the session where you last sent a message or answered a permission or question prompt, not counting a model or effort change or a slash command.
   A new session gets its card once you send it a message or Claude starts working in it, or once you leave it with an unsent message in its input box.

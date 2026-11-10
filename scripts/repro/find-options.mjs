@@ -556,6 +556,16 @@ export async function run(ctx) {
       "search: Match Case counts the lowercase ones and keeps the place, zetas second of them",
       "2 of 7",
     );
+    // A wheel turn in the chat hands the queries' origin back to the reading
+    // position, so the counts below start from the first match again and
+    // not from zetas, where the steps left the origin.
+    await ctx.cdp("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: 300,
+      y: 300,
+      deltaX: 0,
+      deltaY: 1,
+    });
     await query("Zeta");
     await countIs("search: Match Case finds Zeta once", "1 of 1");
     await setOpts({ w: 1 });

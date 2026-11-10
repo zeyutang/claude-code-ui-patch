@@ -10,10 +10,10 @@
 //           one-letter query, yet every match in view is painted: at the
 //           bottom, after a jump to the top, at each step of a wheel scroll,
 //           and after a jump into the middle
-//   pinned  deep inside the long turn, a query landing in its pinned header
-//           picks that match first, as the linear scan did, and the
-//           header's matches stay painted though their document position
-//           lies far above the view
+//   pinned  deep inside the long turn, a query that its pinned header
+//           matches too lands on the first match under the header, the
+//           header's own lying above the reading position, and those stay
+//           painted though their document position lies far above the view
 //   rescan  an appended match is counted and painted without a keystroke,
 //           and text hidden by an attribute drops out on the next one
 //   close   Escape inside the input debounce leaves nothing painted, and a
@@ -63,8 +63,7 @@ function liveBundleDir() {
 
 const R = "66666666-6666-4666-8666-666666666666";
 const TURNS = 120;
-// The long turn: early enough that a one-letter query's matches there fall
-// under the bar's 20000 match cap, which bounds both engines alike.
+// The long turn, early in the transcript.
 const LONG = 10;
 const MARK = "zebraquux";
 // The painted window's cap (WINMAX in the engine), plus the pinned header's
@@ -440,8 +439,21 @@ export async function run(ctx) {
     await ctx.cdp("Input.insertText", { text: q });
     await settle(300);
   };
-  const scrollBy = (expr) =>
-    ev(`(() => { const s = __ft.sc(); s.scrollTop = ${expr}; })()`);
+  // A wheel turn of 1px, which is what tells the bar that the user moved
+  // through the chat: only then does the next query take the reading
+  // position, where a scrollTop write alone leaves the query's origin be.
+  const nudge = () =>
+    ctx.cdp("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: 380,
+      y: 450,
+      deltaX: 0,
+      deltaY: 1,
+    });
+  const scrollBy = async (expr) => {
+    await ev(`(() => { const s = __ft.sc(); s.scrollTop = ${expr}; })()`);
+    await nudge();
+  };
   const mod = process.platform === "darwin" ? "metaKey" : "ctrlKey";
   const openChord = () =>
     ev(
@@ -561,7 +573,9 @@ export async function run(ctx) {
       const u = [...s.querySelectorAll('[class*="stickyHeader_"]')].find((h) => h.textContent.includes("${MARK}"));
       s.scrollTop += u.parentElement.getBoundingClientRect().top - s.getBoundingClientRect().top + 4200;
     })()`);
+    await nudge();
     await settle(150);
+    const deep = await ev("__ft.sc().scrollTop");
     // A changed value, so the input event fires; the search ignores case.
     await query(MARK.toUpperCase());
     let h = await ev("__ft.head()");
@@ -573,10 +587,21 @@ export async function run(ctx) {
       )
     )
       return false;
+    // The header's own match is the first of all, in the turn's prompt.
+    const under = await ev(`(() => {
+      const s = __ft.sc();
+      const u = [...s.querySelectorAll('[class*="stickyHeader_"]')].find((h) => h.textContent.includes("${MARK}"));
+      const a = [...(CSS.highlights.get("ccup-find-active") || [])][0];
+      return a ? { top: a.getBoundingClientRect().top, header: u.getBoundingClientRect().bottom, st: s.scrollTop } : null;
+    })()`);
     check(
-      "the query lands on the pinned header's match first, as the linear scan did",
-      (await ev("__ft.count()")).startsWith("1 of ") && h.active === 1,
-      `${landed} at the middle, ${await ev("__ft.count()")} inside ${J(h)}`,
+      "the query lands on the first match under the pinned header, not on the header's own, and the view holds",
+      !!under &&
+        h.active === 0 &&
+        under.top >= under.header &&
+        Math.abs(under.st - deep) < 1 &&
+        !(await ev("__ft.count()")).startsWith("1 of "),
+      `${landed} at the middle, ${await ev("__ft.count()")} inside ${J(h)} ${J(under)}, from ${deep}`,
     );
     c = await ev(`__ft.cover("${MARK}")`);
     check(

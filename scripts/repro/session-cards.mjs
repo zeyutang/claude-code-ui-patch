@@ -1127,9 +1127,25 @@ export async function run(ctx) {
     ]);
     const CHAT = "rgb(24, 24, 24)";
     const STRIP = "rgb(43, 43, 43)";
+    // Above the card, in the gap below the input box, lies the foot of Claude
+    // Code's own fade over the transcript (messageGradient, a gradient to the
+    // chat's color). Once the transcript scroller sits on a compositing layer
+    // of its own, as the wheel reversal fix's overscroll-behavior puts it
+    // (will-change does the same), the fade is drawn on a layer of its own
+    // too, and its dithering leaves the chat's color a level off there (23 to
+    // 25 where it reads a flat 24 without that rule), which no eye can tell.
+    // So that pixel only has to be the chat's color within 2 levels, which
+    // the strip's 43 or the input box's border is not.
+    const nearChat = (c) => {
+      const want = CHAT.match(/\d+/g).map(Number);
+      const got = (c.match(/\d+/g) || []).map(Number);
+      return (
+        got.length === 3 && got.every((v, i) => Math.abs(v - want[i]) <= 2)
+      );
+    };
     check(
       "seamless: the card on screen is the chat's background, joined to the chat above",
-      above === CHAT && joined === CHAT,
+      nearChat(above) && joined === CHAT,
       JSON.stringify({ above, joined }),
     );
     check(

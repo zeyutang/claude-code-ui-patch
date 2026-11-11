@@ -7,6 +7,8 @@
   This holds however you switch, such as with a session card or from the Session history list.
   A session you left at its last lines still opens there, with whatever arrived since.
   Always applied, no setting.
+- A code block's copy button now stays in view as you scroll through a long block, just under the message pinned at the top of the chat, rather than scrolling away with the block's first lines.
+  Always applied, no setting.
 
 ## 1.7.2
 

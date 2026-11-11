@@ -5952,6 +5952,479 @@ export function heredocWebview(web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Sticky copy button (always on): a fenced code block's copy button sits at
+// the block's top right, absolute at top:4px;right:4px inside the block's
+// position:relative wrapper, so the button of a long block scrolls away with
+// its first lines. Here it stays in view while the block scrolls: once the
+// block's top passes under the top of the chat, the button pins just under
+// the user message stuck there, at the block's right edge, and it leaves with
+// the block's end. Hovering the block still reveals it, as natively.
+//
+// Two halves, each gated on the other's sites: the rail moves the button out
+// of its place right before the <pre>, which is how a native rule hides it in
+// the question preview pane, so the JS half alone would show it there.
+//
+// webview/index.js, three fragments /*ccup:copyPin:<site>*/.../*ccup:copyPinEnd*/
+// in the code block component:
+//   open, close  wrap the copy button in a rail, an absolutely positioned,
+//                pointer-events:none box over the whole block, inside which
+//                the button is position:sticky. A sticky box keeps its room in
+//                its parent's flow, so the rail is what lets the button ride
+//                the block's height while the block lays out as natively, and
+//                the rail's end is where the ride stops.
+//   boot         the watch (ccupCopyPinWeb), started once per webview by the
+//                first code block that renders.
+//
+// webview/index.css, one fragment /*ccup:copyPin:css*/ after the last native
+// rule it reads:
+//   - the rail and the sticky button, inset as the native rule insets it, the
+//     top inset added to the height of the header stuck to the top of the
+//     chat, which the watch publishes per chat scroller.
+//   - overflow-x:clip in place of hidden on a markdown root holding a code
+//     block. A response's root is a flex item of its message row, so it is
+//     blockified and its hidden overflow makes it a scroll container, and a
+//     sticky box sticks to its nearest one: inside the root, which never
+//     scrolls vertically, the button would never move. clip clips the same
+//     edge and makes no scroll container.
+//   - for each native rule that makes a root scroll for real (from 2.1.301,
+//     .root_<hash>:has(.katex) with overflow-x:auto, so math wider than the
+//     chat can be scrolled to): overflow:clip on a root the watch marks as
+//     having nothing to scroll sideways, and no header offset inside one it
+//     leaves scrolling, where the button keeps its native place.
+//   - for each native rule hiding a button by its place right before a <pre>
+//     (the question preview pane), the same rule for the rail, which now
+//     sits there.
+//
+// The watch runs on a scroll, a resize, or a DOM change, coalesced to one
+// frame. Per chat scroller it publishes the stuck header's height as the
+// rawMd pin line does, through one rule per scroller in a <style> of its own
+// that matches only the rails. A rail with a scroll container of its own
+// between it and the chat (a tool result's, a plugin pane's) is marked once,
+// so the header's height stays out of it and the button sticks to that
+// container's top instead. A root holding a code block is marked while
+// nothing in it is wider than it and unmarked while something is, rechecked
+// as its content changes and as it resizes. Marking roots with no math yet
+// keeps the button from letting go when math typesets, which it does lazily,
+// as it nears the view.
+// ---------------------------------------------------------------------------
+const COPYPIN_BOOT = "/*ccup:copyPin:boot*/";
+const COPYPIN_OPEN = "/*ccup:copyPin:open*/";
+const COPYPIN_CLOSE = "/*ccup:copyPin:close*/";
+const COPYPIN_CSS = "/*ccup:copyPin:css*/";
+const COPYPIN_END = "/*ccup:copyPinEnd*/";
+const COPYPIN_FRAG_RE =
+  /\/\*ccup:copyPin:[-\w]+\*\/[\s\S]*?\/\*ccup:copyPinEnd\*\//g;
+const COPYPIN_WEBVIEW_FILE = "webview/index.js";
+const COPYPIN_CSS_FILE = "webview/index.css";
+const COPYPIN_RAIL = "ccup-copy-rail";
+// The attribute numbering each chat scroller for its rule, the mark on a rail
+// inside a scroll container of its own, and the mark on a root with nothing
+// to scroll sideways.
+const COPYPIN_PIN_ATTR = "data-ccup-copy-pin";
+const COPYPIN_INNER_ATTR = "data-ccup-copy-inner";
+const COPYPIN_CLIP_ATTR = "data-ccup-copy-clip";
+// The stuck header's height, set on the rails by the watch's rules.
+const COPYPIN_TOP_VAR = "--ccup-copy-top";
+const COPYPIN_GLOBAL = "__ccupCopyPin";
+// How far ahead of its wrapper's class the code block component may start
+// (67 chars on 2.1.286 through 2.1.322).
+const COPYPIN_REACH = 2000;
+// The markdown module's class map, giving its name and its hash: the root,
+// the code block wrapper and the class placing the wrapper's copy button
+// share one hash (KaTeX keys sit between the root and the wrapper from
+// 2.1.301).
+const COPYPIN_MAP_RE =
+  /([\w$]+)=\{root:"root_([-\w]+)",(?:"?[-\w]+"?:"[-\w]+",)*codeBlockWrapper:"codeBlockWrapper_\2",copyButton:"copyButton_\2"/g;
+// The native rule hiding a button that sits right before a <pre>.
+const COPYPIN_HIDE = "button:has(+pre)";
+
+interface CopyPinCfg {
+  chat: string; // the chat scroller's class
+  sticky: string; // the class of a user message stuck to its top
+  root: string; // the markdown root's class
+  rail: string;
+  pin: string;
+  inner: string;
+  clip: string;
+  top: string;
+}
+
+// The watch, compiled into the webview bundle by toString, so it may use only
+// its parameter and the page's globals. It starts inside a render, so nothing
+// in it throws.
+function ccupCopyPinWeb(cfg: CopyPinCfg): number {
+  const g = globalThis as Record<string, any>;
+  const doc = g.document;
+  let raf = 0;
+  let st: any = null;
+  let txt = "";
+  let ro: any = null;
+  // Rails to check for a scroll container of their own, roots to check for
+  // width, and the roots holding a code block, watched for size.
+  const fresh = new Set<any>();
+  const due = new Set<any>();
+  const sized = new Set<any>();
+  const root = `.${cfg.root}`;
+  const que = (): void => {
+    if (!raf) raf = g.requestAnimationFrame(upd);
+  };
+  const scrolls = (e: any): boolean => {
+    const s = g.getComputedStyle(e);
+    return (
+      !/^(?:visible|clip)$/.test(s.overflowX) ||
+      !/^(?:visible|clip)$/.test(s.overflowY)
+    );
+  };
+  // The rails and roots in a node that came in.
+  const take = (n: any): void => {
+    if (n?.nodeType !== 1) return;
+    if (n.classList.contains(cfg.rail)) fresh.add(n);
+    if (n.classList.contains(cfg.root)) due.add(n);
+    for (const r of n.getElementsByClassName(cfg.rail)) fresh.add(r);
+    for (const o of n.getElementsByClassName(cfg.root)) due.add(o);
+  };
+  const forget = (o: any): void => {
+    if (sized.delete(o)) ro?.unobserve(o);
+  };
+  function upd(): void {
+    raf = 0;
+    try {
+      // Per chat scroller, the height of the header on top of the pile stuck
+      // to its top (see rawMdPinBuild), or 0 with none stuck.
+      let css = "";
+      const cs = doc.querySelectorAll(`.${cfg.chat}`);
+      for (let k = 0; k < cs.length; k++) {
+        const t = cs[k];
+        const hs = t.querySelectorAll(`.${cfg.sticky}`);
+        const top = t.getBoundingClientRect().top + 1;
+        let lo = 0;
+        let hi = hs.length - 1;
+        let i = -1;
+        let v = 0;
+        while (lo <= hi) {
+          const m = (lo + hi) >> 1;
+          if (hs[m].getBoundingClientRect().top <= top) {
+            i = m;
+            lo = m + 1;
+          } else hi = m - 1;
+        }
+        if (i >= 0) {
+          const b = hs[i].getBoundingClientRect();
+          if (b.top >= top - 3) v = b.height;
+        }
+        if (t.getAttribute(cfg.pin) !== `${k}`) t.setAttribute(cfg.pin, `${k}`);
+        css += `[${cfg.pin}="${k}"] .${cfg.rail}:not([${cfg.inner}]){${cfg.top}:${v}px}`;
+      }
+      if (!st?.isConnected) {
+        st = doc.createElement("style");
+        (doc.head ?? doc.documentElement).appendChild(st);
+        txt = "";
+      }
+      if (css !== txt) {
+        txt = css;
+        st.textContent = css;
+      }
+      // A scroll container between a new rail and the chat, a root apart
+      // (this fix decides whether a root scrolls).
+      for (const r of fresh) {
+        if (!r.isConnected) continue;
+        for (let e = r.parentElement; e; e = e.parentElement) {
+          if (e.classList.contains(cfg.chat)) break;
+          if (!e.classList.contains(cfg.root) && scrolls(e)) {
+            r.setAttribute(cfg.inner, "");
+            break;
+          }
+        }
+        const o = r.closest(root);
+        if (o) due.add(o);
+      }
+      fresh.clear();
+      for (const o of sized) if (!o.isConnected) forget(o);
+      for (const o of due) {
+        if (!o.isConnected || !o.getElementsByClassName(cfg.rail).length) {
+          forget(o);
+          if (o.hasAttribute(cfg.clip)) o.removeAttribute(cfg.clip);
+          continue;
+        }
+        if (!sized.has(o)) {
+          sized.add(o);
+          ro?.observe(o);
+        }
+        const wide = o.scrollWidth - o.clientWidth > 1;
+        if (wide === o.hasAttribute(cfg.clip)) {
+          if (wide) o.removeAttribute(cfg.clip);
+          else o.setAttribute(cfg.clip, "");
+        }
+      }
+      due.clear();
+    } catch {
+      // the buttons keep the places they have
+    }
+  }
+  try {
+    ro = new g.ResizeObserver((es: any[]) => {
+      for (const e of es) due.add(e.target);
+      que();
+    });
+    // Our own writes are the style's text, which is skipped, and attributes
+    // outside the filter.
+    new g.MutationObserver((recs: any[]) => {
+      let hit = false;
+      for (const rec of recs) {
+        const t = rec.target;
+        if (t === st) continue;
+        hit = true;
+        const o = (t.nodeType === 1 ? t : t.parentElement)?.closest(root);
+        if (o) due.add(o);
+        for (const n of rec.addedNodes) take(n);
+      }
+      if (hit) que();
+    }).observe(doc.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "style"],
+    });
+    doc.addEventListener("scroll", que, true);
+    g.addEventListener("resize", que);
+    take(doc.documentElement);
+    que();
+  } catch {
+    // no watch: the buttons stick under no header
+  }
+  return 1;
+}
+
+interface CopyPinSite {
+  unit: N;
+  edits: Edit[];
+  md: string; // the markdown module's hash
+}
+
+// The code block component and the three insertions, or null. Found by
+// structure (src/derive.ts): a function returning
+// `<jsxs>("div",{className:<map>.codeBlockWrapper,children:[<jsx>(<Button>,
+// {...,className:<map>.copyButton}),<jsx>("pre",{...})]})`, with <map> the
+// markdown module's class map and <jsx> both bound outside the function.
+function copyPinFind(c: string): CopyPinSite | null {
+  const maps = [...c.matchAll(COPYPIN_MAP_RE)];
+  const chat = c.match(RAWMD_CHAT_HASH_RE)?.[1];
+  const sticky = c.match(RAWMD_STICKY_HASH_RE)?.[1];
+  if (maps.length !== 1 || !chat || !sticky) return null;
+  const [, map, md] = maps[0];
+  const sites: { unit: N; btn: N; jsx: string }[] = [];
+  for (const fn of unitsWith(
+    c,
+    `${map}.codeBlockWrapper`,
+    "function",
+    isFn,
+    COPYPIN_REACH,
+  )) {
+    if (fn.body.type !== "BlockStatement") continue;
+    walkOwn(fn, (n) => {
+      const a = n.type === "ReturnStatement" ? n.argument : null;
+      const props =
+        a?.type === "CallExpression" &&
+        idName(a.callee) &&
+        isStr(a.arguments[0], "div")
+          ? a.arguments[1]
+          : null;
+      if (
+        props?.type !== "ObjectExpression" ||
+        !isMember(propOf(props, "className")?.value, map, "codeBlockWrapper")
+      )
+        return;
+      const kids = propOf(props, "children")?.value;
+      if (kids?.type !== "ArrayExpression" || kids.elements.length !== 2)
+        return;
+      const [btn, pre] = kids.elements as (N | null)[];
+      const jsx = btn?.type === "CallExpression" ? idName(btn.callee) : null;
+      const bp = jsx ? btn!.arguments[1] : null;
+      if (
+        !jsx ||
+        bp?.type !== "ObjectExpression" ||
+        !isMember(propOf(bp, "className")?.value, map, "copyButton") ||
+        pre?.type !== "CallExpression" ||
+        !isStr(pre.arguments[0], "pre") ||
+        bindingSite(n, map, fn) !== null ||
+        bindingSite(n, jsx, fn) !== null
+      )
+        return;
+      sites.push({ unit: fn, btn: btn!, jsx });
+    });
+  }
+  if (sites.length !== 1) return null;
+  const { unit, btn, jsx } = sites[0];
+  const cfg: CopyPinCfg = {
+    chat: `messagesContainer_${chat}`,
+    sticky: `stickyHeader_${sticky}`,
+    root: `root_${md}`,
+    rail: COPYPIN_RAIL,
+    pin: COPYPIN_PIN_ATTR,
+    inner: COPYPIN_INNER_ATTR,
+    clip: COPYPIN_CLIP_ATTR,
+    top: COPYPIN_TOP_VAR,
+  };
+  return {
+    unit,
+    md,
+    edits: [
+      {
+        pos: unit.body.start + 1,
+        text:
+          `${COPYPIN_BOOT}globalThis.${COPYPIN_GLOBAL}??=` +
+          `(${ccupCopyPinWeb.toString()})(${JSON.stringify(cfg)});${COPYPIN_END}`,
+      },
+      {
+        pos: btn.start,
+        text: `${COPYPIN_OPEN}${jsx}("div",{className:"${COPYPIN_RAIL}",children:${COPYPIN_END}`,
+      },
+      { pos: btn.end, text: `${COPYPIN_CLOSE}})${COPYPIN_END}` },
+    ],
+  };
+}
+
+let copyPinMemo: { input: string; site: CopyPinSite | null } | undefined;
+function copyPinSite(c: string): CopyPinSite | null {
+  if (copyPinMemo?.input !== c)
+    copyPinMemo = { input: c, site: copyPinFind(c) };
+  return copyPinMemo.site;
+}
+
+// The rules whose selector holds `token`: each one's selector items, its
+// body, and the offset just past it. This sheet's bodies are plain
+// declarations, and its comments carry no braces.
+function copyPinRules(
+  css: string,
+  token: string,
+): { items: string[]; body: string; end: number }[] {
+  const out: { items: string[]; body: string; end: number }[] = [];
+  for (let i = css.indexOf(token); i >= 0; i = css.indexOf(token, i + 1)) {
+    const open = css.indexOf("{", i);
+    const close = css.indexOf("}", i);
+    if (open < 0 || close < open) continue; // a body's, not a selector's
+    const from = Math.max(css.lastIndexOf("}", i), css.lastIndexOf("{", i));
+    out.push({
+      items: css
+        .slice(from + 1, open)
+        .split(",")
+        .map((s) => s.trim()),
+      body: css.slice(open + 1, close),
+      end: close + 1,
+    });
+    i = close;
+  }
+  return out;
+}
+
+// The stylesheet insertion for markdown hash `md`, or null when a rule it
+// overrides is gone: the copy button's absolute place, the wrapper it is
+// placed in, and the root's hidden overflow.
+function copyPinCssEdit(css: string, md: string): Edit | null {
+  const btn = copyPinRules(css, `.copyButton_${md}{`).filter(
+    (r) => r.items.length === 1 && r.items[0] === `.copyButton_${md}`,
+  );
+  const at = btn.length === 1 ? btn[0].body : "";
+  const inset = at.match(
+    /^position:absolute;top:(\d+(?:\.\d+)?)px;right:(\d+(?:\.\d+)?)px$/,
+  );
+  const base = copyPinRules(css, `.root_${md}{`).filter(
+    (r) =>
+      r.items.includes(`.root_${md}`) &&
+      /(?:^|;)overflow-x:hidden(?:;|$)/.test(r.body),
+  );
+  if (
+    !inset ||
+    base.length !== 1 ||
+    !cssHas(css, "codeBlockWrapper", md, "position:relative")
+  )
+    return null;
+  const [, t, r] = inset;
+  // Rules whose subject is a root that scrolls sideways, such as
+  // `.root_<hash>:has(.katex)`: an item ending in the root's compound with a
+  // pseudo-class or attribute after it, and no combinator outside parentheses.
+  const scroll: { items: string[]; end: number }[] = [];
+  for (const rule of copyPinRules(css, `.root_${md}`)) {
+    if (!/(?:^|;)overflow(?:-x)?:(?:auto|scroll)\b/.test(rule.body)) continue;
+    const items = rule.items.filter((s) => {
+      const j = s.lastIndexOf(`.root_${md}`);
+      let rest = s.slice(j + `.root_${md}`.length);
+      while (/\([^()]*\)/.test(rest)) rest = rest.replace(/\([^()]*\)/g, "");
+      return j >= 0 && /^[:[]/.test(rest) && !/[\s>+~]/.test(rest);
+    });
+    if (items.length) scroll.push({ items, end: rule.end });
+  }
+  const hides = copyPinRules(css, COPYPIN_HIDE).filter(
+    (h) => h.body === "display:none",
+  );
+  const rail = `.${COPYPIN_RAIL}`;
+  const clip = `[${COPYPIN_CLIP_ATTR}]`;
+  let text =
+    `.root_${md}:where(:has(${rail})){overflow-x:clip}` +
+    `${rail}{position:absolute;top:0;right:0;bottom:0;left:0;display:flex;` +
+    `flex-direction:column;align-items:flex-end;pointer-events:none}` +
+    `${rail}>.copyButton_${md}{position:sticky;` +
+    `top:calc(var(${COPYPIN_TOP_VAR},0px) + ${t}px);right:auto;` +
+    `margin:${t}px ${r}px ${t}px 0;pointer-events:auto}`;
+  for (const s of scroll.flatMap((x) => x.items))
+    text += `${s}${clip}{overflow:clip}${s}:not(${clip}) ${rail}{${COPYPIN_TOP_VAR}:0px}`;
+  for (const h of hides.flatMap((x) => x.items))
+    if (h.endsWith(COPYPIN_HIDE))
+      text += `${h.slice(0, -COPYPIN_HIDE.length)}${rail}:has(+pre){display:none}`;
+  const pos = Math.max(
+    btn[0].end,
+    base[0].end,
+    ...scroll.map((x) => x.end),
+    ...hides.map((x) => x.end),
+  );
+  return { pos, text: `${COPYPIN_CSS}${text}${COPYPIN_END}` };
+}
+
+// Each half's native file with its fragments in, or null when a site of
+// either half is missing or an edit would not parse.
+const copyPinBuild = sdelMemo((native) => {
+  const site = copyPinSite(native);
+  if (!site) return null;
+  const out = applyEdits(native, site.edits);
+  return unitsReparse(out, site.edits, [[site.unit, isFn]]) ? out : null;
+});
+function copyPinPatch(native: string, read: BundleReader): string | null {
+  const css = read(COPYPIN_CSS_FILE);
+  const site = copyPinSite(native);
+  if (
+    !site ||
+    css === undefined ||
+    !copyPinCssEdit(css.replace(COPYPIN_FRAG_RE, ""), site.md)
+  )
+    return null;
+  return copyPinBuild(native);
+}
+function copyPinCssPatch(native: string, read: BundleReader): string | null {
+  const js = read(COPYPIN_WEBVIEW_FILE)?.replace(COPYPIN_FRAG_RE, "");
+  const site = js === undefined ? null : copyPinSite(js);
+  const edit =
+    site && copyPinBuild(js!) ? copyPinCssEdit(native, site.md) : null;
+  return edit ? applyEdits(native, [edit]) : null;
+}
+
+// The webview bundle and stylesheet, patched or not, as an apply writes them,
+// or null when either half's sites are gone. scripts/repro's copy-pin.mjs
+// serves these, so it runs exactly what the patcher writes and doubles as the
+// drift canary for both halves.
+export function copyPinWebview(
+  web: string,
+  css: string,
+): { js: string; css: string } | null {
+  const w = web.replace(COPYPIN_FRAG_RE, "");
+  const s = css.replace(COPYPIN_FRAG_RE, "");
+  const read: BundleReader = (rel) =>
+    rel === COPYPIN_WEBVIEW_FILE ? w : rel === COPYPIN_CSS_FILE ? s : undefined;
+  const js = copyPinPatch(w, read);
+  const out = copyPinCssPatch(s, read);
+  return js && out ? { js, css: out } : null;
+}
+
+// ---------------------------------------------------------------------------
 // Session open landing (always on): the chat leaves room under the transcript
 // for the input box it overlays with a spacer as tall as the box, from a
 // height state that its ResizeObserver on the box keeps. The chat remounts on
@@ -15740,6 +16213,22 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     frags: HEREDOC_FRAG_RE,
     patch: heredocPatch,
     inert: (native) => !native.includes('".shell"'),
+  },
+  {
+    kind: "inline",
+    id: "copyPin",
+    label: "sticky copy button",
+    file: COPYPIN_WEBVIEW_FILE,
+    frags: COPYPIN_FRAG_RE,
+    patch: copyPinPatch,
+  },
+  {
+    kind: "inline",
+    id: "copyPinCss",
+    label: "sticky copy button style",
+    file: COPYPIN_CSS_FILE,
+    frags: COPYPIN_FRAG_RE,
+    patch: copyPinCssPatch,
   },
 ];
 

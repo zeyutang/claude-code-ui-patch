@@ -6124,6 +6124,402 @@ export function inputSeedWebview(web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Session view on return (always on): a session you go back to shows what you
+// were reading when you left it. The chat mounts anew for every session it
+// shows (it is keyed by the session), and its scroll effect lands each mount
+// at the transcript's end as the first messages arrive, so a session you had
+// scrolled up in came back at its end, wherever you switched from (a session
+// card, the Session history dropdown, a tab's own dropdown), and any Focus
+// view fold you had opened came back closed.
+//
+// The view kept is the chat's own: whether you had scrolled away from the end
+// (the flag the chat sets as you scroll up and clears as you come back down,
+// send, or answer), the transcript rows at the top of the scroller with their
+// offsets there (a row is found again by its message uuid, so content above
+// it changing height, such as a fold or a "Show more" prompt closing, moves
+// nothing), and the folds you had opened. A session left at its end comes back
+// at its end, new messages included, as natively; one left scrolled away comes
+// back there with the flag still set, so its new messages leave the view where
+// it is, as they do natively once you scroll up. Kept in memory per session for
+// the life of the view, so a reload lands at the end, as natively.
+//
+// Three fragments, /*ccup:viewKeep:<tag>*/.../*ccup:viewKeepEnd*/, in the
+// chat component:
+//   save   ahead of the statement declaring the scroller's ref, the view's
+//          store (once per webview, on globalThis) and a layout effect whose
+//          cleanup keeps the view as the chat unmounts, the scroller still
+//          laid out. It runs ahead of every other hook of the chat, so its
+//          cleanup runs before theirs, the scrolled-away flag's own reset
+//          among them
+//   folds  in the fold state's initial value, the folds the session had open,
+//          so the first render already lays them out
+//   back   in the scroll effect, right after its "first messages arrived"
+//          test: for a session left scrolled away, the scroller goes back,
+//          the flag stays set, and the effect returns ahead of the branches
+//          that would land at the end (a pending permission's glide among
+//          them), running the rest of what that branch runs (a refresh of
+//          the math typesetting near the view). A view that comes back within
+//          the chat's stick zone of the end lands at the end instead
+//
+// Found by structure (src/derive.ts): in the function holding the
+// hasConversationContent reads, an effect `<G>(()=>{...},[...])` whose body
+// declares `<V>=<E>.messages.value.length,<P>=<R>.current===0&&<V>>0`, sets
+// `<R>.current=<V>` in the next statement, and later tests
+// `if(<P>){<A>.current=!1,<X>.current=null,<H>(<S>),...,<B>.current=!0;return}`,
+// with <E> a parameter of that function, <S> a ref its body declares, and <G>
+// bound outside it. The folds come from the effect's first two statements,
+// `let <W>=<Q>.current!==<T>;<Q>.current=<T>`, with <T> from a
+// `[<T>,<U>]=<F>(new Set)` of the function's own; without them the scroll
+// position alone comes back.
+// ---------------------------------------------------------------------------
+const VKEEP_SAVE = "/*ccup:viewKeep:save*/";
+const VKEEP_FOLDS = "/*ccup:viewKeep:folds*/";
+const VKEEP_BACK = "/*ccup:viewKeep:back*/";
+const VKEEP_END = "/*ccup:viewKeepEnd*/";
+const VKEEP_FRAG_RE =
+  /\/\*ccup:viewKeep:[-\w]+\*\/[\s\S]*?\/\*ccup:viewKeepEnd\*\//g;
+const VKEEP_FILE = "webview/index.js";
+// The window property holding the views.
+const VKEEP_GLOBAL = "__ccupView";
+// How far ahead of the first hasConversationContent read its component may
+// start (about 360 chars on 2.1.286 through 2.1.322).
+const VKEEP_REACH = 8000;
+// The chat's stick zone, its own "at the end" (the 50px under which the
+// scroll effect follows new messages).
+const VKEEP_STICK_PX = 50;
+// The most rows a view keeps from the scroller's top down, the first past
+// its bottom included (one more above its top goes last).
+const VKEEP_ANCHORS = 8;
+
+interface VkeepCfg {
+  stick: number;
+  anchors: number;
+}
+
+// The views' store, built once per webview by the save fragment. Compiled
+// into the webview bundle by toString, so it may use only its parameter and
+// the page's globals; nothing in it throws, since it runs inside the chat's
+// render and its layout effects.
+function ccupViewKeepWeb(cfg: VkeepCfg): {
+  save: (s: any, el: any, away: unknown, folds: unknown) => void;
+  folds: (s: any) => unknown;
+  back: (s: any, el: any) => boolean;
+} {
+  const g = globalThis as Record<string, any>;
+  // Per session object, which the session manager keeps while the view lives.
+  const views = new WeakMap<
+    object,
+    {
+      anchors: { a: string; v: string; off: number }[] | null;
+      top: number;
+      folds: unknown;
+    }
+  >();
+  const ROW = "[data-transcript-message]";
+  // A transcript row's message uuid: Claude Code's own on a reply, the last
+  // turn delete's on a prompt.
+  const IDS = ["data-bookmark-uuid", "data-ccup-uuid"];
+  // A row to find again, with its offset from the scroller's top: one that
+  // has a uuid, shows, and scrolls with the rest (a prompt pinned to the top
+  // as its turn scrolls under it moves with nothing).
+  const anchor = (r: any, b: any, at: number) => {
+    let a = "";
+    let v: string | null = null;
+    for (const k of IDS) {
+      v = r.getAttribute(k);
+      if (v) {
+        a = k;
+        break;
+      }
+    }
+    if (!v || !b.height || g.getComputedStyle(r).position === "sticky")
+      return null;
+    return { a, v, off: b.top - at };
+  };
+  const save = (s: any, el: any, away: unknown, folds: unknown): void => {
+    try {
+      if (!s || typeof s !== "object") return;
+      let anchors: { a: string; v: string; off: number }[] | null = null;
+      let top = 0;
+      if (away === true && el?.isConnected) {
+        const at = el.getBoundingClientRect().top;
+        const h = el.clientHeight;
+        anchors = [];
+        let above: any = null;
+        for (const r of el.querySelectorAll(ROW)) {
+          const b = r.getBoundingClientRect();
+          if (b.bottom <= at) {
+            above = r;
+            continue;
+          }
+          const k = anchor(r, b, at);
+          if (k) anchors.push(k);
+          if (b.top - at > h || anchors.length >= cfg.anchors) break;
+        }
+        const last = above && anchor(above, above.getBoundingClientRect(), at);
+        if (last) anchors.push(last);
+        top = el.scrollTop;
+      }
+      views.set(s, { anchors, top, folds });
+    } catch {
+      // the session comes back at its end
+    }
+  };
+  const folds = (s: any): unknown => {
+    const f = s && typeof s === "object" ? views.get(s)?.folds : undefined;
+    return f instanceof Set && f.size > 0 ? f : undefined;
+  };
+  // The view goes back once per visit; true when it rests away from the end.
+  const back = (s: any, el: any): boolean => {
+    try {
+      const v = s && typeof s === "object" ? views.get(s) : undefined;
+      const anchors = v?.anchors;
+      if (!v || !anchors || !el) return false;
+      v.anchors = null;
+      const at = el.getBoundingClientRect().top;
+      let found = false;
+      for (const k of anchors) {
+        const r = el.querySelector(`[${k.a}="${g.CSS.escape(k.v)}"]`);
+        const b = r?.getBoundingClientRect();
+        if (!b?.height) continue;
+        el.scrollTop += b.top - at - k.off;
+        found = true;
+        break;
+      }
+      if (!found) el.scrollTop = v.top;
+      return el.scrollHeight - el.scrollTop - el.clientHeight >= cfg.stick;
+    } catch {
+      return false;
+    }
+  };
+  return { save, folds, back };
+}
+
+// `<x>.current`, giving x.
+const vkeepRef = (n: N | null | undefined): string | null =>
+  memberProp(n) === "current" ? idName(n!.object) : null;
+// `<x>.current=<value>` with the value passing `ok`, giving x.
+function vkeepSets(
+  n: N | null | undefined,
+  ok: (v: N) => boolean,
+): string | null {
+  return n?.type === "AssignmentExpression" && n.operator === "=" && ok(n.right)
+    ? vkeepRef(n.left)
+    : null;
+}
+// `!0` or `!1`.
+const vkeepBool =
+  (b: boolean) =>
+  (n: N): boolean =>
+    n.type === "UnaryExpression" &&
+    n.operator === "!" &&
+    n.argument.type === "Literal" &&
+    n.argument.value === (b ? 0 : 1);
+const vkeepIsNull = (n: N): boolean => n.type === "Literal" && n.value === null;
+// A literal number.
+const vkeepIsNum = (n: N | null | undefined, v: number): boolean =>
+  n?.type === "Literal" && n.value === v;
+
+function viewKeepFind(c: string): { unit: N; edits: Edit[] } | null {
+  const sites: { unit: N; edits: Edit[] }[] = [];
+  for (const fn of unitsWith(
+    c,
+    ".hasConversationContent.value",
+    "function",
+    isFn,
+    VKEEP_REACH,
+  )) {
+    if (fn.body.type !== "BlockStatement") continue;
+    const own = (at: N, name: string) => bindingSite(at, name, fn) === fn.body;
+    walk(fn, (n) => {
+      // if(<P>){<A>.current=!1,<X>.current=null,<H>(<S>),...,<B>.current=!0;return}
+      const p = idName(n.test);
+      if (n.type !== "IfStatement" || !p || n.alternate) return;
+      const blk = n.consequent;
+      if (blk.type !== "BlockStatement" || blk.body.length !== 2) return;
+      const [st, ret] = blk.body;
+      const xs: N[] =
+        st.type === "ExpressionStatement" &&
+        st.expression.type === "SequenceExpression"
+          ? st.expression.expressions
+          : [];
+      if (xs.length < 4 || ret.type !== "ReturnStatement" || ret.argument)
+        return;
+      const away = vkeepSets(xs[0], vkeepBool(false));
+      const settle = vkeepSets(xs[1], vkeepIsNull);
+      const bottom = vkeepSets(xs[xs.length - 1], vkeepBool(true));
+      const helper = xs[2];
+      const s = idName(helper.arguments?.[0]);
+      const calls = xs.slice(3, -1);
+      if (
+        !away ||
+        !settle ||
+        !bottom ||
+        helper.type !== "CallExpression" ||
+        helper.arguments.length !== 1 ||
+        !idName(helper.callee) ||
+        !s ||
+        !calls.every((k) => k.type === "CallExpression")
+      )
+        return;
+      // The effect: <G>(()=>{...},[...]), its body holding the branch.
+      const body = n.parent;
+      const arrow = body?.parent;
+      const eff = arrow?.parent;
+      if (
+        body?.type !== "BlockStatement" ||
+        arrow?.type !== "ArrowFunctionExpression" ||
+        arrow.params.length !== 0 ||
+        eff?.type !== "CallExpression" ||
+        eff.arguments.length !== 2 ||
+        eff.arguments[0] !== arrow ||
+        eff.arguments[1].type !== "ArrayExpression" ||
+        !idName(eff.callee) ||
+        bindingSite(eff, idName(eff.callee)!, fn) !== null
+      )
+        return;
+      const hook = idName(eff.callee)!;
+      // let <V>=<E>.messages.value.length,<P>=<R>.current===0&&<V>>0;
+      // <R>.current=<V>;
+      const stmts: N[] = body.body;
+      const di = stmts.findIndex(
+        (x) =>
+          x.type === "VariableDeclaration" &&
+          x.declarations.some((d: N) => idName(d.id) === p),
+      );
+      if (di < 0 || di > stmts.indexOf(n)) return;
+      const decl = stmts[di];
+      const init = decl.declarations.find((d: N) => idName(d.id) === p).init;
+      const first =
+        init?.type === "LogicalExpression" && init.operator === "&&";
+      const lt = first ? init.left : null;
+      const rt = first ? init.right : null;
+      const r = vkeepRef(lt?.left);
+      const v = idName(rt?.left);
+      if (
+        lt?.type !== "BinaryExpression" ||
+        lt.operator !== "===" ||
+        !vkeepIsNum(lt.right, 0) ||
+        rt?.type !== "BinaryExpression" ||
+        rt.operator !== ">" ||
+        !vkeepIsNum(rt.right, 0) ||
+        !r ||
+        !v
+      )
+        return;
+      const len = decl.declarations.find((d: N) => idName(d.id) === v)?.init;
+      const msgs = len?.object?.object;
+      const e = idName(msgs?.object);
+      if (
+        memberProp(len) !== "length" ||
+        memberProp(len.object) !== "value" ||
+        memberProp(msgs) !== "messages" ||
+        !e ||
+        bindingSite(n, e, fn) !== fn
+      )
+        return;
+      const next = stmts[di + 1];
+      if (
+        next?.type !== "ExpressionStatement" ||
+        vkeepSets(next.expression, (x) => idName(x) === v) !== r
+      )
+        return;
+      // The refs are the chat's own; the scroller's is declared in a
+      // statement of the chat's body, where the save goes.
+      if (![s, away, settle, bottom, r].every((x) => own(n, x))) return;
+      const decl0 = (fn.body.body as N[]).find(
+        (x) =>
+          x.type === "VariableDeclaration" &&
+          x.declarations.some((d: N) => idName(d.id) === s),
+      );
+      if (!decl0 || decl0.start > eff.start) return;
+      // The folds, optional: let <W>=<Q>.current!==<T>;<Q>.current=<T>; with
+      // [<T>,<U>]=<F>(new Set) of the chat's own.
+      let foldsRef: string | null = null;
+      const foldsAt: number[] = [];
+      const cmp = stmts[0]?.declarations?.[0]?.init;
+      const q = vkeepRef(cmp?.left);
+      const t = idName(cmp?.right);
+      if (
+        stmts[0]?.type === "VariableDeclaration" &&
+        stmts[0].declarations.length === 1 &&
+        cmp?.type === "BinaryExpression" &&
+        cmp.operator === "!==" &&
+        q &&
+        t &&
+        stmts[1]?.type === "ExpressionStatement" &&
+        vkeepSets(stmts[1].expression, (x) => idName(x) === t) === q &&
+        own(n, q) &&
+        own(n, t)
+      ) {
+        walkOwn(fn, (m) => {
+          const arg = m.init?.arguments?.[0];
+          if (
+            m.type === "VariableDeclarator" &&
+            m.id.type === "ArrayPattern" &&
+            idName(m.id.elements[0]) === t &&
+            m.init?.type === "CallExpression" &&
+            m.init.arguments.length === 1 &&
+            arg.type === "NewExpression" &&
+            idName(arg.callee) === "Set" &&
+            arg.arguments.length === 0
+          )
+            foldsAt.push(arg.start);
+        });
+        if (foldsAt.length === 1) foldsRef = q;
+      }
+      const store = `globalThis.${VKEEP_GLOBAL}`;
+      const cfg: VkeepCfg = { stick: VKEEP_STICK_PX, anchors: VKEEP_ANCHORS };
+      const edits: Edit[] = [
+        {
+          pos: decl0.start,
+          text:
+            `${VKEEP_SAVE};${store}??=(${ccupViewKeepWeb.toString()})(${JSON.stringify(cfg)});` +
+            `${hook}(()=>()=>${store}.save(${e},${s}.current,${away}.current,` +
+            `${foldsRef ? `${foldsRef}.current` : "void 0"}),[]);${VKEEP_END}`,
+        },
+        {
+          pos: next.end,
+          text:
+            `${VKEEP_BACK}if(${p}&&${store}?.back(${e},${s}.current)){` +
+            `${away}.current=!0,${settle}.current=null,${bottom}.current=!1` +
+            calls.map((k) => `,${c.slice(k.start, k.end)}`).join("") +
+            `;return}${VKEEP_END}`,
+        },
+      ];
+      if (foldsRef)
+        edits.push({
+          pos: foldsAt[0],
+          text: `${VKEEP_FOLDS}${store}?.folds(${e})??${VKEEP_END}`,
+        });
+      sites.push({ unit: fn, edits });
+    });
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The native webview bundle with the fragments in, or null when the site is
+// missing or the edits would not parse.
+const viewKeepBuild = sdelMemo((native) => {
+  const site = viewKeepFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, site.edits);
+  return unitsReparse(out, site.edits, [[site.unit, isFn]]) ? out : null;
+});
+
+function viewKeepPatch(native: string): string | null {
+  return viewKeepBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its site is gone. scripts/repro's session-view.mjs serves
+// this, so it runs exactly what the patcher writes and doubles as the drift
+// canary.
+export function viewKeepWebview(web: string): string | null {
+  return viewKeepBuild(web.replace(VKEEP_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
 // Chat math rendering (ON): the chat webview renders agent markdown through
 // react-markdown with no math support, so TeX like $\mathcal{G}$ shows as raw
 // source. When ON we render it with a bundled KaTeX (vendored under this
@@ -15228,6 +15624,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: ISEED_FILE,
     frags: ISEED_FRAG_RE,
     patch: inputSeedPatch,
+  },
+  {
+    kind: "inline",
+    id: "viewKeep",
+    label: "session view on return",
+    file: VKEEP_FILE,
+    frags: VKEEP_FRAG_RE,
+    patch: viewKeepPatch,
   },
   {
     kind: "inline",

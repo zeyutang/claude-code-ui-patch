@@ -111,6 +111,7 @@ Always applied                         # no setting; installing this patch is th
    ├── input box redraw                # selecting chat text no longer redraws the input box
    ├── diff card release               # a session you switch away from no longer stays in memory
    ├── session open landing            # an opened session shows its last lines at once, no jump
+   ├── session view on return          # a session you go back to shows where you left it
    ├── inline math spans               # fix for math rendering
    ├── last turn delete                # prompt history: delete the last turn within 30s
    ├── compacted history               # a reopened session shows its turns from before compactions

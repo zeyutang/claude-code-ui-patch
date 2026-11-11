@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Going back to a session you had scrolled up in now shows what you were reading when you left it, rather than its last lines.
+  Focus view folds you had opened in a session are still open when you go back to it.
+  This holds however you switch, such as with a session card or from the Session history list.
+  A session you left at its last lines still opens there, with whatever arrived since.
+  Always applied, no setting.
+
 ## 1.7.2
 
 - When the window reloads or the extensions restart while Claude is working, the chat now comes back on that session, and Claude Code picks up the interrupted step where it can.

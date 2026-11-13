@@ -9,6 +9,8 @@
   Always applied, no setting.
 - A code block's copy button now stays in view as you scroll through a long block, just under the message pinned at the top of the chat, rather than scrolling away with the block's first lines.
   Always applied, no setting.
+- The panel's rows now alternate in a slight shade, so a row is easier to follow from its label across to its control.
+  The shade is `tree.tableOddRowsBackground`, the one VS Code's own tables use, which a theme or `workbench.colorCustomizations` can change.
 
 ## 1.7.2
 

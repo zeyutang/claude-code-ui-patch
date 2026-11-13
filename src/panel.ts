@@ -184,12 +184,14 @@ ${csp}
     })).filter((g) => g.knobs.length);
     // A divider sits between sections (above every group after the first), not
     // under each title, so section headings read as headings, not underlines.
+    // Each section's rows get their own box, so the row stripes restart under
+    // every heading.
     const sections = groups
       .map(
         (g, i) =>
-          `${i > 0 ? '    <hr class="divider">\n' : ""}    <h2>${g.sec}</h2>\n${g.knobs
+          `${i > 0 ? '    <hr class="divider">\n' : ""}    <h2>${g.sec}</h2>\n    <div class="knob-group">\n${g.knobs
             .map((k) => this.knobHtml(k))
-            .join("\n")}`,
+            .join("\n")}\n    </div>`,
       )
       .join("\n");
 
@@ -532,7 +534,13 @@ const baseCss = `
   .version-value { color: #d97757; }
   .header-status { margin-top: 10px; margin-bottom: 2px; font-size: 1.1em; font-weight: 500; }
   h2 { font-size: 1.1em; margin: 12px 0 5px; }
-  .knob { display: flex; align-items: center; padding: 3px 0; }
+  /* Rows alternate in the stripe VS Code's own tables use (none in high
+     contrast), restarting under each heading. VS Code counts rows from 0, so
+     its odd rows are the even children here, and each section's first row is
+     plain. The band reaches 6px past the column on each side and the padding
+     takes it back, so the label column keeps its width. */
+  .knob { display: flex; align-items: center; margin: 0 -6px; padding: 3px 6px; border-radius: 4px; }
+  .knob-group > .knob:nth-child(even) { background: var(--vscode-tree-tableOddRowsBackground); }
   .knob .dot-slot { width: 14px; flex-shrink: 0; text-align: center; margin-right: 14px; }
   .knob .label { flex: 1 1 auto; min-width: 160px; }
   .knob .controls { display: flex; align-items: center; justify-content: center; width: 168px; flex-shrink: 0; margin-left: 16px; }

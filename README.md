@@ -101,6 +101,7 @@ Always applied                         # no setting; installing this patch is th
    ├── permission focus ring           # focused permission/question box gets the input box's ring
    ├── question answer box reveal      # typing keeps the "Other" box's border and padding in view
    ├── wheel reversal                  # chat and lists: turning the wheel back at the end scrolls
+   ├── attachment chip wheel           # input box: a plain wheel scrolls attachment chips sideways
    ├── editor scrollbars               # hides scrollbars as editor.scrollbar.* hides them
    ├── permission text selection       # permission/question box: select and copy its text
    ├── expanded prompt header          # "Show more" keeps the prompt on top in its own scroller

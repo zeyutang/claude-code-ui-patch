@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A plain turn of the mouse wheel over the attachment chips above the input box now scrolls them sideways, with no need to hold Shift.
+  Always applied, no setting.
 - Going back to a session you had scrolled up in now shows what you were reading when you left it, rather than its last lines.
   Focus view folds you had opened in a session are still open when you go back to it.
   This holds however you switch, such as with a session card or from the Session history list.

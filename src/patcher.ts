@@ -6425,6 +6425,186 @@ export function copyPinWebview(
 }
 
 // ---------------------------------------------------------------------------
+// Attachment chip wheel (always on): the attachment chips above the input box
+// sit in a row that scrolls sideways (overflow-x:auto), which only a sideways
+// wheel moves. With a mouse on macOS that takes Shift, and a plain turn over
+// the row moves nothing at all, since nothing around the input box scrolls up
+// or down. Here a turn up or down over a row that overflows moves it sideways,
+// down going right, as over the session cards' strip and the editor's tabs. A
+// sideways wheel and a trackpad's sideways swipe still scroll it natively.
+//
+// One fragment, /*ccup:chipWheel*/.../*ccup:chipWheelEnd*/, per row: a ref on
+// the row's div that gives it a non-passive wheel listener, since React's own
+// wheel prop listens passively at the root, where it cannot cancel a scroll.
+// The ref is one function for every row and every render, kept on the window,
+// so React never detaches and reattaches it, and adding the listener to a row
+// that has it is a no-op. The listener takes an event that is cancelable, up
+// or down more than sideways, without Ctrl (a pinch), and over a row that
+// overflows. It cancels the event and moves the row by its vertical delta. A
+// wheel sequence whose first event went native arrives uncancelable (a
+// transcript scroll the pointer carries over the row, say) and stays native.
+// At either end the event is still canceled, so the rest of its sequence stays
+// cancelable and a turn back moves the row at once (the trap the wheel
+// reversal fix covers), and nothing else would have moved there anyway. An
+// offset set from script lands on a whole pixel (Chromium 150), so the
+// fraction a delta leaves over carries to the next event of the turn, and a
+// smoothed wheel's or a trackpad's small steps add up as natively.
+//
+// Found by structure (src/derive.ts): in the one function reading the input
+// box module's attachedFilesContainer class, each <jsx>("div",{className})
+// call whose className reads it, with no ref and no spread among its props.
+// Through 2.1.310 there are two such rows, above and below the input box,
+// one rendered at a time, and from 2.1.318 there is one, above it. The ref is
+// an arrow function, so the fragment adds no `function` keyword for the
+// structural locators backing off through the input box component to try.
+// ---------------------------------------------------------------------------
+const CHIPWHEEL_MARKER = "/*ccup:chipWheel*/";
+const CHIPWHEEL_END = "/*ccup:chipWheelEnd*/";
+const CHIPWHEEL_FRAG_RE =
+  /\/\*ccup:chipWheel\*\/[\s\S]*?\/\*ccup:chipWheelEnd\*\//g;
+const CHIPWHEEL_FILE = "webview/index.js";
+// The window property holding the ref.
+const CHIPWHEEL_GLOBAL = "__ccupChipWheel";
+// How far ahead of the row's class read its function may start (16,145 chars
+// on 2.1.270, 21,973 on 2.1.323), and how many enclosing `function`
+// candidates to try (its own and 10 to 12 nested ones on 2.1.270 through
+// 2.1.323).
+const CHIPWHEEL_REACH = 120000;
+const CHIPWHEEL_TRIES = 40;
+// The row's class key in the input box module's class map.
+const CHIPWHEEL_KEY = "attachedFilesContainer";
+
+// The names of the class maps carrying `key` (a CSS module's
+// {key:"key_<hash>",...}, assigned to a name), found from the key's literal
+// and read back to the map's opening brace: a regex over the whole bundle
+// for the same costs about 100ms a pass.
+function chipWheelMaps(c: string, key: string): string[] {
+  const names: string[] = [];
+  const lit = `${key}:"${key}_`;
+  for (let i = c.indexOf(lit); i >= 0; i = c.indexOf(lit, i + 1)) {
+    const open = c.lastIndexOf("{", i);
+    if (open < 0 || !/^(?:"?[-\w]+"?:"[-\w]+",)*$/.test(c.slice(open + 1, i)))
+      continue;
+    const name = c.slice(Math.max(0, open - 64), open).match(/([\w$]+)=$/);
+    if (name) names.push(name[1]);
+  }
+  return names;
+}
+
+// The ref's factory, compiled into the webview bundle by toString, so it may
+// use only the page's globals and must hold no comment of its own. React
+// calls the ref with the row as the row mounts and with null as it goes. Per
+// row it keeps the direction of the turn under way and the fraction of its
+// travel the row's whole-pixel offset has yet to take. Only a rounding
+// remainder carries, not travel that an end stopped.
+const ccupChipWheelWeb = (): ((row: any) => void) => {
+  const turns = new WeakMap<any, { dir: number; carry: number }>();
+  const wheel = (e: any): void => {
+    const row = e.currentTarget;
+    if (
+      !e.cancelable ||
+      e.ctrlKey ||
+      Math.abs(e.deltaY) <= Math.abs(e.deltaX) ||
+      row.scrollWidth - row.clientWidth < 1
+    )
+      return;
+    e.preventDefault();
+    const d =
+      e.deltaY *
+      (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? row.clientWidth : 1);
+    let t = turns.get(row);
+    if (!t) turns.set(row, (t = { dir: 0, carry: 0 }));
+    if (Math.sign(d) !== t.dir) {
+      t.dir = Math.sign(d);
+      t.carry = 0;
+    }
+    const want = row.scrollLeft + d + t.carry;
+    row.scrollLeft = want;
+    const short = want - row.scrollLeft;
+    t.carry = Math.abs(short) < 1 ? short : 0;
+  };
+  return (row: any): void => {
+    if (row) row.addEventListener("wheel", wheel, { passive: false });
+  };
+};
+
+// The rows' insertions and their function, or null.
+function chipWheelFind(c: string): { unit: N; edits: Edit[] } | null {
+  const maps = chipWheelMaps(c, CHIPWHEEL_KEY);
+  if (maps.length !== 1) return null;
+  const map = maps[0];
+  const units = unitsWith(
+    c,
+    `${map}.${CHIPWHEEL_KEY}`,
+    "function",
+    isFn,
+    CHIPWHEEL_REACH,
+    CHIPWHEEL_TRIES,
+  );
+  if (units.length !== 1) return null;
+  const fn = units[0];
+  const rows: N[] = [];
+  let odd = false;
+  walk(fn, (n) => {
+    const props = n.type === "CallExpression" ? n.arguments[1] : null;
+    if (
+      props?.type !== "ObjectExpression" ||
+      !idName(n.callee) ||
+      !isStr(n.arguments[0], "div")
+    )
+      return;
+    const cls = propOf(props, "className")?.value;
+    let reads = false;
+    if (cls)
+      walk(cls, (m) => {
+        if (isMember(m, map, CHIPWHEEL_KEY)) reads = true;
+      });
+    if (!reads) return;
+    if (
+      bindingSite(n, map, fn) !== null ||
+      propOf(props, "ref") ||
+      props.properties.some((p: N) => p.type === "SpreadElement")
+    )
+      odd = true;
+    else rows.push(props);
+  });
+  if (odd || !rows.length) return null;
+  const ref =
+    `ref:globalThis.${CHIPWHEEL_GLOBAL}??=` +
+    `(${ccupChipWheelWeb.toString()})()`;
+  return {
+    unit: fn,
+    edits: rows.map((props) => {
+      const e = appendProp(props, ref);
+      return {
+        pos: e.pos,
+        text: `${CHIPWHEEL_MARKER}${e.text}${CHIPWHEEL_END}`,
+      };
+    }),
+  };
+}
+
+// The native webview bundle with the fragments in, or null when the rows are
+// missing or an edit would not parse.
+const chipWheelBuild = sdelMemo((native) => {
+  const site = chipWheelFind(native);
+  if (!site) return null;
+  const out = applyEdits(native, site.edits);
+  return unitsReparse(out, site.edits, [[site.unit, isFn]]) ? out : null;
+});
+
+function chipWheelPatch(native: string): string | null {
+  return chipWheelBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its rows are gone. scripts/repro's chip-wheel.mjs serves this,
+// so it runs exactly what the patcher writes and doubles as the drift canary.
+export function chipWheelWebview(web: string): string | null {
+  return chipWheelBuild(web.replace(CHIPWHEEL_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
 // Session open landing (always on): the chat leaves room under the transcript
 // for the input box it overlays with a spacer as tall as the box, from a
 // height state that its ResizeObserver on the box keeps. The chat remounts on
@@ -16229,6 +16409,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: COPYPIN_CSS_FILE,
     frags: COPYPIN_FRAG_RE,
     patch: copyPinCssPatch,
+  },
+  {
+    kind: "inline",
+    id: "chipWheel",
+    label: "attachment chip wheel",
+    file: CHIPWHEEL_FILE,
+    frags: CHIPWHEEL_FRAG_RE,
+    patch: chipWheelPatch,
   },
 ];
 

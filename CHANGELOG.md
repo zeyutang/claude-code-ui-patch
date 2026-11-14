@@ -13,6 +13,9 @@
   Always applied, no setting.
 - The panel's rows now alternate in a slight shade, so a row is easier to follow from its label across to its control.
   The shade is `tree.tableOddRowsBackground`, the one VS Code's own tables use, which a theme or `workbench.colorCustomizations` can change.
+- With `chatFindBar` on, matches now count from the latest message, so `1 of n` is the match nearest the end of the conversation.
+  `Enter` now steps back toward the start of the conversation and `Shift`+`Enter` forward, as the up and down arrow buttons do, and `Cmd`/`Ctrl`+`Enter` and `Cmd`/`Ctrl`+`Shift`+`Enter` skip blocks in the same directions, landing on a block's lowest match.
+  A query lands on the first match back from where you were reading, the lowest one in view when there is one, rather than the highest.
 
 ## 1.7.2
 

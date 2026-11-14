@@ -12441,19 +12441,23 @@ export function sidebarHideHost(host: string): string | null {
 //           match in a formula selects the whole formula element, whose
 //           boundary points sit in its parent and so outlive the renderer
 //           swapping raw source for KaTeX inside it
-//   origin  a changed query lands on the first match from the search origin
-//           on, wrapping to the first overall, and no landing moves the
-//           origin. Typing a word thus lands where pasting it whole would,
-//           whatever its prefixes matched on the way, and deleting a letter
-//           goes back to the shorter query's landing, as the editor's widget
-//           searches from where the cursor was when typing began. The chat
-//           has no cursor, so the origin starts as the reading position, the
-//           first line showing whole under the pinned sticky header (the
-//           header itself lies above it: its place in the document is its
-//           turn's start). A step to a match moves the origin there, and a
-//           wheel turn, a press, or a key outside the bar hands it back to
-//           the reading position. A landing that already shows stays where
-//           it is, so typing scrolls only to a match out of view
+//   count   matches count from the transcript's end, its latest message, as
+//           a chat is searched back through: "1 of n" is the last match, and
+//           next (Enter, the up chevron) steps up toward the conversation's
+//           start, previous (Shift+Enter, the down chevron) back down
+//   origin  a changed query lands on the first match, in that count, from
+//           the search origin back, wrapping to the last match overall, and
+//           no landing moves the origin. Typing a word thus lands where
+//           pasting it whole would, whatever its prefixes matched on the
+//           way, and deleting a letter goes back to the shorter query's
+//           landing, as the editor's widget searches from where the cursor
+//           was when typing began. The chat has no cursor, so the origin
+//           starts as the reading position, the end of the last line showing
+//           whole above the composer box, which covers the transcript's end.
+//           A step to a match moves the origin to that match, and a wheel
+//           turn, a press, or a key outside the bar hands it back to the
+//           reading position. A landing that already shows stays where it
+//           is, so typing scrolls only to a match out of view
 //   nav     next/previous wrap around, move the active highlight, and scroll
 //           the active match into the band between the pinned sticky header
 //           (whose height varies with the pinned message) and the composer
@@ -12467,8 +12471,9 @@ export function sidebarHideHost(host: string): string | null {
 //           ancestor among the baked block classes (diff card containers,
 //           IN/OUT row, tool card body, the tool card wrapper, one markdown
 //           chunk of an agent response, a user message, a turn's sticky
-//           header), falling back to the transcript row; previous lands on a
-//           block's first match. A
+//           header), falling back to the transcript row; either direction
+//           lands on a block's first match in the count, its lowest, so next
+//           goes on through the block from there. A
 //           fixed ruler bar (the active-match highlight color, pinned to the
 //           user-message column's left gutter, tracked on scroll/resize/
 //           mutation) marks the block of the active match, so the eye finds
@@ -12928,20 +12933,21 @@ function ccupFindBarWebview(): void {
     g.__ccupFindBar = 1;
 
     // Match cap: bounds the match list and block skipping, so a degenerate
-    // query cannot freeze the webview. Beyond it the counter reads
-    // "200000+", navigation wraps within the found matches, and a query
-    // typed at a reading position past the last of them has no landing
-    // (see update). So the cap sits above what one letter reaches in the
-    // longest transcript the webview keeps mounted, where the most frequent
-    // one matched about 63000 times in 570000 characters, a scan of some
-    // 10ms: the first letter of a query is such a query.
+    // query cannot freeze the webview. Beyond it the list keeps the matches
+    // nearest the transcript's end, where the count starts, the counter
+    // reads "200000+", navigation wraps within them, and a query typed at a
+    // reading position above the first of them has no landing (see
+    // update). So the cap sits above what one letter reaches in the longest
+    // transcript the webview keeps mounted, where the most frequent one
+    // matched about 63000 times in 570000 characters, a scan of some 10ms:
+    // the first letter of a query is such a query.
     const MAXM = 200000;
     const TOP = 48; // px kept clear under the fixed bar when revealing
     const GAP = 6; // the reveal band's margin under a pinned header
-    // How far above the band a typed query's landing may sit and still count
-    // as showing: the margin, plus the few px by which taller inline boxes
-    // (code, a superscript) rise above their line's text.
-    const SOFT = GAP + 4;
+    // How far past the view's ends a typed query's landing may reach and
+    // still count as showing: the few px by which taller inline boxes
+    // (code, a superscript) rise above or sink below their line's text.
+    const RISE = 4;
     // Painted matches: those within WINM viewport heights of the view, at
     // most WINMAX of them (see hlSync).
     const WINM = 1.5;
@@ -13003,6 +13009,7 @@ function ccupFindBarWebview(): void {
     let err = ""; // the query's error as a regular expression, if invalid
     let mm: number[] = [];
     let nm = 0; // match count
+    let capped = false; // more matches than MAXM, of which mm keeps the last
     let starts: number[] = []; // haystack offset per match, for rescan continuity
     let blkMemo = new Map(); // match index -> block element, reset per scan
     let active = -1;
@@ -13023,13 +13030,14 @@ function ccupFindBarWebview(): void {
     let rraf: any = 0;
     // The search origin, where a changed query searches from: a collapsed
     // live Range, so the transcript changing around it carries it along.
-    // Typing never moves it. A query lands on the first match from the origin
-    // on, whatever the queries typed before it found, so a word typed letter
-    // by letter lands where the same word pasted whole does. It starts as
-    // the reading position once the bar opens (seatView), a step to a match
-    // moves it there (seatAt), and a wheel turn, a press, or a key outside
-    // the bar drops it (away), for the next query to take the reading
-    // position again.
+    // Typing never moves it. A query lands on the last match starting before
+    // the origin, the first in the count from there, whatever the queries
+    // typed before it found, so a word typed letter by letter lands where
+    // the same word pasted whole does. It starts as the reading position
+    // once the bar opens (seatView), a step to a match moves it to the
+    // match's end (seatAt), and a wheel turn, a press, or a key outside the
+    // bar drops it (away), for the next query to take the reading position
+    // again.
     let anchorR: any = null;
     let curRoot: any = null; // the transcript the open bar last saw
     let fresh = false; // another one replaced it, and no scan has run since
@@ -13229,10 +13237,13 @@ function ccupFindBarWebview(): void {
     // on the folded copy unless case matters. A regular expression runs one
     // haystack line at a time, unless the pattern spans lines, and skips
     // empty matches. Whole word drops the matches it rejects, and an invalid
-    // expression finds nothing and keeps its error for the bar.
+    // expression finds nothing and keeps its error for the bar. Past the
+    // cap, the scan runs on to the end and keeps the last MAXM matches,
+    // since the count starts at the end: at twice the cap the earliest go.
     const search = (q: string): void => {
       mm = [];
       nm = 0;
+      capped = false;
       starts = [];
       blkMemo = new Map();
       activeR = null;
@@ -13262,6 +13273,12 @@ function ccupFindBarWebview(): void {
       if (last < 0) return;
       // Matches arrive in haystack order, so the node cursor only advances.
       let a = 0;
+      const trim = (): void => {
+        mm = mm.slice(4 * (nm - MAXM));
+        starts = starts.slice(nm - MAXM);
+        nm = MAXM;
+        capped = true;
+      };
       const add = (i: number, e: number): void => {
         if (opts.w && !whole(hay, i, e)) return;
         while (a < last && offs[a + 1] <= i) a++;
@@ -13269,7 +13286,7 @@ function ccupFindBarWebview(): void {
         while (b < last && offs[b + 1] <= e - 1) b++;
         mm.push(a, i - offs[a], b, e - offs[b]);
         starts.push(i);
-        nm++;
+        if (++nm >= 2 * MAXM) trim();
       };
       if (!re) {
         if (!opts.c && snap.low === null) snap.low = fold(hay);
@@ -13277,35 +13294,36 @@ function ccupFindBarWebview(): void {
         const Q = opts.c ? q : fold(q);
         const L = Q.length;
         let i = H.indexOf(Q);
-        while (i >= 0 && nm < MAXM) {
+        while (i >= 0) {
           add(i, i + L);
           i = H.indexOf(Q, i + L);
         }
-        return;
-      }
-      // A pattern that spans lines (the m flag) runs over the whole
-      // haystack once, ^ and $ meeting each line's ends.
-      const all = re.multiline;
-      let ls = 0;
-      while (ls <= hay.length && nm < MAXM) {
-        let le = all ? hay.length : hay.indexOf("\n", ls);
-        if (le < 0) le = hay.length;
-        const line = all ? hay : hay.slice(ls, le);
-        const base = all ? 0 : ls;
-        re.lastIndex = 0;
-        let m = re.exec(line);
-        while (m && nm < MAXM) {
-          const i = m.index;
-          const e = i + m[0].length;
-          if (e > i) add(base + i, base + e);
-          else {
-            const cp = line.codePointAt(i);
-            re.lastIndex = i + (cp !== undefined && cp > 0xffff ? 2 : 1);
+      } else {
+        // A pattern that spans lines (the m flag) runs over the whole
+        // haystack once, ^ and $ meeting each line's ends.
+        const all = re.multiline;
+        let ls = 0;
+        while (ls <= hay.length) {
+          let le = all ? hay.length : hay.indexOf("\n", ls);
+          if (le < 0) le = hay.length;
+          const line = all ? hay : hay.slice(ls, le);
+          const base = all ? 0 : ls;
+          re.lastIndex = 0;
+          let m = re.exec(line);
+          while (m) {
+            const i = m.index;
+            const e = i + m[0].length;
+            if (e > i) add(base + i, base + e);
+            else {
+              const cp = line.codePointAt(i);
+              re.lastIndex = i + (cp !== undefined && cp > 0xffff ? 2 : 1);
+            }
+            m = re.exec(line);
           }
-          m = re.exec(line);
+          ls = le + 1;
         }
-        ls = le + 1;
       }
+      if (nm > MAXM) trim();
     };
 
     // A unit element's index among its parent's children, the offset its
@@ -13498,16 +13516,17 @@ function ccupFindBarWebview(): void {
     const status = (): void => {
       if (!count) return;
       const q = input ? input.value : "";
-      const total = nm >= MAXM ? MAXM + "+" : String(nm);
-      // Blank while another transcript awaits its scan, and "?" for the
-      // place while none of its matches is active, as the editor's widget
-      // counts matches the cursor is on none of.
+      const total = capped ? MAXM + "+" : String(nm);
+      // Counted from the end, the last match first. Blank while another
+      // transcript awaits its scan, and "?" for the place while none of its
+      // matches is active, as the editor's widget counts matches the cursor
+      // is on none of.
       const none = !!q && !nm && !fresh;
       const txt =
         !q || fresh
           ? ""
           : nm
-            ? (active < 0 ? "?" : active + 1) + " of " + total
+            ? (active < 0 ? "?" : nm - active) + " of " + total
             : "No results";
       // Write only on change: textContent assignment always emits a mutation,
       // and every body observer (the other toggles' too) wakes for one. The hidden
@@ -13561,15 +13580,20 @@ function ccupFindBarWebview(): void {
     // The band a match must land in to read comfortably: below the find bar
     // AND whatever sticky header is currently pinned (its height varies with
     // the pinned message), above the composer box. Degenerates to the plain
-    // viewport when the band would collapse (tiny panel, odd layout).
+    // viewport when the band would collapse (tiny panel, odd layout). Third,
+    // where the view of the transcript ends: the top of the composer, which
+    // floats over the scroller's end, or else the scroller's own end.
     const safeBand = (): number[] => {
       const vh = g.window.innerHeight || 0;
       let topS = TOP;
       let botS = vh - 16;
+      let end = vh;
+      const root = container();
       try {
-        const root = container();
-        if (root && shClass) {
-          const rt = root.getBoundingClientRect().top;
+        const rr = root ? root.getBoundingClientRect() : null;
+        if (rr) end = Math.min(end, rr.bottom);
+        if (rr && shClass) {
+          const rt = rr.top;
           const hs = root.querySelectorAll("." + shClass);
           for (let i = 0; i < hs.length; i++) {
             const hr = hs[i].getBoundingClientRect();
@@ -13580,12 +13604,33 @@ function ccupFindBarWebview(): void {
       } catch {
         // no sticky info: the find-bar clearance alone bounds the top
       }
+      const open = end;
       try {
         if (cfg.input) {
           const mi = doc.querySelector(".messageInput_" + cfg.input);
           if (mi) {
-            const ir = mi.getBoundingClientRect();
-            if (ir.top > topS + 60) botS = Math.min(botS, ir.top - 10);
+            // The composer's outer box: the first one above the input taken
+            // out of the flow over the scroller, short of a box that holds
+            // the scroller as well. It holds whatever rides above the input
+            // and the permission and question cards that stand in for it,
+            // which hide the input's own box. The input's box without one.
+            let box = mi;
+            for (
+              let e = mi.parentElement;
+              e && !(root && e.contains(root));
+              e = e.parentElement
+            ) {
+              const p = g.getComputedStyle(e).position;
+              if (p === "absolute" || p === "fixed") {
+                box = e;
+                break;
+              }
+            }
+            const ir = box.getBoundingClientRect();
+            if (ir.height > 0 && ir.top > topS + 60) {
+              botS = Math.min(botS, ir.top - 10);
+              end = Math.min(end, ir.top);
+            }
           }
         }
       } catch {
@@ -13594,8 +13639,9 @@ function ccupFindBarWebview(): void {
       if (botS - topS < 60) {
         topS = TOP;
         botS = vh - 16;
+        end = open;
       }
-      return [topS, botS];
+      return [topS, botS, end];
     };
 
     // Scroll the transcript scroller so the active match sits inside the safe
@@ -13605,9 +13651,10 @@ function ccupFindBarWebview(): void {
     // band top. Sticky pinning and Monaco's virtualized diff lines re-layout
     // DURING the scroll (a different header pins, lines mount), so a bounded
     // correction pass re-measures on the next frames until the target settles.
-    // A typed query's landing is revealed softly: a match showing whole under
-    // the pinned header stays where it is, without the band's margin there,
-    // so typing scrolls only to a match out of view.
+    // A typed query's landing is revealed softly: a match showing whole
+    // between the pinned header and the composer stays where it is, without
+    // the band's margins there, so typing scrolls only to a match out of
+    // view.
     const reveal = (tries?: number, soft?: boolean): void => {
       if (active < 0 || !activeR) return;
       try {
@@ -13628,14 +13675,15 @@ function ccupFindBarWebview(): void {
         const band = safeBand();
         const bandH = band[1] - band[0];
         const trH = tr.bottom - tr.top;
-        const top = band[0] - (soft ? SOFT : 0);
+        const top = soft ? band[0] - GAP - RISE : band[0];
+        const bot = soft ? Math.max(band[1], band[2] + RISE) : band[1];
         if (soft && folded) {
           // The match shows nowhere, so a line's height of its block in
           // view, where the ruler marks it, is place enough.
-          const seen = Math.min(tr.bottom, band[1]) - Math.max(tr.top, top);
+          const seen = Math.min(tr.bottom, bot) - Math.max(tr.top, top);
           if (seen >= Math.min(24, trH)) return;
         } else if (trH < bandH - 24) {
-          if (tr.top >= top && tr.bottom <= band[1]) return;
+          if (tr.top >= top && tr.bottom <= bot) return;
         } else if (tr.top <= band[0] + 8 && tr.bottom >= band[1] - 8) {
           return; // a tall block already fills the band
         }
@@ -13665,16 +13713,17 @@ function ccupFindBarWebview(): void {
       }
     };
 
-    // The reading position, for the origin: the start of the first line of
-    // text that shows whole under the pinned header (or the bar), from where
-    // a match needs no scroll up to show. A line the edge cuts through counts
-    // as above it, and so does the pinned header, which shows at the top
-    // while its place in the document lies above everything in view. The
-    // cached haystack's nodes run in document order, and so top to bottom
-    // once each is cut to the boxes that clip it (a folded IN/OUT row's
-    // hidden lines lay out far below the row itself, and the pinned header's
-    // far below their turn's start). That leaves a binary search over the
-    // nodes, then over the characters of the node that crosses the edge.
+    // The reading position, for the origin: the end of the last line of text
+    // that shows whole above the composer (or the scroller's end), from
+    // where a match needs no scroll down to show. A line the edge cuts
+    // through counts as below it. The cached haystack's nodes run in
+    // document order, and so top to bottom once each is held inside the
+    // boxes that clip it: a folded IN/OUT row lays its hidden lines out far
+    // below the row itself, and held at the row's end they come before what
+    // follows the row. The pinned header shows at the top while its place in
+    // the document is its turn's start, both above the edge. That leaves a
+    // binary search over the nodes, then over the characters of the node
+    // that crosses the edge.
     const seatView = (): void => {
       anchorR = null;
       const root = container();
@@ -13682,10 +13731,7 @@ function ccupFindBarWebview(): void {
       if (!root || !n) return;
       try {
         if (!probe) probe = doc.createRange();
-        const edge = Math.max(
-          safeBand()[0] - GAP,
-          root.getBoundingClientRect().top,
-        );
+        const edge = safeBand()[2];
         const clip = new Map();
         const clips = (e: any): boolean => {
           let c = clip.get(e);
@@ -13697,63 +13743,95 @@ function ccupFindBarWebview(): void {
           }
           return c;
         };
-        // Node i's lowest edge in view of its clipping boxes, or null for
-        // text that renders no box (the line breaks between a response's
-        // blocks).
-        const low = (i: number): number | null => {
+        // The tops and bottoms of the boxes that clip node i, innermost
+        // first.
+        const boxes = new Map();
+        const boxesOf = (i: number): number[] => {
+          let bs = boxes.get(i);
+          if (!bs) {
+            bs = [];
+            for (
+              let e = snap.nodes[i].parentElement;
+              e && e !== root;
+              e = e.parentElement
+            ) {
+              if (clips(e)) {
+                const cr = e.getBoundingClientRect();
+                bs.push(cr.top, cr.bottom);
+              }
+            }
+            boxes.set(i, bs);
+          }
+          return bs;
+        };
+        // y held inside each box that clips node i.
+        const held = (i: number, y: number): number => {
+          const bs = boxesOf(i);
+          for (let j = 0; j < bs.length; j += 2) {
+            y = Math.min(Math.max(y, bs[j]), bs[j + 1]);
+          }
+          return y;
+        };
+        // The box of node i's text from offset o to its end (a formula
+        // unit's own box), or null for text that renders no box (the line
+        // breaks between a response's blocks, trailing white space).
+        const boxFrom = (i: number, o: number): any => {
           const nd = snap.nodes[i];
           let r;
           if (nd.nodeType === 1) r = nd.getBoundingClientRect();
           else {
-            probe.selectNodeContents(nd);
+            probe.setStart(nd, o);
+            probe.setEnd(nd, nd.nodeValue.length);
             r = probe.getBoundingClientRect();
           }
-          if (!r.width && !r.height) return null;
-          let b = r.bottom;
-          for (let e = nd.parentElement; e && e !== root; e = e.parentElement) {
-            if (clips(e)) b = Math.min(b, e.getBoundingClientRect().bottom);
-          }
-          return b;
+          return r.width || r.height ? r : null;
+        };
+        // Node i's highest edge, held in its clipping boxes, or null.
+        const high = (i: number): number | null => {
+          const r = boxFrom(i, 0);
+          return r ? held(i, r.top) : null;
         };
         // The same for the first node from i on that renders a box.
-        const lowFrom = (i: number): number => {
+        const highFrom = (i: number): number => {
           for (let j = i; j < n; j++) {
-            const b = low(j);
-            if (b !== null) return b;
+            const t = high(j);
+            if (t !== null) return t;
           }
           return Infinity;
         };
-        // The first position whose line reaches below y, as a node index
-        // and an offset into its text, or null when none does. Within a
-        // node, the box of its text up to a character only grows downward
-        // with the offset, collapsed white space included.
-        const under = (y: number): number[] | null => {
+        // The last position whose line starts above y, as a node index and
+        // an offset into its text, or null when none does. Within a node,
+        // the box of its text from a character on only moves down with the
+        // offset.
+        const over = (y: number): number[] | null => {
           let l = 0;
           let h = n;
           while (l < h) {
             const mid = (l + h) >> 1;
-            if (lowFrom(mid) > y) h = mid;
+            if (highFrom(mid) >= y) h = mid;
             else l = mid + 1;
           }
-          while (l < n && low(l) === null) l++;
-          if (l >= n) return null;
-          const nd = snap.nodes[l];
-          if (nd.nodeType === 1) return [l, 0];
-          let a = 0;
-          let b = nd.nodeValue.length - 1;
+          let i = l - 1;
+          while (i >= 0 && high(i) === null) i--;
+          if (i < 0) return null;
+          const nd = snap.nodes[i];
+          if (nd.nodeType === 1) return [i, 0];
+          // The first offset whose rest starts at or below y, else the
+          // node's length: the character before it is the last above.
+          let a = 1;
+          let b = nd.nodeValue.length;
           while (a < b) {
             const mid = (a + b) >> 1;
-            probe.setStart(nd, 0);
-            probe.setEnd(nd, mid + 1);
-            if (probe.getBoundingClientRect().bottom > y) b = mid;
+            const r = boxFrom(i, mid);
+            if (!r || held(i, r.top) >= y) b = mid;
             else a = mid + 1;
           }
-          return [l, a];
+          return [i, a - 1];
         };
-        let p = under(edge);
+        let p = over(edge);
         if (p) {
-          // That line may be cut by the edge: the line after it is then the
-          // first whole one, its characters at least a few px lower.
+          // That line may be cut by the edge: the line before it is then the
+          // last whole one, its characters at least a few px higher.
           const nd = snap.nodes[p[0]];
           let r;
           if (nd.nodeType === 1) r = nd.getBoundingClientRect();
@@ -13762,32 +13840,33 @@ function ccupFindBarWebview(): void {
             probe.setEnd(nd, p[1] + 1);
             r = probe.getBoundingClientRect();
           }
-          if ((r.width || r.height) && r.top < edge - 0.5) {
-            p = under(r.bottom + 3) || p;
+          if ((r.width || r.height) && held(p[0], r.bottom) > edge + 0.5) {
+            p = over(held(p[0], r.top) - 3) || p;
           }
         }
         const at = doc.createRange();
         if (p) {
           const nd = snap.nodes[p[0]];
-          if (nd.nodeType === 1) at.setStartBefore(nd);
-          else at.setStart(nd, p[1]);
+          if (nd.nodeType === 1) at.setStartAfter(nd);
+          else at.setStart(nd, p[1] + 1);
           at.collapse(true);
         } else {
-          at.selectNodeContents(root); // all of it lies above: its end
-          at.collapse(false);
+          at.selectNodeContents(root); // all of it lies below: its start
+          at.collapse(true);
         }
         anchorR = at;
       } catch {
         anchorR = null; // a stale node mid-read: the next query seats again
       }
     };
-    // The origin moves to the active match, which a step has just taken.
+    // The origin moves to the end of the active match, which a step has
+    // just taken.
     const seatAt = (): void => {
       anchorR = null;
       try {
         if (!activeR) return;
         const at = doc.createRange();
-        at.setStart(activeR.startContainer, activeR.startOffset);
+        at.setStart(activeR.endContainer, activeR.endOffset);
         at.collapse(true);
         anchorR = at;
       } catch {
@@ -13804,9 +13883,9 @@ function ccupFindBarWebview(): void {
     const away = (e: any): void => {
       if (anchorR && !(bar && bar.contains(e.target))) anchorR = null;
     };
-    // The first match that ends after the origin, so one already begun
-    // there counts (a query that grew at its front keeps its match), or nm
-    // when all of them end before it. An origin that is not set, or that
+    // The last match that starts before the origin, so one that runs on
+    // past it counts (a query that grew at its end keeps its match), or -1
+    // when all of them start after it. An origin that is not set, or that
     // the transcript no longer holds, is first seated at the reading
     // position.
     const land = (): number => {
@@ -13815,28 +13894,32 @@ function ccupFindBarWebview(): void {
         if (!anchorR || !root || !root.contains(anchorR.startContainer)) {
           seatView();
         }
-        if (!anchorR) return nm;
-        return firstWhere((k) => {
-          const b = snap.nodes[mm[4 * k + 2]];
-          return b.nodeType === 1
-            ? anchorR.comparePoint(b.parentNode, idxOf(b) + 1) > 0
-            : anchorR.comparePoint(b, mm[4 * k + 3]) > 0;
-        });
+        if (!anchorR) return -1;
+        return (
+          firstWhere((k) => {
+            const a = snap.nodes[mm[4 * k]];
+            return a.nodeType === 1
+              ? anchorR.comparePoint(a.parentNode, idxOf(a)) >= 0
+              : anchorR.comparePoint(a, mm[4 * k + 1]) >= 0;
+          }) - 1
+        );
       } catch {
-        return nm; // a stale node: wrap to the first match
+        return -1; // a stale node: wrap to the last match
       }
     };
     // The step's first match when none is active yet (a transcript the open
-    // bar came to by a session switch): the landing a query would take
-    // there, or, going back, the match before it.
+    // bar came to by a session switch): for next, the landing a query would
+    // take there, and for previous, the match after it.
     const first = (dir: number): number => {
       const k = land();
-      return (dir > 0 ? k : k - 1 + nm) % nm;
+      return (dir > 0 ? k + nm : k + 1) % nm;
     };
 
+    // A step in the count, from the transcript's end: next (dir 1) goes up
+    // the match list, previous (dir -1) down it.
     const nav = (dir: number): void => {
       if (!nm) return;
-      active = active < 0 ? first(dir) : (active + dir + nm) % nm;
+      active = active < 0 ? first(dir) : (active - dir + nm) % nm;
       paint();
       seatAt();
       status();
@@ -13876,19 +13959,22 @@ function ccupFindBarWebview(): void {
       return el;
     };
 
-    // Skip to the nearest match in a DIFFERENT block (wrapping); previous
-    // lands on that block's first match, so both directions enter a block at
-    // its top. A single block with matches leaves nothing to skip to.
+    // Skip to the nearest match in a DIFFERENT block (wrapping), next going
+    // up the transcript as nav does; previous lands on that block's first
+    // match in the count, so both directions enter a block at its lowest
+    // match, from where next goes on through it. A single block with
+    // matches leaves nothing to skip to.
     const navBlock = (dir: number): void => {
       const n = nm;
       if (!n) return;
       const cur = active;
+      const d = -dir; // the step through the match list
       let j = -1;
       if (cur < 0) j = first(dir);
       else {
         const b = blockAt(cur);
         for (let s = 1; s < n; s++) {
-          const k = (((cur + dir * s) % n) + n) % n;
+          const k = (((cur + d * s) % n) + n) % n;
           if (blockAt(k) !== b) {
             j = k;
             break;
@@ -13896,11 +13982,11 @@ function ccupFindBarWebview(): void {
         }
         if (j < 0) return;
       }
-      if (dir < 0) {
-        // Back to the first of the block's matches in a row, never around
-        // the transcript's ends.
+      if (d > 0) {
+        // On to the last of the block's matches in a row, never around the
+        // transcript's ends.
         const bb = blockAt(j);
-        while (j > 0 && blockAt(j - 1) === bb) j--;
+        while (j < n - 1 && blockAt(j + 1) === bb) j++;
       }
       active = j;
       paint();
@@ -13909,21 +13995,21 @@ function ccupFindBarWebview(): void {
       reveal();
     };
 
-    // The query or an option changed: scan, and land on the first match from
-    // the search origin on, wrapping to the first overall, as the editor's
-    // widget searches from where the cursor was when typing began. The
-    // landing leaves the origin alone, so it depends on the query and not on
-    // what the queries before it found, and deleting a letter goes back to
-    // where the shorter query landed.
-    // A capped list that ends before the origin has no landing to offer,
-    // and leaves the view alone rather than wrap to a match far above.
+    // The query or an option changed: scan, and land on the first match in
+    // the count from the search origin back, wrapping to the last overall,
+    // as the editor's widget searches from where the cursor was when typing
+    // began. The landing leaves the origin alone, so it depends on the query
+    // and not on what the queries before it found, and deleting a letter
+    // goes back to where the shorter query landed.
+    // A capped list that starts past the origin has no landing to offer,
+    // and leaves the view alone rather than wrap to a match far below.
     const update = (): void => {
       fresh = false;
       search(input ? input.value : "");
       active = -1;
       if (nm) {
         const k = land();
-        active = k < nm ? k : nm < MAXM ? 0 : -1;
+        active = k >= 0 ? k : capped ? -1 : nm - 1;
       }
       paint();
       status();
@@ -14161,19 +14247,21 @@ function ccupFindBarWebview(): void {
       tip = doc.createElement("div");
       tip.className = "ccup-find-tip";
       doc.body.appendChild(tip);
-      prevB = mkBtn(CHEV_UP, "Previous Match", () => nav(-1));
-      nextB = mkBtn(CHEV_DN, "Next Match", () => nav(1));
-      blockPrevB = mkBtn(CHEVS_UP, "Previous Match Block", () => navBlock(-1));
-      blockPrevB.classList.add("ccup-find-sep");
-      blockNextB = mkBtn(CHEVS_DN, "Next Match Block", () => navBlock(1));
+      // Next goes up the transcript, as the count runs from its end, so
+      // each pair keeps the up chevron first and gives it next.
+      nextB = mkBtn(CHEV_UP, "Next Match", () => nav(1));
+      prevB = mkBtn(CHEV_DN, "Previous Match", () => nav(-1));
+      blockNextB = mkBtn(CHEVS_UP, "Next Match Block", () => navBlock(1));
+      blockNextB.classList.add("ccup-find-sep");
+      blockPrevB = mkBtn(CHEVS_DN, "Previous Match Block", () => navBlock(-1));
       const closeB = mkBtn(CROSS, "Close", () => closeBar());
       closeB.classList.add("ccup-find-sep");
       bar.appendChild(field);
       bar.appendChild(count);
-      bar.appendChild(prevB);
       bar.appendChild(nextB);
-      bar.appendChild(blockPrevB);
+      bar.appendChild(prevB);
       bar.appendChild(blockNextB);
+      bar.appendChild(blockPrevB);
       bar.appendChild(closeB);
       bar.appendChild(msg);
       doc.body.appendChild(bar);
@@ -14279,6 +14367,7 @@ function ccupFindBarWebview(): void {
     const drop = (): void => {
       mm = [];
       nm = 0;
+      capped = false;
       starts = [];
       blkMemo = new Map();
       active = -1;

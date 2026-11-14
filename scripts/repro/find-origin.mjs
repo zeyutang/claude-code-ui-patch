@@ -2,16 +2,18 @@
 // what a session switch leaves of a search, on the REAL webview bundle booted
 // against a stub host with two seeded sessions (prose, code, tool calls whose
 // output folds, and one turn long enough to scroll inside with its header
-// pinned). The checks:
+// pinned). Matches count from the transcript's end, and next steps up. The
+// checks:
 //   origin  a word typed letter by letter lands where the same word pasted
 //           whole does, and so does a typo corrected on the way. Every
-//           letter lands by the one reading position, the first line that
-//           shows whole under the pinned header, which a linear walk of the
-//           transcript finds here on its own (the engine halves its way to
-//           it). A landing in view scrolls nothing, no letter scrolls up,
-//           and the pinned header's own match is not the landing. Near the
-//           end, a word whose first letter matches over 20000 times lands
-//           the same
+//           letter lands by the one reading position, the end of the last
+//           line that shows whole above the composer, on the last match that
+//           starts before it, which a linear walk of the transcript finds
+//           here on its own (the engine halves its way to it). A landing in
+//           view scrolls nothing, no letter scrolls down, and the pinned
+//           header's own match is not the landing. Near the start, a word
+//           whose first letter matches over 20000 times after the view
+//           lands the same
 //   moves   a step moves the origin to its match, so a longer query goes on
 //           from there and the shorter one comes back to it. A landing's own
 //           scroll leaves the origin alone, while a wheel turn, a press, and
@@ -19,16 +21,21 @@
 //   hidden  a prompt's text matches once: its second copy, a heading for
 //           screen readers clipped to a pixel, is no match, and neither is
 //           a "Show more" that shows nowhere
-//   wrap    with no match from the origin on, the first match overall
+//   wrap    with no match starting before the origin, the last match
+//           overall, "1 of n"
 //   flip    an option flipped on and off again ends on the same match
 //   swap    a new session, which has no transcript at all, takes the
 //           matches, the active match and the ruler with it, and the counter
 //           reads "No results". Back in a session the counter reads "? of n"
 //           with no match active, the first step lands by the reading
-//           position there, and a step back lands before it, as a block
-//           step back enters the block before it at its first match. A
-//           session slow to load never reads "No results" on the way, and a
-//           match that appears while none is active stays unmarked
+//           position there, and a previous step lands after it, as a
+//           previous block step enters the block after it at its lowest
+//           match. A session slow to load never reads "No results" on the
+//           way, and a match that appears while none is active stays
+//           unmarked
+//   card    with a permission card standing in for the input box, which it
+//           hides, the reading position ends at the card's top, and no
+//           landing in view hides behind the card
 //
 //   node scripts/cdp-driver.mjs scripts/repro/find-origin.mjs 760 900
 //
@@ -208,7 +215,9 @@ function transcript(id, turns, seed, long) {
 // The stub host, as in find-typing.mjs, with two sessions on disk and their
 // transcripts loaded ahead of the bundle from a classic script. A session's
 // transcript is answered after window.__delay ms when that is set, which is
-// how long the session then shows its loading state.
+// how long the session then shows its loading state. Each session's channel,
+// as its last launch named it, is kept in window.__chans, for a permission
+// card raised on it, as in card-text.mjs.
 const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="/wv/index.css">
 <style>
@@ -230,7 +239,7 @@ const SESSIONS = ${JSON.stringify([
 ])}.map(([id, t, age]) => ({ id, summary: t, customTitle: t,
   lastModified: NOW - age * 60e3, lastActivity: NOW - age * 60e3, archived: false,
   fileSize: 4096, gitBranch: "develop", isCurrentWorkspace: true }));
-const deliver = (message) => window.dispatchEvent(
+const deliver = window.deliver = (message) => window.dispatchEvent(
   new MessageEvent("message", { data: { type: "from-extension", message } }));
 const respond = (requestId, response) => deliver({ type: "response", requestId, response });
 const MODEL = { value: "default", label: "Default", resolvedModel: "claude-fable-5",
@@ -239,6 +248,7 @@ window.acquireVsCodeApi = () => ({
   getState() { return undefined; },
   setState() {},
   postMessage(msg) {
+    if (msg && msg.type === "launch_claude") (window.__chans ||= {})[msg.resume] = msg.channelId;
     if (!msg || msg.type !== "request") return;
     const r = msg.request;
     let resp = {};
@@ -286,12 +296,15 @@ const TYPES = {
 };
 
 // Page-side probes. The second half is an oracle for the engine's reading
-// position, by its definition and none of its method: a linear walk over the
-// visible text nodes and their characters, where the engine searches by
-// halves over its cached haystack. edge() mirrors the engine's own numbers
-// (TOP minus GAP, 42px, under the bar, or the pinned header's bottom), and
-// the 3px that tell a line from the next one mirror seatView's. Keep them
-// in step.
+// position, by its definition and none of its method: a linear walk back
+// over the visible text nodes and their characters, where the engine
+// searches by halves over its cached haystack. end() mirrors the engine's
+// edge (the top of the composer's outer box, the first one above the input
+// taken out of the flow, or the scroller's end), held() its clipping boxes,
+// and the 3px that tell a line from the one before mirror seatView's. Keep
+// them in step. top() is the view's other end, under the bar or the pinned
+// header (TOP minus GAP, 42px, or the header's bottom), for the landings
+// that show.
 const PROBES = `(() => {
   const sc = () => document.querySelector('[class*="messagesContainer_"]');
   const STICKY = '[class*="stickyHeader_"]';
@@ -304,13 +317,35 @@ const PROBES = `(() => {
     count: () => document.querySelector(".ccup-find-bar .ccup-find-count span")?.textContent ?? null,
     st: () => { const s = sc(); return s ? s.scrollTop : null; },
     title: () => document.querySelector('[class*="titleText_"]')?.getAttribute("title") ?? null,
-    // The active match's start, as a node and an offset, or null.
+    // The active match's start, as a node and an offset, or null, and its
+    // end.
     act() {
       const h = CSS.highlights.get("ccup-find-active");
       const a = h && [...h][0];
       return a ? [a.startContainer, a.startOffset] : null;
     },
+    actEnd() {
+      const h = CSS.highlights.get("ccup-find-active");
+      const a = h && [...h][0];
+      return a ? [a.endContainer, a.endOffset] : null;
+    },
     painted: () => CSS.highlights.get("ccup-find")?.size ?? 0,
+    // The active match's box cut to the boxes that clip it, and whether any
+    // of it shows: a match folded out of its row shows nowhere.
+    shown() {
+      const h = CSS.highlights.get("ccup-find-active"), a = h && [...h][0];
+      if (!a) return null;
+      const r = a.getBoundingClientRect();
+      let top = r.top, bottom = r.bottom;
+      for (let e = a.startContainer.parentElement; e && e !== sc(); e = e.parentElement) {
+        if (getComputedStyle(e).overflowY !== "visible") {
+          const c = e.getBoundingClientRect();
+          top = Math.max(top, c.top);
+          bottom = Math.min(bottom, c.bottom);
+        }
+      }
+      return { top, bottom, shows: bottom > top };
+    },
     ruler() {
       const r = document.querySelector(".ccup-find-ruler");
       return !!r && getComputedStyle(r).display !== "none";
@@ -325,7 +360,16 @@ const PROBES = `(() => {
         return r.top <= rt + 4 && r.bottom > rt + 4 && h.parentElement.getBoundingClientRect().top < rt - 40;
       }) || null;
     },
-    edge() {
+    end() {
+      const s = sc(), sb = s.getBoundingClientRect().bottom;
+      const mi = document.querySelector('[class*="messageInput_"]');
+      for (let e = mi && mi.parentElement; e && !e.contains(s); e = e.parentElement) {
+        const p = getComputedStyle(e).position;
+        if (p === "absolute" || p === "fixed") return Math.min(innerHeight, sb, e.getBoundingClientRect().top);
+      }
+      return Math.min(innerHeight, sb);
+    },
+    top() {
       const s = sc(), rt = s.getBoundingClientRect().top;
       let e = Math.max(42, rt);
       for (const h of s.querySelectorAll(STICKY)) {
@@ -374,62 +418,69 @@ const PROBES = `(() => {
       }
       return { shown, hidden: every - shown, ranges };
     },
-    // b cut to the boxes that clip node n: a pinned header, a folded row.
-    clipped(n, b) {
+    // y held inside each box that clips node n, innermost first: a pinned
+    // header, a folded row, whose hidden lines lay out below it.
+    held(n, y) {
       const s = sc();
       for (let e = n.parentElement; e && e !== s; e = e.parentElement) {
-        if (e.matches(STICKY) || getComputedStyle(e).overflowY !== "visible")
-          b = Math.min(b, e.getBoundingClientRect().bottom);
+        if (e.matches(STICKY) || getComputedStyle(e).overflowY !== "visible") {
+          const r = e.getBoundingClientRect();
+          y = Math.min(Math.max(y, r.top), r.bottom);
+        }
       }
-      return b;
+      return y;
     },
-    // The first character from (i0, o0) on whose line reaches below y.
-    scan(ns, y, i0, o0) {
-      for (let i = i0; i < ns.length; i++) {
+    // The last character from (i0, o0) back whose line starts above y.
+    scanBack(ns, y, i0, o0) {
+      for (let i = i0; i >= 0; i--) {
         const n = ns[i];
         pr.selectNodeContents(n);
         const r = pr.getBoundingClientRect();
         if (!r.width && !r.height) continue;
-        if (__fg.clipped(n, r.bottom) <= y) continue;
-        for (let o = i === i0 ? o0 : 0; o < n.nodeValue.length; o++) {
+        if (__fg.held(n, r.top) >= y) continue;
+        for (let o = i === i0 ? o0 : n.nodeValue.length - 1; o >= 0; o--) {
           pr.setStart(n, o);
           pr.setEnd(n, o + 1);
           const c = pr.getBoundingClientRect();
-          if ((c.width || c.height) && c.bottom > y) return { i, o, top: c.top, bottom: c.bottom };
+          if ((c.width || c.height) && __fg.held(n, c.top) < y)
+            return { i, o, top: __fg.held(n, c.top), bottom: __fg.held(n, c.bottom) };
         }
       }
       return null;
     },
     // Seat the oracle's origin at the reading position of the view as it
-    // stands, for the land() calls that follow.
+    // stands, for the land() calls that follow: just after the last
+    // character of the last line showing whole.
     seat() {
-      const ns = __fg.nodes(), edge = __fg.edge();
-      let p = __fg.scan(ns, edge, 0, 0);
-      if (p && p.top < edge - 0.5) p = __fg.scan(ns, p.bottom + 3, p.i, p.o) || p;
-      window.__seat = p ? [ns[p.i], p.o] : null;
-      return { edge, top: p ? p.top : null, text: p ? ns[p.i].nodeValue.slice(p.o, p.o + 24) : null };
+      const ns = __fg.nodes(), edge = __fg.end();
+      const z = ns.length - 1;
+      let p = z >= 0 ? __fg.scanBack(ns, edge, z, ns[z].nodeValue.length - 1) : null;
+      if (p && p.bottom > edge + 0.5) p = __fg.scanBack(ns, p.top - 3, p.i, p.o) || p;
+      window.__seat = p ? [ns[p.i], p.o + 1] : null;
+      return { edge, bottom: p ? p.bottom : null, text: p ? ns[p.i].nodeValue.slice(Math.max(0, p.o - 23), p.o + 1) : null };
     },
-    // Or at the active match, where a step leaves the engine's.
-    seatAtActive() { window.__seat = __fg.act(); },
-    // The landing for q from the seat: the first occurrence that ends after
-    // it, else the first of all. Kept in window.__land with the occurrence
-    // before it (else the last of all), for same() and back().
+    // Or at the end of the active match, where a step leaves the engine's.
+    seatAtActive() { window.__seat = __fg.actEnd(); },
+    // The landing for q from the seat: the last occurrence that starts
+    // before it, else the last of all, with its place in the count from the
+    // end. Kept in window.__land with the occurrence after it (else the
+    // first of all), for same() and after().
     land(q) {
       const ns = __fg.nodes(), at = window.__seat, Q = q.toLowerCase();
       const i0 = at ? ns.indexOf(at[0]) : -1;
-      let first = null, last = null, hit = null, prev = null, total = 0, rank = 0, prevRank = 0;
+      const all = [];
+      let h = -1;
       for (let i = 0; i < ns.length; i++) {
         const t = ns[i].nodeValue.toLowerCase();
         for (let k = t.indexOf(Q); k >= 0; k = t.indexOf(Q, k + Q.length)) {
-          total++;
-          last = [ns[i], k];
-          if (!first) first = last;
-          const after = i0 >= 0 && (i > i0 || (i === i0 && k + Q.length > at[1]));
-          if (after && !hit) { hit = last; rank = total; }
-          if (!after) { prev = last; prevRank = total; }
+          if (i0 >= 0 && (i < i0 || (i === i0 && k < at[1]))) h = all.length;
+          all.push([ns[i], k]);
         }
       }
-      window.__land = { pt: hit || first, prev: prev || last };
+      const total = all.length;
+      const hit = h >= 0 ? all[h] : null;
+      const nx = total ? (h + 1) % total : -1;
+      window.__land = { pt: hit || all[total - 1] || null, next: nx >= 0 ? all[nx] : null };
       let box = null;
       if (hit) {
         pr.setStart(hit[0], hit[1]);
@@ -437,18 +488,18 @@ const PROBES = `(() => {
         const b = pr.getBoundingClientRect();
         box = { top: b.top, bottom: b.bottom };
       }
-      return { total, wrapped: !hit, rank: hit ? rank : total ? 1 : 0,
-        prevRank: prev ? prevRank : total, box };
+      return { total, wrapped: !hit, rank: hit ? total - h : total ? 1 : 0,
+        nextRank: nx >= 0 ? total - nx : 0, box, top: __fg.top() };
     },
     text: (pt) => (pt && pt[0].nodeType === 3 ? pt[0].nodeValue.slice(Math.max(0, pt[1] - 12), pt[1] + 16) : null),
     is: (a, b) => !!a && !!b && a[0] === b[0] && a[1] === b[1],
-    // The active match is the oracle's landing, or the occurrence before it.
+    // The active match is the oracle's landing, or the occurrence after it.
     same() {
       const a = __fg.act(), w = window.__land.pt;
       return { same: __fg.is(a, w), got: __fg.text(a), want: __fg.text(w) };
     },
-    back() {
-      const a = __fg.act(), w = window.__land.prev;
+    after() {
+      const a = __fg.act(), w = window.__land.next;
       return { same: __fg.is(a, w), got: __fg.text(a), want: __fg.text(w) };
     },
     keep(name) { (window.__kept ||= {})[name] = __fg.act(); },
@@ -465,7 +516,7 @@ const PROBES = `(() => {
       return row;
     },
     // The active match's place among q's occurrences, and whether it heads
-    // its block: the occurrence before it lies in another one.
+    // its block in the count: the occurrence after it lies in another one.
     heads(q) {
       const a = __fg.act(), Q = q.toLowerCase(), all = [];
       for (const n of __fg.nodes()) {
@@ -473,7 +524,8 @@ const PROBES = `(() => {
         for (let k = t.indexOf(Q); k >= 0; k = t.indexOf(Q, k + Q.length)) all.push([n, k]);
       }
       const i = all.findIndex((p) => __fg.is(p, a));
-      return { i, head: i === 0 || (i > 0 && __fg.block(all[i - 1]) !== __fg.block(a)) };
+      const z = all.length - 1;
+      return { i, head: i === z || (i >= 0 && i < z && __fg.block(all[i + 1]) !== __fg.block(a)) };
     },
     // Occurrences of q showing in the viewport, and those no registered
     // range starts at, as in find-typing.mjs.
@@ -649,7 +701,7 @@ export async function run(ctx) {
       await settle(170);
       const got = await ev("__fg.same()");
       const now = await ev("__fg.st()");
-      steps.push({ q, ...got, wrapped: want.wrapped, up: now < st - 0.5 });
+      steps.push({ q, ...got, wrapped: want.wrapped, down: now > st + 0.5 });
       st = now;
     }
     return steps;
@@ -751,12 +803,9 @@ export async function run(ctx) {
           one: (await ev(`__fg.kept("typed")`)) && got.same,
           rank: `${want.rank} of ${want.total}`,
         });
-        // A landing showing whole and clear of the composer scrolls nothing.
-        if (
-          want.box &&
-          want.box.bottom < ctx.viewport.height - 300 &&
-          !want.wrapped
-        ) {
+        // A landing showing whole and clear of the pinned header scrolls
+        // nothing (it lies above the composer by its definition).
+        if (want.box && want.box.top > want.top + 60 && !want.wrapped) {
           calm.push({ pos, w, moved: (await ev("__fg.st()")) - from });
         }
       }
@@ -775,11 +824,11 @@ export async function run(ctx) {
       split.length === 0,
       split.length ? J(split) : ends.map((e) => `${e.w} ${e.typed}`).join(", "),
     );
-    const ups = letters.filter((s) => s.up && !s.wrapped);
+    const downs = letters.filter((s) => s.down && !s.wrapped);
     check(
-      "typing: no letter scrolls the chat up, short of a wrap",
-      ups.length === 0,
-      ups.length ? J(ups[0]) : `${letters.length} letters`,
+      "typing: no letter scrolls the chat down, short of a wrap",
+      downs.length === 0,
+      downs.length ? J(downs[0]) : `${letters.length} letters`,
     );
     const stirred = calm.filter((c) => Math.abs(c.moved) > 0.5);
     check(
@@ -788,21 +837,21 @@ export async function run(ctx) {
       `${calm.length - stirred.length} of ${calm.length} held${stirred.length ? `, ${J(stirred[0])}` : ""}`,
     );
 
-    // A common first letter near the end: its matches run past 20000 before
-    // the view, where a shorter match list would end and the letter wrap to
-    // the first match of all.
-    await openAt(Math.round(0.96 * H));
+    // A common first letter near the start: its matches run past 20000
+    // after the view, where a shorter match list kept from the end would
+    // start below the view and the letter find no landing.
+    await openAt(Math.round(0.03 * H));
     const many = await ev(`__fg.land("e")`);
-    const late = await ev("__fg.st()");
+    const early = await ev("__fg.st()");
     await focusInput();
     const common = await type("", "element");
     check(
-      "typing: a word whose first letter matches over 20000 times lands by the reading position near the end, and scrolls nothing up",
+      "typing: a word whose first letter matches over 20000 times after the view lands by the reading position near the start, and scrolls nothing down",
       many.total > 20000 &&
         many.rank > 20000 &&
-        common.every((s) => s.same && !s.up) &&
-        (await ev("__fg.st()")) >= late - 0.5,
-      `"e" ${many.rank} of ${many.total}, ${J(common.filter((s) => !s.same || s.up)[0] ?? null)}, ${await ev("__fg.count()")}`,
+        common.every((s) => s.same && !s.down) &&
+        (await ev("__fg.st()")) <= early + 0.5,
+      `"e" ${many.rank} of ${many.total}, ${J(common.filter((s) => !s.same || s.down)[0] ?? null)}, ${await ev("__fg.count()")}`,
     );
 
     // A typo, corrected: "vert" lands on another word, then back to "ver",
@@ -832,7 +881,8 @@ export async function run(ctx) {
       `${await ev("__fg.count()")} against ${whole}`,
     );
 
-    // The pinned header holds MARK, the first of all its matches.
+    // The pinned header holds MARK, the first of all its matches and so the
+    // last in the count.
     const seat = await openAt(Math.round(deep));
     const pin = await ev(`(() => {
       const u = __fg.pinned();
@@ -856,11 +906,11 @@ export async function run(ctx) {
       return { ...__fg.same(), count: __fg.count(), st: __fg.st(), inHeader: !!a && !!u && u.contains(a[0]), held };
     })()`);
     check(
-      "pinned: the landing is the first match under the header, not the header's own, and the view holds",
+      "pinned: the landing is the last match above the composer, not the header's own, and the view holds",
       mark.same &&
         !mark.inHeader &&
         !markWant.wrapped &&
-        markWant.rank > 1 &&
+        markWant.rank < markWant.total &&
         Math.abs(mark.st - deepAt) < 0.5,
       J({
         ...mark,
@@ -892,10 +942,10 @@ export async function run(ctx) {
     )
       return false;
     await ev(`(__fg.keep("step"), __fg.seatAtActive())`);
-    // Past the step's own match unless it reads "vers" too.
+    // Up past the step's own match unless it reads "vers" too.
     const more = await type("ver", "s");
     check(
-      "moves: after a step, a longer query lands on the first match from the step on",
+      "moves: after a step, a longer query lands on the first match in the count from the step back",
       more[0].same,
       J(more[0]),
     );
@@ -906,9 +956,14 @@ export async function run(ctx) {
       `${await ev("__fg.count()")} against ${stepped}`,
     );
 
-    // A landing far below scrolls there, and the next query still lands by
-    // the reading position the first was typed at, well above the long turn.
-    await openAt(Math.max(0, Math.round(deep) - 9200));
+    // A landing far above scrolls there, and the next query still lands by
+    // the reading position the first was typed at, well below the long turn.
+    const past = await ev(`(() => {
+      const s = __fg.sc();
+      const u = [...s.querySelectorAll('[class*="stickyHeader_"]')].find((h) => h.textContent.includes("${MARK}"));
+      return s.scrollTop + u.parentElement.getBoundingClientRect().bottom - s.getBoundingClientRect().top + 4000;
+    })()`);
+    await openAt(Math.min(H, Math.round(past)));
     const far = await ev(`__fg.land("${MARK}")`);
     const farFrom = await ev("__fg.st()");
     await paste(MARK);
@@ -919,7 +974,7 @@ export async function run(ctx) {
     check(
       "moves: a landing's own scroll leaves the origin where typing began",
       !far.wrapped &&
-        farTo - farFrom > ctx.viewport.height &&
+        farFrom - farTo > ctx.viewport.height &&
         kept.same &&
         !next.wrapped,
       J({ scrolled: farTo - farFrom, ...kept, back: await ev("__fg.st()") }),
@@ -1017,12 +1072,12 @@ export async function run(ctx) {
       J(button),
     );
 
-    // wrap: at the end, the token's matches all lie above.
-    await openAt(H);
+    // wrap: at the start, the token's matches all lie below.
+    await openAt(0);
     const wrap = await ev(`__fg.land("${MARK}")`);
     await paste(MARK);
     check(
-      "wrap: with no match from the origin on, the first match overall",
+      "wrap: with no match starting before the origin, the last match overall",
       wrap.wrapped &&
         (await ev("__fg.same()")).same &&
         (await ev("__fg.count()")) === `1 of ${wrap.total}`,
@@ -1161,7 +1216,7 @@ export async function run(ctx) {
       `${waited.length} samples loading, ${told.length} told, then ${end}${told.length ? ` ${J(told[0])}` : ""}`,
     );
     const totalB = Number(end.split(" of ")[1]);
-    // A step back, from mid-session.
+    // A previous step, from mid-session.
     await ev(
       `void (__fg.sc().scrollTop = Math.round((__fg.sc().scrollHeight - __fg.sc().clientHeight) * 0.6))`,
     );
@@ -1172,19 +1227,19 @@ export async function run(ctx) {
     const stepB = await ev(`__fg.land("version")`);
     await key("Enter", 13, SHIFT);
     await settle(350);
-    const stepBack = {
-      ...(await ev("__fg.back()")),
+    const stepOn = {
+      ...(await ev("__fg.after()")),
       count: await ev("__fg.count()"),
     };
     check(
-      "swap: a step back from there lands on the match before the reading position",
-      stepBack.same &&
-        stepB.prevRank > 0 &&
-        stepBack.count === `${stepB.prevRank} of ${totalB}`,
-      J({ ...stepBack, want: stepB.prevRank }),
+      "swap: a previous step from there lands on the first match after the reading position",
+      stepOn.same &&
+        stepB.nextRank > 0 &&
+        stepOn.count === `${stepB.nextRank} of ${totalB}`,
+      J({ ...stepOn, want: stepB.nextRank }),
     );
 
-    // A third switch, and block steps back from there.
+    // A third switch, and previous block steps from there.
     await history(TITLE[A]);
     await until(`__fg.title() === ${J(TITLE[A])}`);
     await rendered();
@@ -1197,8 +1252,8 @@ export async function run(ctx) {
     const unset = await ev("__fg.count()");
     await key("Enter", 13, MOD | SHIFT);
     await settle(350);
-    const blockBack = await ev(`(() => {
-      const a = __fg.act(), w = window.__land.prev;
+    const blockIn = await ev(`(() => {
+      const a = __fg.act(), w = window.__land.next;
       return { ...__fg.heads("version"), block: !!a && __fg.block(a) === __fg.block(w), count: __fg.count() };
     })()`);
     await ev(`__fg.keep("block")`);
@@ -1209,15 +1264,14 @@ export async function run(ctx) {
       return { ...__fg.heads("version"), other: !!a && __fg.block(a) !== __fg.block(window.__kept.block), count: __fg.count() };
     })()`);
     check(
-      "swap: a block step back from there enters the block before the reading position at its first match, and the next one the block before that",
+      "swap: a previous block step from there enters the block after the reading position at its lowest match, and the next one the block after that",
       unset === `? of ${totalA}` &&
-        blockBack.block &&
-        blockBack.head &&
+        blockIn.block &&
+        blockIn.head &&
         blockOn.other &&
         blockOn.head &&
-        blockOn.i >= 0 &&
-        blockOn.i < blockBack.i,
-      J({ unset, blockBack, blockOn }),
+        blockOn.i > blockIn.i,
+      J({ unset, blockIn, blockOn }),
     );
 
     // A match that appears while none is active.
@@ -1252,6 +1306,61 @@ export async function run(ctx) {
       J({ none, ...born, then: await ev("__fg.count()") }),
     );
     await ctx.shot("find-origin");
+
+    // card: a permission card stands in for the input box and hides it, and
+    // the reading position ends at the card's top, so no landing in view
+    // hides behind it.
+    const CARD = '[class*="permissionRequestContainer_"]';
+    const chans = await ev("JSON.stringify(window.__chans || {})");
+    await ev(`deliver({ type: "request", channelId: window.__chans[${J(A)}], requestId: "card1",
+      request: { type: "tool_permission_request", toolName: "Bash",
+        inputs: { command: "ls -la /tmp", description: "List the temp directory" },
+        suggestions: [], toolUseId: "toolu_card1" } })`);
+    const raised = await until(`!!document.querySelector('${CARD}')`);
+    await settle(1500); // past the card's arming
+    const up = {
+      top: raised
+        ? await ev(
+            `document.querySelector('${CARD}').getBoundingClientRect().top`,
+          )
+        : null,
+      input: await ev(
+        `document.querySelector('[class*="messageInput_"]')?.getBoundingClientRect().height ?? null`,
+      ),
+      end: await ev("__fg.end()"),
+    };
+    if (
+      !check(
+        "precondition: a permission card is up, the input box hidden under it",
+        raised && up.input === 0,
+        J({ ...up, chans }),
+      )
+    )
+      return false;
+    const behind = [];
+    let cards = 0;
+    for (const pos of places.slice(0, 3)) {
+      for (const w of ["version", "graph"]) {
+        await openAt(pos);
+        const want = await ev(`__fg.land(${J(w)})`);
+        await paste(w);
+        const got = await ev("__fg.same()");
+        const v = await ev("__fg.shown()");
+        cards++;
+        if (
+          !got.same ||
+          (!want.wrapped && (!v || (v.shows && v.bottom > up.top + 4)))
+        ) {
+          behind.push({ pos, w, ...got, ...v });
+        }
+      }
+    }
+    check(
+      "card: the reading position ends at the card's top, and no landing hides behind it",
+      Math.abs(up.end - up.top) < 1 && cards === 6 && behind.length === 0,
+      J({ ...up, behind: behind.slice(0, 2) }),
+    );
+    await ctx.shot("find-origin-card");
   } finally {
     server.close();
   }

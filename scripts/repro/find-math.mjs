@@ -363,12 +363,13 @@ export async function run(ctx) {
       ),
     );
 
-    // count + paint, the last response typeset: the first match in view.
+    // count + paint, the last response typeset: the last match, in view,
+    // first in the count.
     await query("\\pi");
     let a = await ev("__fm.act()");
     check(
       "\\pi counts both responses' formulas, typeset or not",
-      (await ev("__fm.count()")) === "3 of 3",
+      (await ev("__fm.count()")) === "1 of 3",
       await ev("__fm.count()"),
     );
     check(
@@ -388,13 +389,14 @@ export async function run(ctx) {
       J(ru),
     );
 
-    // Next wraps to the first response, still raw source: the reveal scrolls
-    // there, the response typesets, the last reverts, and nothing moves.
+    // Next goes up to the first response, still raw source: the reveal
+    // scrolls there, the response typesets, the last reverts, and nothing
+    // moves.
     await next();
     const w1 = await watch(1200);
     check(
       "jumping to a raw formula: the count holds through its typeset and the rescan",
-      w1.seen.length === 1 && w1.seen[0] === "1 of 3",
+      w1.seen.length === 1 && w1.seen[0] === "2 of 3",
       J(w1.seen),
     );
     check("the active highlight never collapses meanwhile", !w1.collapsed);
@@ -406,8 +408,8 @@ export async function run(ctx) {
     );
     a = await ev("__fm.act()");
     check(
-      "the active match covers the first formula as rendered",
-      !!a && !a.collapsed && a.row === 0 && a.w === 0 && a.whole && a.onKatex,
+      "the active match covers the first response's second formula as rendered",
+      !!a && !a.collapsed && a.row === 0 && a.w === 1 && a.whole && a.onKatex,
       J(a),
     );
     ru = await ev("__fm.ruler(0)");
@@ -422,11 +424,11 @@ export async function run(ctx) {
     await ctx.sleep(300);
     a = await ev("__fm.act()");
     check(
-      "next steps to the second formula",
-      (await ev("__fm.count()")) === "2 of 3" &&
+      "next steps on up to the first formula",
+      (await ev("__fm.count()")) === "3 of 3" &&
         !!a &&
         a.row === 0 &&
-        a.w === 1 &&
+        a.w === 0 &&
         a.whole,
       `${await ev("__fm.count()")} ${J(a)}`,
     );
@@ -436,16 +438,16 @@ export async function run(ctx) {
     const w2 = await watch(1200);
     check(
       "scrolling away: the count and the active match hold through the revert",
-      w2.seen.length === 1 && w2.seen[0] === "2 of 3" && !w2.collapsed,
+      w2.seen.length === 1 && w2.seen[0] === "3 of 3" && !w2.collapsed,
       J(w2),
     );
     a = await ev("__fm.act()");
     check(
-      "precondition: the first response reverted, the active match still its second formula",
+      "precondition: the first response reverted, the active match still its first formula",
       (await ev("__fm.typeset(0)")) === 0 &&
         !!a &&
         a.row === 0 &&
-        a.w === 1 &&
+        a.w === 0 &&
         a.whole,
       J(a),
     );

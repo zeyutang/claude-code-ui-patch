@@ -11,8 +11,8 @@
 //           bottom, after a jump to the top, at each step of a wheel scroll,
 //           and after a jump into the middle
 //   pinned  deep inside the long turn, a query that its pinned header
-//           matches too lands on the first match under the header, the
-//           header's own lying above the reading position, and those stay
+//           matches too lands on a match under the header, never the
+//           header's own, which is the last in the count, and those stay
 //           painted though their document position lies far above the view
 //   rescan  an appended match is counted and painted without a keystroke,
 //           and text hidden by an attribute drops out on the next one
@@ -589,20 +589,22 @@ export async function run(ctx) {
       )
     )
       return false;
-    // The header's own match is the first of all, in the turn's prompt.
+    // The header's own match is the first of all, in the turn's prompt, and
+    // so the last in the count.
     const under = await ev(`(() => {
       const s = __ft.sc();
       const u = [...s.querySelectorAll('[class*="stickyHeader_"]')].find((h) => h.textContent.includes("${MARK}"));
       const a = [...(CSS.highlights.get("ccup-find-active") || [])][0];
       return a ? { top: a.getBoundingClientRect().top, header: u.getBoundingClientRect().bottom, st: s.scrollTop } : null;
     })()`);
+    const lastOf = `${await ev("__ft.total()")} of ${await ev("__ft.total()")}`;
     check(
-      "the query lands on the first match under the pinned header, not on the header's own, and the view holds",
+      "the query lands under the pinned header, not on the header's own match, and the view holds",
       !!under &&
         h.active === 0 &&
         under.top >= under.header &&
         Math.abs(under.st - deep) < 1 &&
-        !(await ev("__ft.count()")).startsWith("1 of "),
+        (await ev("__ft.count()")) !== lastOf,
       `${landed} at the middle, ${await ev("__ft.count()")} inside ${J(h)} ${J(under)}, from ${deep}`,
     );
     c = await ev(`__ft.cover("${MARK}")`);

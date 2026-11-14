@@ -66,9 +66,11 @@ const R = "77777777-7777-4777-8777-777777777777";
 // U+0130, built here rather than escaped in the source.
 const DOTTED_I = String.fromCharCode(0x130);
 // The reply's paragraphs. The prompt carries none of the tokens, so every
-// count below comes from the reply alone.
+// count below comes from the reply alone. The capitalized ones sit near the
+// end, where the count starts, so Match Case changes the place a step
+// reached.
 const REPLY = [
-  "Alpha zeta Zeta ZETA zetas azeta zeta-ray zeta_q (zeta) zeta.",
+  "Alpha zeta zetas azeta zeta-ray zeta_q (zeta) Zeta ZETA zeta.",
   "Omega line.",
   `${DOTTED_I}stanbul then target.`,
   "Literal a.b(c) here.",
@@ -536,13 +538,14 @@ export async function run(ctx) {
       actInk.n >= 20 && otherInk.n >= 20 && offInk.n === 0,
       J({ act: actInk.n, other: otherInk.n, closed: offInk.n }),
     );
-    // Three steps on, to zetas, so the flip below shows it keeps the place.
+    // Three steps on from the last, up to (zeta), so the flip below shows it
+    // keeps the place.
     for (let i = 0; i < 3; i++) {
       await ev(
         `document.querySelector('.ccup-find-bar button[aria-label="Next Match"]').click()`,
       );
     }
-    await countIs("precondition: three steps on, at zetas", "4 of 9");
+    await countIs("precondition: three steps on, at (zeta)", "4 of 9");
     await flip("c");
     check(
       "toggles: a click checks Match Case and leaves the focus in the input",
@@ -553,12 +556,12 @@ export async function run(ctx) {
       ),
     );
     await countIs(
-      "search: Match Case counts the lowercase ones and keeps the place, zetas second of them",
+      "search: Match Case counts the lowercase ones and keeps the place, (zeta) second of them from the end",
       "2 of 7",
     );
     // A wheel turn in the chat hands the queries' origin back to the reading
-    // position, so the counts below start from the first match again and
-    // not from zetas, where the steps left the origin.
+    // position, so the counts below start from the last match again and not
+    // from (zeta), where the steps left the origin.
     await ctx.cdp("Input.dispatchMouseEvent", {
       type: "mouseWheel",
       x: 300,

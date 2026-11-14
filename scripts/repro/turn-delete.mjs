@@ -18,8 +18,8 @@
 //   delete    a second click sends one ccup_rewind_turn naming the session
 //             and the last prompt's uuid, the turn leaves the transcript, the
 //             list rebuilds one entry shorter with the new last entry's button
-//             working, unarmed, and the todo list falls back to the kept
-//             turns' last TodoWrite (a tool that leaves the window open)
+//             working, unarmed, though that turn used TodoWrite (a tool that
+//             leaves the window open)
 //   marks     hidden marks from the deleted position on are dropped
 //   refuse    a host answer of rewound:false keeps the turn, says why in a
 //             notification, and leaves the row usable
@@ -95,9 +95,9 @@ const uuidOf = (i) =>
 // delete window, so both can go in turn while the page clock is held at the
 // boot, the rest minutes before.
 const AGO = [360e3, 300e3, 240e3, 180e3, 4e3, 2e3];
-// Turn 2 (index 2) writes a todo list and turn 4 (index 4) rewrites it, so
-// deleting turn 6 keeps turn 5's list and deleting turn 5 as well falls back
-// to turn 3's.
+// Turn 3 (index 2) writes a todo list and turn 5 (index 4) rewrites it.
+// TodoWrite leaves the delete window open, so once turn 6 goes, turn 5's
+// button still works.
 const TODO_AT = {
   2: ["write the plan"],
   4: ["rename fetchAll", "update call sites"],
@@ -388,10 +388,6 @@ export async function run(ctx) {
       "window.__sent.filter(function(m){return m.type==='request:ccup_rewind_turn'})",
     );
   const notes = () => json("window.__notes");
-  const todos = () =>
-    ctx.evaluate(
-      `(function(){var t=window.__ccupTodosProbe;return t?t():null})()`,
-    );
   const open = async () => {
     if (!(await ctx.evaluate(`!!${q(PANE)}`)))
       await click(center(await rect(BTN)));
@@ -462,24 +458,11 @@ export async function run(ctx) {
       )),
     );
     await ctx.sleep(300);
-    // A probe for the active session's todo list, which the view keeps in a
-    // signal the panel renders from: read it through React's own props.
-    await ctx.evaluate(
-      `window.__ccupTodosProbe=function(){var h=document.querySelector(${JSON.stringify(HDR)});` +
-        `var k=h&&Object.keys(h).find(function(k){return k.indexOf("__reactFiber$")===0});` +
-        `for(var f=k&&h[k];f;f=f.return){var s=f.memoizedProps&&f.memoizedProps.session;` +
-        `if(s&&s.todos)return JSON.stringify(s.todos.value.map(function(t){return t.content}))}return null}`,
-    );
     const ids = await headers();
     check(
       "uuid: every header carries its message's uuid",
       ids.length === PROMPTS.length && ids.every((u, i) => u === uuidOf(i)),
       ids.join(" "),
-    );
-    check(
-      "boot: the todo list is the last TodoWrite's",
-      (await todos()) === JSON.stringify(TODO_AT[4]),
-      await todos(),
     );
 
     // The page clock at the boot, where the last two prompts are seconds old.
@@ -660,11 +643,6 @@ export async function run(ctx) {
         next[0][1] === false,
       JSON.stringify(next),
     );
-    check(
-      "delete: the todo list keeps the kept turns' last TodoWrite",
-      (await todos()) === JSON.stringify(TODO_AT[4]),
-      await todos(),
-    );
     const marks = await json(
       `JSON.parse(localStorage.getItem("ccup-prompt-history-hidden")||"{}")[${JSON.stringify(R)}]`,
     );
@@ -712,8 +690,7 @@ export async function run(ctx) {
       );
     }
 
-    // One more turn back: turn 5 had rewritten the todos, so turn 3's return.
-    // The new last entry, turn 4, was sent minutes ago.
+    // One more turn back, to turn 4, which was sent minutes ago.
     await ctx.evaluate(
       `window.__rewindMode="ok";window.__notes=[];window.__at(0)`,
     );
@@ -728,11 +705,6 @@ export async function run(ctx) {
       )),
     );
     await ctx.sleep(200);
-    check(
-      "again: the todo list falls back to turn 3's",
-      (await todos()) === JSON.stringify(TODO_AT[2]),
-      await todos(),
-    );
     const aged = await stateOf(PROMPTS.length - 3);
     check(
       "again: the new last entry, sent minutes ago, is greyed out for its age",

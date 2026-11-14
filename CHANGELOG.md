@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.3
 
 - A plain turn of the mouse wheel over the attachment chips above the input box now scrolls them sideways, with no need to hold Shift.
   Always applied, no setting.
@@ -16,6 +16,7 @@
 - With `chatFindBar` on, matches now count from the latest message, so `1 of n` is the match nearest the end of the conversation.
   `Enter` now steps back toward the start of the conversation and `Shift`+`Enter` forward, as the up and down arrow buttons do, and `Cmd`/`Ctrl`+`Enter` and `Cmd`/`Ctrl`+`Shift`+`Enter` skip blocks in the same directions, landing on a block's lowest match.
   A query lands on the first match back from where you were reading, the lowest one in view when there is one, rather than the highest.
+- On Claude Code 2.1.325 and later, with `chatPromptHistoryButton` on, prompt history entries have their delete button again, which had gone missing.
 
 ## 1.7.2
 

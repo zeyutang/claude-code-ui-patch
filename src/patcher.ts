@@ -3747,8 +3747,9 @@ export function busyStampWebview(web: string): string | null {
 //        which entry may go and why the others may not, and whose run(uuid)
 //        stops the active session's turn, waits for it to wind down, checks
 //        again that it used no tool that can leave changes behind, asks the
-//        host to rewind, and then drops the turn from the view (its
-//        messages, the todo list a TodoWrite in it set, the reply suggestion)
+//        host to rewind, and then drops the turn's messages and the reply
+//        suggestion from the view. The todo list the view shows is read off
+//        the messages, so any list the turn wrote goes with them.
 //   row  in the user message component's container props: data-ccup-uuid,
 //        the message's own uuid, which the sticky header that the history
 //        list reads therefore carries
@@ -3804,7 +3805,6 @@ const TRW_SESSION_METHODS = [
 const TRW_SESSION_FIELDS = [
   "messages",
   "heldPrompts",
-  "todos",
   "promptSuggestion",
   "busy",
   "connection",
@@ -4353,26 +4353,12 @@ function ccupTurnRewindWeb(
         return false;
       }
       // The view drops the turn as the CLI did, once a turn the rewind had to
-      // interrupt has sent its last rows. The todo list is the kept
-      // conversation's last TodoWrite, the one processMessage would have left.
+      // interrupt has sent its last rows. The todo list it shows is read off
+      // the messages, so it goes back to the kept turns' last TodoWrite.
       await settle(50);
       const j = at();
       const kept = j >= 0 ? s.messages.value.slice(0, j) : s.messages.value;
       s.messages.value = kept;
-      let todos: unknown[] = [];
-      for (const x of kept) {
-        if (x?.type !== "assistant" || !Array.isArray(x.content)) continue;
-        for (const w of x.content) {
-          const b = w?.content;
-          if (
-            b?.type === "tool_use" &&
-            b.name === "TodoWrite" &&
-            Array.isArray(b.input?.todos)
-          )
-            todos = b.input.todos;
-        }
-      }
-      s.todos.value = todos;
       s.promptSuggestion.value = null;
       if (s.replayInsertIndex > kept.length) s.replayInsertIndex = kept.length;
       if (res.cleaned)

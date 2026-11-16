@@ -4727,18 +4727,22 @@ const BNOTE_PAD_D =
   "M7.5 4.5h9a2.25 2.25 0 0 1 2.25 2.25v12a2.25 2.25 0 0 1-2.25 2.25h-9a2.25 2.25 0 0 1-2.25-2.25v-12A2.25 2.25 0 0 1 7.5 4.5ZM9 3v3m3-3v3m3-3v3M8.25 10.5h7.5m-7.5 3h7.5m-7.5 3h4.5";
 
 // The helper's sheet. The button hides until its row is hovered or holds
-// keyboard focus, and stays shown on a row with a note. Its hover square is
-// the pane's icon buttons' own, with the class doubled to outrank the
-// selected row's rule, which paints every span in that row. The box covers
-// the whole row and starts its text where the row's does (12px in, at the
-// row text's 13px), its border the focus outline the list's own module
-// draws, or VS Code's focus border where a theme leaves that unset.
+// keyboard focus, and stays shown on a row with a note. It has the size of
+// the pane's own Remove bookmark button (a 16px icon in a 24px square), and
+// its margins keep the row's height and set the square 8px in from the
+// row's edge, as that button sits in its bar, so the note's icon stands
+// above the bookmark's. Its hover square is the pane's icon buttons' own,
+// with the class doubled to outrank the selected row's rule, which paints
+// every span in that row. The box covers the whole row and starts its text
+// where the row's does (12px in, at the row text's 13px), its border the
+// focus outline the list's own module draws, or VS Code's focus border
+// where a theme leaves that unset.
 function bnoteCss(): string {
   return (
-    ".ccup-bnote-btn{display:flex;flex:none;align-self:center;align-items:center;justify-content:center;width:20px;height:20px;margin:-2px -4px -2px -6px;border-radius:4px;color:var(--app-secondary-foreground);cursor:pointer;opacity:0}" +
+    ".ccup-bnote-btn{display:flex;flex:none;align-self:center;align-items:center;justify-content:center;width:24px;height:24px;margin:-4px -4px -4px -6px;border-radius:4px;color:var(--app-secondary-foreground);cursor:pointer;opacity:0}" +
     `${HOVER}>.ccup-bnote-btn,:focus-visible>.ccup-bnote-btn,.ccup-bnote-btn:focus-visible,.ccup-bnote-btn[data-ccup-bnote-on]{opacity:1}` +
     `.ccup-bnote-btn.ccup-bnote-btn${HOVER},.ccup-bnote-btn.ccup-bnote-btn:focus-visible{background-color:var(--app-ghost-button-hover-background);color:var(--app-primary-foreground);outline:none}` +
-    ".ccup-bnote-btn>svg{display:block;width:14px;height:14px}" +
+    ".ccup-bnote-btn>svg{display:block;width:16px;height:16px}" +
     "li:has(>.ccup-bnote-input){position:relative}" +
     ".ccup-bnote-input{position:absolute;inset:0;z-index:1;box-sizing:border-box;width:100%;height:100%;margin:0;padding:0 11px;border:1px solid var(--app-input-active-border,var(--vscode-focusBorder));border-radius:0;outline:none;background:var(--app-input-background);color:var(--app-input-foreground);font:inherit;font-size:13px}" +
     ".ccup-bnote-input::placeholder{color:var(--app-input-placeholder-foreground)}"

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The notepad button on each Bookmarks pane row is now a little larger, the size of the pane's own bookmark button.
+
 ## 1.7.3
 
 - A plain turn of the mouse wheel over the attachment chips above the input box now scrolls them sideways, with no need to hold Shift.

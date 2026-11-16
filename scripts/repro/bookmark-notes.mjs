@@ -5,9 +5,9 @@
 //   rows      every Bookmarks row has a notepad button after its time, and a
 //             row with a note shows the note in place of the reply's opening
 //             line, its button shown
-//   button    hidden until its row is hovered, then shown in a 20px square
-//             centered on the row, inside it and right of the time, without
-//             growing the row
+//   button    hidden until its row is hovered, then shown as a 16px icon in
+//             a 24px square centered on the row, inside it and right of the
+//             time, without growing the row
 //   open      a click opens an empty, focused box over exactly the row,
 //             capped at 200 characters, and leaves the row unselected
 //   save      typing and Enter save: the row shows the note, its button
@@ -21,7 +21,9 @@
 //             and the row falls back to the reply's line
 //   fail      a host that fails the write shows why, and the reread list
 //             stands
-//   selected  a selected row's button reads in the selection's colors
+//   selected  a selected row's button reads in the selection's colors, and
+//             has the size of the pane's own Remove bookmark button, its
+//             icon standing above that button's
 //
 //   node scripts/cdp-driver.mjs scripts/repro/bookmark-notes.mjs 460 760
 //
@@ -88,7 +90,8 @@ const page = `<!doctype html><html><head><meta charset="utf-8">
 --vscode-input-foreground:#cccccc;--vscode-input-placeholderForeground:#989898;
 --vscode-focusBorder:#0078d4;--vscode-inputOption-activeBorder:#2488db;--vscode-errorForeground:#f48771;
 --vscode-list-activeSelectionBackground:#04395e;--vscode-list-activeSelectionForeground:#ffffff;
---vscode-list-hoverBackground:#2a2d2e;--vscode-widget-border:#313131;--vscode-menu-background:#1f1f1f;
+--vscode-list-hoverBackground:#2a2d2e;--vscode-widget-border:#313131;--vscode-editorWidget-border:#454545;
+--vscode-menu-background:#1f1f1f;
 --vscode-toolbar-hoverBackground:#5a5d5e50;--vscode-icon-foreground:#cccccc;color-scheme:dark}
 body{background:var(--vscode-sideBar-background);color:var(--vscode-foreground)}
 </style></head><body class="vscode-dark">
@@ -365,13 +368,14 @@ export async function run(ctx) {
       a.btn.x >= a.time.r &&
       a.btn.r <= a.row.r - 4 &&
       Math.abs(a.btn.y + a.btn.h / 2 - (a.row.y + a.row.h / 2)) < 0.75 &&
-      a.btn.w === 20 &&
-      a.btn.h === 20 &&
-      a.icon.w === 14;
+      a.btn.w === 24 &&
+      a.btn.h === 24 &&
+      a.icon.w === 16 &&
+      a.icon.h === 16;
     check(
-      "button: a 20px square centered on the row, right of the time, inside it",
+      "button: a 16px icon in a 24px square centered on the row, right of the time, inside it",
       inRow,
-      JSON.stringify({ btn: a.btn, time: a.time, row: a.row }),
+      JSON.stringify({ btn: a.btn, icon: a.icon, time: a.time, row: a.row }),
     );
     const grown = await json(
       `(function(){var li=${LI(0)},s=li.querySelector(".ccup-bnote-btn"),b=li.querySelector("button");` +
@@ -529,6 +533,25 @@ export async function run(ctx) {
       "selected: a selected row's button reads in the selection's colors",
       a.current === "true" && a.op === "1" && a.color === a.rowColor,
       `${a.current} ${a.color} vs row ${a.rowColor} on ${a.rowBg}`,
+    );
+    // The selected bookmark's own Remove bookmark button, in the bar over its
+    // reprinted response (the one under the response in the chat is smaller).
+    const own = await json(
+      `(function(){var n=Array.prototype.find.call(document.querySelectorAll('button[aria-label="Remove bookmark"]'),` +
+        `function(e){return /Show in conversation|No longer shown/.test(e.parentElement.textContent)});if(!n)return null;` +
+        `var R=function(e){var r=e.getBoundingClientRect();return{x:r.x,y:r.y,w:r.width,h:r.height,r:r.right,b:r.bottom}};` +
+        `return{btn:R(n),icon:R(n.querySelector("svg"))}})()`,
+    );
+    check(
+      "selected: the button has the pane's bookmark button's size, its icon above that one",
+      !!own &&
+        a.btn.w === own.btn.w &&
+        a.btn.h === own.btn.h &&
+        a.icon.w === own.icon.w &&
+        a.icon.h === own.icon.h &&
+        a.icon.b <= own.icon.y &&
+        Math.abs(a.icon.x - own.icon.x) < 0.5,
+      JSON.stringify({ note: { btn: a.btn, icon: a.icon }, own }),
     );
     await ctx.shot("selected");
   } finally {

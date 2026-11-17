@@ -7012,6 +7012,321 @@ export function usageDismissHost(host: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Agent run clock (always on): the Agent map times an agent that SendMessage
+// woke again by the run it is on, as it times an agent on its first run,
+// rather than from the agent's first spawn.
+//
+// A SendMessage to an agent that has ended resumes it under the same task id.
+// Each run sends its own task_started and task_notification, the notification
+// tagged with the SendMessage's tool use id and carrying that run's own
+// duration, while the map keeps one entry per task id. Its upsert for a
+// task_started keeps the entry's stored start
+// (`startTime:<o>?.startTime??<t>.startTime`) as it resets the end and the
+// status and adds the wake to wakeToolUseIds, and a working row reads
+// `Date.now()-startTime`. So a woken agent counts from its first spawn: a row
+// read "1357m 20s" 24 minutes into a run of an agent first spawned 22.6 hours
+// before. A finished row takes the notification's duration and looks right
+// again, but a woken run that ends failed or stopped keeps the span since the
+// first spawn, since an ended row prefers `endTime-startTime` there, and so
+// does such a run in a reopened session, whose builder dates each entry from
+// its Agent call and ends it at its last notification.
+//
+// So the start of the run an entry is on replaces the stored one, at each
+// place an entry's start is set, as a fragment
+// /*ccup:agentRunClock:<site>*/.../*ccup:agentRunClockEnd*/ at the head of the
+// startTime value:
+//   wake    the upsert (T$e on 2.1.326): the event's own start wins when it
+//           opens a new run, that is when its tool use id joins wakeToolUseIds
+//           (the test upstream resets textRemoved by) or the entry's last run
+//           finished or failed. A stopped entry alone does not count, since a
+//           replay marks a background agent with no notification yet stopped
+//           and a closing channel marks its working agents stopped, both while
+//           the run may still go on.
+//   replay  the builder (Mfe): when the last notified run was a wake, its tool
+//           use id not the Agent call's, the message holding that tool use
+//           dates the entry.
+// The only other reader of the start is the order of working agents, where a
+// woken agent now sorts by its wake.
+//
+// Both are found by structure (src/derive.ts) in the functions around a
+// `wakeToolUseIds:` property. The upsert takes (<e>,<t>) and sets
+// {startTime:<o>?.startTime??<t>.startTime,endTime:void 0,status:"working",
+// wakeToolUseIds:<s>}, with <s> declared
+// `...?[...<n>.wakeToolUseIds??[],<t>.toolUseId]:<n>?.wakeToolUseIds` and <n>
+// as `<e>.get(<t>.taskId)`. The builder takes (<m>) and sets
+// {toolUseId:<a>.id,startTime:<b>,endTime:<x>,wakeToolUseIds:<y>.length>0?<y>:
+// void 0} inside `for(<r> of <m>)` and `for(<k> of <r>.content)`, with
+// <a>=<k>.content, <b> declared `<r>.createdAt??<r>.timestamp`, <y> mapped and
+// filtered off <h>, the last notification <p> declared `<h>.at(-1)`, and <x>
+// reading `<p>.createdAt`. Through 2.1.274 the builder ends every entry at its
+// own Agent call, which leaves no span to fix, and the point reads missing
+// there.
+// ---------------------------------------------------------------------------
+const ARC_WAKE = "/*ccup:agentRunClock:wake*/";
+const ARC_REPLAY = "/*ccup:agentRunClock:replay*/";
+const ARC_END = "/*ccup:agentRunClockEnd*/";
+const ARC_FRAG_RE =
+  /\/\*ccup:agentRunClock:[-\w]+\*\/[\s\S]*?\/\*ccup:agentRunClockEnd\*\//g;
+const ARC_FILE = "webview/index.js";
+// How far ahead of its wakeToolUseIds: property each function may start (the
+// builder spans about 2.5KB on 2.1.326).
+const ARC_REACH = 20000;
+
+// `<x>?.<prop>` off a plain local, giving x.
+function arcOptRead(n: N | null | undefined, prop: string): string | null {
+  const m = n?.type === "ChainExpression" ? n.expression : null;
+  return m?.type === "MemberExpression" && m.optional && memberProp(m) === prop
+    ? idName(m.object)
+    : null;
+}
+
+// The scope node binding `name` as `at` sees it inside `fn`, and the one
+// declarator there that binds it, or null (a parameter, a binding beyond fn,
+// or a pattern).
+function arcDeclAt(fn: N, at: N, name: string): { scope: N; decl: N } | null {
+  const scope = bindingSite(at, name, fn);
+  if (!scope) return null;
+  const lists: N[] =
+    scope.type === "BlockStatement"
+      ? scope.body.filter((st: N) => st.type === "VariableDeclaration")
+      : (scope.type === "ForOfStatement" || scope.type === "ForInStatement") &&
+          scope.left.type === "VariableDeclaration"
+        ? [scope.left]
+        : [];
+  const ds = lists
+    .flatMap((l) => l.declarations as N[])
+    .filter((d) => idName(d.id) === name);
+  return ds.length === 1 ? { scope, decl: ds[0] } : null;
+}
+
+// The insertion into the upsert a task_started runs through, or null when
+// `fn` is not that upsert.
+function arcWakeSite(fn: N): Edit | null {
+  const e = idName(fn.params[0]);
+  const t = idName(fn.params[1]);
+  if (fn.params.length !== 2 || !e || !t) return null;
+  const sites: Edit[] = [];
+  walkOwn(fn, (lit) => {
+    if (
+      lit.type !== "ObjectExpression" ||
+      !hasKeys(lit, [
+        "taskId",
+        "startTime",
+        "endTime",
+        "status",
+        "wakeToolUseIds",
+      ]) ||
+      !isStr(propOf(lit, "status")!.value, "working") ||
+      !bstampIsVoid0(propOf(lit, "endTime")!.value)
+    )
+      return;
+    // startTime: <o>?.startTime??<t>.startTime, <t> the parameter.
+    const st: N = propOf(lit, "startTime")!.value;
+    const o =
+      st.type === "LogicalExpression" && st.operator === "??"
+        ? arcOptRead(st.left, "startTime")
+        : null;
+    if (
+      !o ||
+      !isMember(st.right, t, "startTime") ||
+      bindingSite(st, t, fn) !== fn ||
+      !arcDeclAt(fn, st, o)
+    )
+      return;
+    // wakeToolUseIds: <s>, declared
+    // `...?[...<n>.wakeToolUseIds??[],<t>.toolUseId]:<n>?.wakeToolUseIds`.
+    const s = idName(propOf(lit, "wakeToolUseIds")!.value);
+    const sInit = s ? arcDeclAt(fn, st, s)?.decl.init : null;
+    if (sInit?.type !== "ConditionalExpression") return;
+    const n = arcOptRead(sInit.alternate, "wakeToolUseIds");
+    const arr: N = sInit.consequent;
+    const spread = arr.type === "ArrayExpression" ? arr.elements[0] : null;
+    const src: N | null =
+      spread?.type === "SpreadElement"
+        ? spread.argument.type === "LogicalExpression" &&
+          spread.argument.operator === "??"
+          ? spread.argument.left
+          : spread.argument
+        : null;
+    if (
+      !n ||
+      arr.elements.length !== 2 ||
+      !isMember(src, n, "wakeToolUseIds") ||
+      !isMember(arr.elements[1], t, "toolUseId")
+    )
+      return;
+    // <n>: <e>.get(<t>.taskId), the entry the event's task id already has.
+    const nInit = arcDeclAt(fn, st, n)?.decl.init;
+    if (
+      nInit?.type !== "CallExpression" ||
+      nInit.arguments.length !== 1 ||
+      !isMember(nInit.callee, e, "get") ||
+      !isMember(nInit.arguments[0], t, "taskId") ||
+      bindingSite(nInit, e, fn) !== fn
+    )
+      return;
+    sites.push({
+      pos: st.start,
+      text:
+        `${ARC_WAKE}${n}!==void 0&&(${s}!==${n}.wakeToolUseIds||` +
+        `${n}.status==="finished"||${n}.status==="failed")?` +
+        `${t}.startTime:${ARC_END}`,
+    });
+  });
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The insertion into the builder a reopened session's agents come from, or
+// null when `fn` is not that builder.
+function arcReplaySite(fn: N): Edit | null {
+  const m = idName(fn.params[0]);
+  if (!m) return null;
+  const sites: Edit[] = [];
+  walkOwn(fn, (lit) => {
+    if (
+      lit.type !== "ObjectExpression" ||
+      !hasKeys(lit, [
+        "taskId",
+        "toolUseId",
+        "startTime",
+        "endTime",
+        "status",
+        "wakeToolUseIds",
+      ])
+    )
+      return;
+    const st: N = propOf(lit, "startTime")!.value;
+    const b = idName(st);
+    const tu: N = propOf(lit, "toolUseId")!.value;
+    const a = memberProp(tu) === "id" ? idName(tu.object) : null;
+    if (!b || !a || bindingSite(st, m, fn) !== fn) return;
+    // <b>: <r>.createdAt??<r>.timestamp, <r> the variable of a for-of over
+    // <m>.
+    const bInit = arcDeclAt(fn, st, b)?.decl.init;
+    const r =
+      bInit?.type === "LogicalExpression" &&
+      bInit.operator === "??" &&
+      memberProp(bInit.left) === "createdAt"
+        ? idName(bInit.left.object)
+        : null;
+    if (!r || !isMember(bInit.right, r, "timestamp")) return;
+    const rLoop = arcDeclAt(fn, bInit, r)?.scope;
+    if (rLoop?.type !== "ForOfStatement" || idName(rLoop.right) !== m) return;
+    // <a>: <k>.content, <k> the variable of a for-of over <r>.content inside
+    // that loop, so <a> is a block of a message's content.
+    const aInit = arcDeclAt(fn, st, a)?.decl.init;
+    const k = memberProp(aInit) === "content" ? idName(aInit.object) : null;
+    const kLoop = k ? arcDeclAt(fn, aInit, k)?.scope : null;
+    if (
+      kLoop?.type !== "ForOfStatement" ||
+      !isMember(kLoop.right, r, "content") ||
+      kLoop.start < rLoop.body.start ||
+      kLoop.end > rLoop.body.end
+    )
+      return;
+    // wakeToolUseIds: <y>.length>0?<y>:void 0, <y> mapped and filtered off
+    // <h>.
+    const wv: N = propOf(lit, "wakeToolUseIds")!.value;
+    const y =
+      wv.type === "ConditionalExpression" ? idName(wv.consequent) : null;
+    const yd = y ? arcDeclAt(fn, st, y) : null;
+    const yInit = yd?.decl.init;
+    const mapped =
+      yInit?.type === "CallExpression" && memberProp(yInit.callee) === "filter"
+        ? yInit.callee.object
+        : null;
+    const h =
+      mapped?.type === "CallExpression" && memberProp(mapped.callee) === "map"
+        ? idName(mapped.callee.object)
+        : null;
+    if (!yd || !h) return;
+    // <p>: <h>.at(-1), the last notification, declared beside <y>.
+    const ps = (yd.decl.parent?.declarations ?? []).filter(
+      (d: N) =>
+        d.init?.type === "CallExpression" &&
+        d.init.arguments.length === 1 &&
+        isMember(d.init.callee, h, "at") &&
+        d.init.arguments[0].type === "UnaryExpression" &&
+        d.init.arguments[0].operator === "-" &&
+        d.init.arguments[0].argument.value === 1,
+    );
+    const p = ps.length === 1 ? idName(ps[0].id) : null;
+    if (!p || arcDeclAt(fn, st, p)?.decl !== ps[0]) return;
+    // <x>, the end, reads <p>.createdAt: a notified run ends at its
+    // notification.
+    const x = idName(propOf(lit, "endTime")!.value);
+    const xInit = x ? arcDeclAt(fn, st, x)?.decl.init : null;
+    let endsAtP = false;
+    if (xInit)
+      walk(xInit, (q) => {
+        if (endsAtP) return false;
+        if (isMember(q, p, "createdAt")) endsAtP = true;
+      });
+    if (!endsAtP) return;
+    sites.push({
+      pos: st.start,
+      text:
+        `${ARC_REPLAY}(${p}?.toolUseId!==void 0&&${p}.toolUseId!==${a}.id&&` +
+        `((ccupId)=>{for(let ccupM of ${m})if(ccupM.type==="assistant")` +
+        `for(let ccupB of ccupM.content)if(ccupB.content.type==="tool_use"&&` +
+        `ccupB.content.id===ccupId)return ccupM.createdAt??ccupM.timestamp})` +
+        `(${p}.toolUseId))||${ARC_END}`,
+    });
+  });
+  return sites.length === 1 ? sites[0] : null;
+}
+
+// The upsert and the builder with their insertions, or null unless each is
+// found exactly once.
+function agentRunClockFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  const wake: { unit: N; edit: Edit }[] = [];
+  const replay: { unit: N; edit: Edit }[] = [];
+  for (const fn of unitsWith(
+    c,
+    "wakeToolUseIds:",
+    "function",
+    isFn,
+    ARC_REACH,
+  )) {
+    const w = arcWakeSite(fn);
+    if (w) wake.push({ unit: fn, edit: w });
+    const r = arcReplaySite(fn);
+    if (r) replay.push({ unit: fn, edit: r });
+  }
+  if (wake.length !== 1 || replay.length !== 1) return null;
+  if (wake[0].unit === replay[0].unit) return null;
+  return {
+    units: [
+      [wake[0].unit, isFn],
+      [replay[0].unit, isFn],
+    ],
+    edits: [wake[0].edit, replay[0].edit],
+  };
+}
+
+// The native webview bundle with both fragments in, or null when a site is
+// missing or an edit would not parse.
+const agentRunClockBuild = sdelMemo((native) => {
+  const sites = agentRunClockFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+function agentRunClockPatch(native: string): string | null {
+  return agentRunClockBuild(native);
+}
+
+// The webview bundle, patched or not, as an apply writes this point into it,
+// or null when its sites are gone. scripts/repro's agent-run-clock.mjs serves
+// this, so it runs exactly what the patcher writes and doubles as the drift
+// canary.
+export function agentRunClockWebview(web: string): string | null {
+  return agentRunClockBuild(web.replace(ARC_FRAG_RE, ""));
+}
+
+// ---------------------------------------------------------------------------
 // Session open landing (always on): the chat leaves room under the transcript
 // for the input box it overlays with a spacer as tall as the box, from a
 // height state that its ResizeObserver on the box keeps. The chat remounts on
@@ -16929,6 +17244,14 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: UDIS_HOST_FILE,
     frags: UDIS_FRAG_RE,
     patch: usageDismissHostPatch,
+  },
+  {
+    kind: "inline",
+    id: "agentRunClock",
+    label: "agent map run time",
+    file: ARC_FILE,
+    frags: ARC_FRAG_RE,
+    patch: agentRunClockPatch,
   },
 ];
 

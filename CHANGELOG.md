@@ -7,6 +7,9 @@
   It had come back in every other session, and in the same one whenever another limit was reported, such as the 5-hour limit after a weekly one.
   A banner saying you have hit a limit still shows once, and dismissing it keeps those away too.
   Always applied, no setting.
+- In the Agent map, an agent resumed with another message now shows the time of its current run, rather than the time since it first started, which could read as hundreds of minutes.
+  A resumed run that fails or is stopped keeps its own time too, also in a reopened session.
+  Always applied, no setting.
 
 ## 1.7.3
 

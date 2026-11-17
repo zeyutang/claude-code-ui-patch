@@ -121,6 +121,7 @@ Always applied                         # no setting; installing this patch is th
    ├── shell here-documents            # shell code blocks: a here-document's body reads as text
    ├── sticky copy button              # a code block's copy button stays in view as it scrolls
    ├── usage warning dismissal         # a dismissed usage warning stays away until a reload
+   ├── agent map run time              # Agent map: a resumed agent is timed from its resume
    └── reload during a turn            # a reload while Claude is working reopens that session
 
 Unified codeFontFamily                 # code font only; IN/OUT block, chrome, diff cards stay native

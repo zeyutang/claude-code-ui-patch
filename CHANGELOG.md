@@ -3,6 +3,10 @@
 ## Unreleased
 
 - The notepad button on each Bookmarks pane row is now a little larger, the size of the pane's own bookmark button.
+- Dismissing the usage-limit warning above the input box now keeps it away in every session of the window until the window reloads or the extensions restart.
+  It had come back in every other session, and in the same one whenever another limit was reported, such as the 5-hour limit after a weekly one.
+  A banner saying you have hit a limit still shows once, and dismissing it keeps those away too.
+  Always applied, no setting.
 
 ## 1.7.3
 

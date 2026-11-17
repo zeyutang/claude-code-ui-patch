@@ -6595,6 +6595,423 @@ export function chipWheelWebview(web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Usage warning dismissal (always on, two halves): dismissing the usage-limit
+// banner above the input box ("You've used 94% of your weekly limit · resets
+// ...") keeps it away in every session of the window until the window reloads
+// or the extension host restarts.
+//
+// Natively a dismissal holds only in the session it was made in, and only for
+// the limit it named. Each session object keeps its own set of dismissed
+// `status:rateLimitType:resetsAt` keys, so the banner comes back in every
+// other session, new or already open, as soon as its CLI reports the limit,
+// and in the same session as soon as another limit becomes the one reported
+// (the CLI reports the first of five_hour, seven_day and
+// seven_day_overage_included past a warning threshold, so a five-hour window
+// crossing one takes over from a weekly one) or the limit is reached. The CLI
+// sends a rate_limit_event whenever the limit it tracks changes or any
+// window's rounded percentage moves, so the banner is back within a request.
+//
+// Here a dismissal raises a level that every session reads: 1 once a warning
+// has been dismissed, 2 once a banner saying a limit was reached (status
+// rejected) has been. A banner shows only while its own level (2 for a reached
+// limit, 1 for any warning) is above it, so a dismissed warning keeps every
+// later warning away, whichever limit it names, while a limit actually being
+// reached still shows once. The native per-session keys stay as they are, and
+// the wrap-up notice some accounts get at a reached limit (usageLimitGrace)
+// keeps its own per-session dismissal.
+//
+// The webview half (usageDismiss) is four fragments in the session class of
+// webview/index.js:
+//   field  after dismissedRateLimitKeys: ccupUsageDismiss, the view's one
+//          level object (window.__ccupUsageDismiss, made by the first session
+//          around the bundle's own signal constructor, so the banner's signal
+//          runs again when the level rises)
+//   gate   at the head of the signal both the banner and its close read
+//          (heldRateLimitWarning from 2.1.325, rateLimitWarning before it):
+//          null while the shown limit's level is dismissed
+//   close  at the head of dismissRateLimitWarning's branch for a shown banner:
+//          raises the level and reports it to the host as ccup_usage_dismiss
+//   event  at the head of the session's rate_limit_event branch: takes in the
+//          level the host stamped on the event, ahead of the native decision
+// The host half (usageDismissHost) is two fragments in extension.js:
+//   route  at the end of the comms base's request switch: ccup_usage_dismiss
+//          raises the extension host's own level, kept on globalThis, so every
+//          view of the window shares it and a host restart drops it
+//   send   at the head of the comms subclass's send, the one way a message
+//          reaches a webview: a rate_limit_event goes out stamped with that
+//          level (ccupUsageDismissed) once it is above 0
+// So a view opened later, or reloaded on its own, takes the window's level
+// from its first event, before anything shows.
+//
+// Unlike the other pairs, each half stands alone. Without the host half the
+// webview half still keeps a dismissal for every session of its own view (a
+// host running its pre-patch code answers the report "Unknown request type.",
+// which the close ignores), and without the webview half the host half is
+// inert, since only a report raises its level. Neither adds a control that
+// could fail. The route sits at the switch's end, past its empty default: a
+// matched request jumps to it, and an unknown one falls into it from the
+// default, so it checks the type itself and otherwise falls out to the native
+// error. Every site is found by structure (src/derive.ts), and each insertion
+// is wrapped in /*ccup:udis:<site>*/.../*ccup:udisEnd*/, so stripping the
+// fragments restores the stock bytes.
+// ---------------------------------------------------------------------------
+const UDIS_END = "/*ccup:udisEnd*/";
+const UDIS_FIELD = "/*ccup:udis:field*/";
+const UDIS_GATE = "/*ccup:udis:gate*/";
+const UDIS_CLOSE = "/*ccup:udis:close*/";
+const UDIS_EVENT = "/*ccup:udis:event*/";
+const UDIS_ROUTE = "/*ccup:udis:route*/";
+const UDIS_SEND = "/*ccup:udis:send*/";
+const UDIS_FRAG_RE = /\/\*ccup:udis:[-\w]+\*\/[\s\S]*?\/\*ccup:udisEnd\*\//g;
+const UDIS_WEBVIEW_FILE = "webview/index.js";
+const UDIS_HOST_FILE = "extension.js";
+const udisEdit = (marker: string, e: Edit): Edit => ({
+  pos: e.pos,
+  text: `${marker}${e.text}${UDIS_END}`,
+});
+const udisStrip = (c: string): string => c.replace(UDIS_FRAG_RE, "");
+// The request a close sends (ccupUsageDismissWeb spells it out too), the
+// session field and window property holding a view's level, the extension
+// host's global, and the stamp a rate_limit_event carries.
+const UDIS_REQ = "ccup_usage_dismiss";
+const UDIS_SELF = "ccupUsageDismiss";
+const UDIS_GLOBAL = "__ccupUsageDismiss";
+const UDIS_HOST_GLOBAL = "__ccupUsageDismissLevel";
+const UDIS_STAMP = "ccupUsageDismissed";
+// The session fields the fragments read or sit beside.
+const UDIS_SESSION_FIELDS = [
+  "frameRateLimitWarning",
+  "shownRateLimit",
+  "dismissedRateLimitKeys",
+  "connection",
+];
+// How far ahead of dismissRateLimitWarning the session class may start (26KB
+// on 2.1.270, 45KB on 2.1.326), and of the from-extension post the comms
+// subclass (5.5KB to 9.9KB over the same builds).
+const UDIS_SESSION_REACH = 200000;
+const UDIS_SUB_REACH = 100000;
+
+// A view's level object, compiled into the webview bundle by toString, so it
+// may use only the page's globals and must hold no comment of its own. `sig`
+// is the bundle's signal constructor. hides(shown) reads the level only for a
+// shown limit, which ties the banner's signal to it. dismiss(shown, conn)
+// raises the level to the shown limit's own and reports that to the host,
+// ignoring any failure. absorb(level) takes in a level the host stamped.
+const ccupUsageDismissWeb = (sig: (v: number) => any) => {
+  const level = sig(0);
+  const rank = (shown: any): number => (shown.status === "rejected" ? 2 : 1);
+  const raise = (r: number): void => {
+    if (r > level.peek()) level.value = r;
+  };
+  return {
+    hides: (shown: any): boolean => !!shown && rank(shown) <= level.value,
+    dismiss: (shown: any, conn: any): void => {
+      if (!shown) return;
+      const r = rank(shown);
+      raise(r);
+      try {
+        conn
+          ?.sendRequest({ type: "ccup_usage_dismiss", level: r })
+          .catch(() => {});
+      } catch {}
+    },
+    absorb: (r: unknown): void => {
+      if (r === 1 || r === 2) raise(r);
+    },
+  };
+};
+
+// `this.<name>`, giving the name.
+const udisThisProp = (n: N | null | undefined): string | null =>
+  n?.type === "MemberExpression" && n.object.type === "ThisExpression"
+    ? memberProp(n)
+    : null;
+// Whether `this.<prop>` (with `.<member>` after it, when given) occurs under
+// `root`, nested functions excluded.
+function udisUses(root: N, prop: string, member?: string): boolean {
+  let hit = false;
+  walkOwn(root, (n) => {
+    if (hit) return false;
+    if (
+      member === undefined
+        ? udisThisProp(n) === prop
+        : memberProp(n) === member && udisThisProp(n.object) === prop
+    )
+      hit = true;
+  });
+  return hit;
+}
+// Whether `this` at `n` is an instance of class `cls`: the nearest function
+// around `n` with a `this` of its own is one of the class's instance methods,
+// or none lies between `n` and an instance field of the class.
+function udisThisIs(n: N, cls: N): boolean {
+  for (let s = n.parent; s; s = s.parent) {
+    if (s.type === "PropertyDefinition")
+      return s.parent === cls.body && !s.static;
+    if (s.type === "FunctionExpression" || s.type === "FunctionDeclaration") {
+      const m = s.parent;
+      return (
+        m?.type === "MethodDefinition" && m.parent === cls.body && !m.static
+      );
+    }
+  }
+  return false;
+}
+
+// The webview's sites and their four insertions, or null.
+function usageDismissWebFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  // The session class, the one holding the banner's state and its close.
+  const classes = unitsWith(
+    c,
+    "dismissRateLimitWarning(){",
+    "class ",
+    isClass,
+    UDIS_SESSION_REACH,
+  ).filter(
+    (k) =>
+      sdelMethod(k, "dismissRateLimitWarning") &&
+      UDIS_SESSION_FIELDS.every((f) => sdelField(k, f)),
+  );
+  if (classes.length !== 1) return null;
+  const cls = classes[0];
+  const field = (name: string): N | undefined =>
+    (cls.body.body as N[]).find(
+      (m) =>
+        m.type === "PropertyDefinition" &&
+        !m.computed &&
+        !m.static &&
+        idName(m.key) === name,
+    );
+
+  // The bundle's signal constructor, as the banner text's own signal is made:
+  // frameRateLimitWarning=<sig>(null).
+  const frame = field("frameRateLimitWarning")?.value;
+  const sig =
+    frame?.type === "CallExpression" &&
+    frame.arguments.length === 1 &&
+    frame.arguments[0].type === "Literal" &&
+    frame.arguments[0].value === null
+      ? idName(frame.callee)
+      : null;
+  if (!sig || idName(cls.id) === sig) return null;
+
+  // The close: dismissRateLimitWarning(){if(this.<gate>.value){let
+  // e=this.shownRateLimit.peek(),...;this.frameRateLimitWarning.value=null}...}
+  const close = sdelMethod(cls, "dismissRateLimitWarning")!.value;
+  const head = close.body.body[0];
+  const gate =
+    head?.type === "IfStatement" && memberProp(head.test) === "value"
+      ? udisThisProp(head.test.object)
+      : null;
+  if (
+    !gate ||
+    head.consequent.type !== "BlockStatement" ||
+    !udisUses(head.consequent, "shownRateLimit", "peek") ||
+    !udisUses(head.consequent, "frameRateLimitWarning", "value")
+  )
+    return null;
+
+  // The gate: <gate>=<computed>(()=>{...}), reading the banner text and the
+  // shown limit.
+  const gv = field(gate)?.value;
+  const arrow =
+    gv?.type === "CallExpression" && gv.arguments.length === 1
+      ? gv.arguments[0]
+      : null;
+  if (
+    arrow?.type !== "ArrowFunctionExpression" ||
+    arrow.body.type !== "BlockStatement" ||
+    !udisUses(arrow, "frameRateLimitWarning", "value") ||
+    !udisUses(arrow, "shownRateLimit", "value")
+  )
+    return null;
+
+  // The event: if(<msg>.type==="rate_limit_event"){let
+  // n=<msg>.rate_limit_info;...} in a method of the class, whose decision
+  // reads this.dismissedRateLimitKeys.
+  const branches: { block: N; msg: string }[] = [];
+  walk(cls, (n) => {
+    if (n.type !== "IfStatement" || n.consequent.type !== "BlockStatement")
+      return;
+    const t = n.test;
+    if (t.type !== "BinaryExpression" || t.operator !== "===") return;
+    const side = isStr(t.right, "rate_limit_event")
+      ? t.left
+      : isStr(t.left, "rate_limit_event")
+        ? t.right
+        : null;
+    const msg = memberProp(side) === "type" ? idName(side.object) : null;
+    if (msg) branches.push({ block: n.consequent, msg });
+  });
+  if (branches.length !== 1) return null;
+  const { block, msg } = branches[0];
+  const decl = block.body[0];
+  if (
+    decl?.type !== "VariableDeclaration" ||
+    !isMember(decl.declarations[0]?.init, msg, "rate_limit_info") ||
+    bindingSite(decl, msg, block) !== null ||
+    !udisThisIs(block, cls) ||
+    !udisUses(block, "dismissedRateLimitKeys")
+  )
+    return null;
+
+  // The level field goes in after the dismissed keys, ending the field before
+  // it where that one has no semicolon of its own.
+  const keys = field("dismissedRateLimitKeys")!;
+  const self = `this.${UDIS_SELF}`;
+  return {
+    units: [[cls, isClass]],
+    edits: [
+      udisEdit(UDIS_FIELD, {
+        pos: keys.end,
+        text:
+          `${c[keys.end - 1] === ";" ? "" : ";"}${UDIS_SELF}=` +
+          `globalThis.${UDIS_GLOBAL}??=(${ccupUsageDismissWeb.toString()})(${sig});`,
+      }),
+      udisEdit(UDIS_GATE, {
+        pos: arrow.body.start + 1,
+        text: `if(${self}?.hides(this.shownRateLimit.value))return null;`,
+      }),
+      udisEdit(UDIS_CLOSE, {
+        pos: head.consequent.start + 1,
+        text: `${self}?.dismiss(this.shownRateLimit.peek(),this.connection.value);`,
+      }),
+      udisEdit(UDIS_EVENT, {
+        pos: block.start + 1,
+        text: `${self}?.absorb(${msg}.${UDIS_STAMP});`,
+      }),
+    ],
+  };
+}
+
+// The host's sites and their two insertions, or null.
+function usageDismissHostFind(
+  c: string,
+): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+  // The comms base and its request switch on <env>.request.type, with the
+  // init and rewind_code cases and a default.
+  const bases = unitsWith(
+    c,
+    'case"rewind_code":',
+    "class ",
+    isClass,
+    TRW_CLASS_REACH,
+  ).filter((k) => sdelMethod(k, "processRequest"));
+  if (bases.length !== 1) return null;
+  const base = bases[0];
+  const pr = sdelMethod(base, "processRequest")!.value;
+  const env = idName(pr.params[0]);
+  if (!env) return null;
+  const switches: N[] = [];
+  walkOwn(pr, (n) => {
+    if (
+      n.type === "SwitchStatement" &&
+      memberProp(n.discriminant) === "type" &&
+      isMember(n.discriminant.object, env, "request") &&
+      ["init", "rewind_code"].every((v) =>
+        n.cases.some((k: N) => isStr(k.test, v)),
+      ) &&
+      n.cases.some((k: N) => k.test === null)
+    )
+      switches.push(n);
+  });
+  if (switches.length !== 1) return null;
+  const sw = switches[0];
+  if (bindingSite(sw, env, pr) !== pr || c[sw.end - 1] !== "}") return null;
+
+  // The comms subclass's send(<msg>), which posts
+  // {type:"from-extension",message:<msg>} through this.webview.
+  const subs = unitsWith(
+    c,
+    'type:"from-extension",message:',
+    "class ",
+    isClass,
+    UDIS_SUB_REACH,
+  ).filter(
+    (k) => idName(k.superClass) === idName(base.id) && sdelMethod(k, "send"),
+  );
+  if (subs.length !== 1) return null;
+  const send = sdelMethod(subs[0], "send")!.value;
+  const msg = send.params.length === 1 ? idName(send.params[0]) : null;
+  if (!msg || send.body.type !== "BlockStatement") return null;
+  let posts = false;
+  walk(send, (n) => {
+    if (posts || (n !== send && n.type === "FunctionExpression")) return false;
+    const o = n.type === "CallExpression" ? n.arguments[0] : null;
+    if (
+      o?.type === "ObjectExpression" &&
+      memberProp(n.callee) === "postMessage" &&
+      udisThisProp(n.callee.object) === "webview" &&
+      isStr(propOf(o, "type")?.value, "from-extension") &&
+      idName(propOf(o, "message")?.value) === msg
+    )
+      posts = true;
+  });
+  if (!posts) return null;
+
+  const level = `globalThis.${UDIS_HOST_GLOBAL}`;
+  return {
+    units: [
+      [base, isClass],
+      [subs[0], isClass],
+    ],
+    edits: [
+      udisEdit(UDIS_ROUTE, {
+        pos: sw.end - 1,
+        text:
+          `case"${UDIS_REQ}":if(${env}.request.type==="${UDIS_REQ}"){` +
+          `let ccupL=${env}.request.level;` +
+          `if((ccupL===1||ccupL===2)&&ccupL>(${level}|0))${level}=ccupL;` +
+          `return{type:"${UDIS_REQ}_response"}}`,
+      }),
+      udisEdit(UDIS_SEND, {
+        pos: send.body.start + 1,
+        text:
+          `if(${level}&&${msg}?.type==="io_message"&&` +
+          `${msg}.message?.type==="rate_limit_event")` +
+          `${msg}={...${msg},message:{...${msg}.message,${UDIS_STAMP}:${level}}};`,
+      }),
+    ],
+  };
+}
+
+// Each half's native file with its fragments in, or null when a site is
+// missing or an edit would not parse.
+const usageDismissWebBuild = sdelMemo((native) => {
+  const sites = usageDismissWebFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+const usageDismissHostBuild = sdelMemo((native) => {
+  const sites = usageDismissHostFind(native);
+  if (!sites) return null;
+  const out = applyEdits(native, sites.edits);
+  return unitsReparse(out, sites.edits, sites.units) ? out : null;
+});
+
+// The two ALWAYS_POINTS patches, each standing alone (see above).
+function usageDismissWebPatch(native: string): string | null {
+  return usageDismissWebBuild(native);
+}
+function usageDismissHostPatch(native: string): string | null {
+  return usageDismissHostBuild(native);
+}
+
+// Either file as an apply writes this point into it, or null when its half's
+// sites are gone. scripts/repro's usage-dismiss.mjs serves the webview one and
+// drives the host one, so both run exactly what the patcher writes and double
+// as the drift canary.
+export function usageDismissWebview(web: string): string | null {
+  return usageDismissWebBuild(udisStrip(web));
+}
+export function usageDismissHost(host: string): string | null {
+  return usageDismissHostBuild(udisStrip(host));
+}
+
+// ---------------------------------------------------------------------------
 // Session open landing (always on): the chat leaves room under the transcript
 // for the input box it overlays with a spacer as tall as the box, from a
 // height state that its ResizeObserver on the box keeps. The chat remounts on
@@ -16496,6 +16913,22 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     file: CHIPWHEEL_FILE,
     frags: CHIPWHEEL_FRAG_RE,
     patch: chipWheelPatch,
+  },
+  {
+    kind: "inline",
+    id: "usageDismiss",
+    label: "usage warning dismissal",
+    file: UDIS_WEBVIEW_FILE,
+    frags: UDIS_FRAG_RE,
+    patch: usageDismissWebPatch,
+  },
+  {
+    kind: "inline",
+    id: "usageDismissHost",
+    label: "usage warning dismissal relay",
+    file: UDIS_HOST_FILE,
+    frags: UDIS_FRAG_RE,
+    patch: usageDismissHostPatch,
   },
 ];
 

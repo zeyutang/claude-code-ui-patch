@@ -6595,301 +6595,544 @@ export function chipWheelWebview(web: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Usage warning dismissal (always on, two halves): dismissing the usage-limit
-// banner above the input box ("You've used 94% of your weekly limit · resets
-// ...") keeps it away in every session of the window until the window reloads
-// or the extension host restarts.
+// Banner dismissals (always on): a banner above the input box that natively
+// stays dismissed in one session only keeps away, once dismissed, in every
+// session and view of the window until the window reloads or the extension
+// host restarts. Each banner keeps a dismissal of its own:
+//   usage       the usage-limit banner ("You've used 94% of your weekly limit
+//               · resets ..."), by level: 1 once a warning has been
+//               dismissed, 2 once a banner saying a limit was reached (status
+//               rejected) has been. A banner shows only while its own rank (2
+//               for a reached limit, 1 for any warning) is above the level, so
+//               a dismissed warning keeps every later warning away, whichever
+//               limit it names, while a limit being reached still shows once.
+//   settings    "Settings file failed to parse ...", by the errors it names
+//   credential  "Claude Code has both ... and ...", by the two sources it
+//               names (2.1.322 on)
+//   wrap-up     the notice some accounts get as a turn wraps up at a reached
+//               limit (usageLimitGrace), once for any limit
+// so a settings error or a conflict that names something different still
+// shows. The other notices that share the place keep their native close: a
+// failed action's error and the input box's own notices report one event, the
+// model fallback band one session's switch, the Remote Control error, browser
+// and notebook notices act when closed, the extension recommendation and
+// review prompts already remember "Don't show again", the feedback survey
+// keeps its own pacing, and the startup announcement already holds a
+// dismissal for the whole view.
 //
-// Natively a dismissal holds only in the session it was made in, and only for
-// the limit it named. Each session object keeps its own set of dismissed
-// `status:rateLimitType:resetsAt` keys, so the banner comes back in every
-// other session, new or already open, as soon as its CLI reports the limit,
-// and in the same session as soon as another limit becomes the one reported
-// (the CLI reports the first of five_hour, seven_day and
-// seven_day_overage_included past a warning threshold, so a five-hour window
-// crossing one takes over from a weekly one) or the limit is reached. The CLI
-// sends a rate_limit_event whenever the limit it tracks changes or any
-// window's rounded percentage moves, so the banner is back within a request.
+// Natively each session object keeps its own dismissals: the usage banner's
+// set of `status:rateLimitType:resetsAt` keys, the settings and credential
+// banners' JSON of what was dismissed, the wrap-up notice's "dismissed" state.
+// So each comes back in every other session, new or already open, and in a
+// recreated view. The usage banner also comes back in the same session as
+// soon as another limit becomes the one reported (the CLI reports the first of
+// five_hour, seven_day and seven_day_overage_included past a warning
+// threshold, so a five-hour window crossing one takes over from a weekly one)
+// or the limit is reached, and the CLI sends a rate_limit_event whenever the
+// limit it tracks changes or any window's rounded percentage moves. The
+// settings and credential banners also come back in the same session after
+// the host reloads its config (a sign-in or sign-out, an account or workspace
+// trust change), since each session clears its record whenever the view's
+// config briefly lacks what it names.
 //
-// Here a dismissal raises a level that every session reads: 1 once a warning
-// has been dismissed, 2 once a banner saying a limit was reached (status
-// rejected) has been. A banner shows only while its own level (2 for a reached
-// limit, 1 for any warning) is above it, so a dismissed warning keeps every
-// later warning away, whichever limit it names, while a limit actually being
-// reached still shows once. The native per-session keys stay as they are, and
-// the wrap-up notice some accounts get at a reached limit (usageLimitGrace)
-// keeps its own per-session dismissal.
-//
-// The webview half (usageDismiss) is four fragments in the session class of
-// webview/index.js:
-//   field  after dismissedRateLimitKeys: ccupUsageDismiss, the view's one
-//          level object (window.__ccupUsageDismiss, made by the first session
-//          around the bundle's own signal constructor, so the banner's signal
-//          runs again when the level rises)
-//   gate   at the head of the signal both the banner and its close read
-//          (heldRateLimitWarning from 2.1.325, rateLimitWarning before it):
-//          null while the shown limit's level is dismissed
-//   close  at the head of dismissRateLimitWarning's branch for a shown banner:
-//          raises the level and reports it to the host as ccup_usage_dismiss
-//   event  at the head of the session's rate_limit_event branch: takes in the
-//          level the host stamped on the event, ahead of the native decision
-// The host half (usageDismissHost) is two fragments in extension.js:
-//   route  at the end of the comms base's request switch: ccup_usage_dismiss
-//          raises the extension host's own level, kept on globalThis, so every
-//          view of the window shares it and a host restart drops it
+// The store (bannerStore) is one line appended to webview/index.js:
+// window.__ccupBanners, made as the bundle finishes loading, around the
+// bundle's own signal constructor, so a banner's signal that reads the store
+// runs again when a dismissal lands. Its message listener, capturing so that
+// it runs ahead of the bundle's own, takes in the dismissals the host stamps
+// on its messages. Each banner's point is two fragments:
+//   gate   ahead of the native dismissed check in the banner's signal (the
+//          wrap-up's in the input box, where its state is read): the hidden
+//          value while the store holds the banner's dismissal
+//   close  in the banner's dismiss method: records the dismissal in the
+//          store, which reports it to the host as ccup_banner_dismiss
+// The host half (bannerDismissHost) is two fragments in extension.js:
+//   route  at the end of the comms base's request switch: ccup_banner_dismiss
+//          adds a level or a key to the extension host's own record, kept on
+//          globalThis, so every view of the window shares it and a host
+//          restart drops it
 //   send   at the head of the comms subclass's send, the one way a message
-//          reaches a webview: a rate_limit_event goes out stamped with that
-//          level (ccupUsageDismissed) once it is above 0
-// So a view opened later, or reloaded on its own, takes the window's level
-// from its first event, before anything shows.
+//          reaches a webview: once the record holds anything, every message
+//          but a streamed one goes out stamped with it (ccupBanners), and of
+//          the streamed ones each rate_limit_event
+// So a view opened later, or reloaded on its own, takes the window's
+// dismissals from its first message, before anything shows, and an open view
+// takes one made elsewhere with its next message.
 //
-// Unlike the other pairs, each half stands alone. Without the host half the
-// webview half still keeps a dismissal for every session of its own view (a
-// host running its pre-patch code answers the report "Unknown request type.",
-// which the close ignores), and without the webview half the host half is
-// inert, since only a report raises its level. Neither adds a control that
-// could fail. The route sits at the switch's end, past its empty default: a
-// matched request jumps to it, and an unknown one falls into it from the
-// default, so it checks the type itself and otherwise falls out to the native
-// error. Every site is found by structure (src/derive.ts), and each insertion
-// is wrapped in /*ccup:udis:<site>*/.../*ccup:udisEnd*/, so stripping the
-// fragments restores the stock bytes.
+// The banner points require the store and nothing else: without the host
+// half a view still keeps a dismissal for its own sessions (a host running
+// older code answers the report "Unknown request type.", which the store
+// ignores), and without any banner point the host half is inert, since only a
+// report fills its record. The route sits at the switch's end, past its empty
+// default: a matched request jumps to it, and an unknown one falls into it
+// from the default, so it checks the type itself and otherwise falls out to
+// the native error. Every site is found by structure (src/derive.ts), and each
+// insertion is marked /*ccup:<family>:<site>*/.../*ccup:<family>End*/, the
+// families being udis, sdis, cdis, wdis and bdis (the host's, which also
+// strips the udis fragments 7da0828 wrote there), so stripping the fragments
+// restores the stock bytes.
 // ---------------------------------------------------------------------------
-const UDIS_END = "/*ccup:udisEnd*/";
-const UDIS_FIELD = "/*ccup:udis:field*/";
-const UDIS_GATE = "/*ccup:udis:gate*/";
-const UDIS_CLOSE = "/*ccup:udis:close*/";
-const UDIS_EVENT = "/*ccup:udis:event*/";
-const UDIS_ROUTE = "/*ccup:udis:route*/";
-const UDIS_SEND = "/*ccup:udis:send*/";
-const UDIS_FRAG_RE = /\/\*ccup:udis:[-\w]+\*\/[\s\S]*?\/\*ccup:udisEnd\*\//g;
-const UDIS_WEBVIEW_FILE = "webview/index.js";
-const UDIS_HOST_FILE = "extension.js";
-const udisEdit = (marker: string, e: Edit): Edit => ({
-  pos: e.pos,
-  text: `${marker}${e.text}${UDIS_END}`,
-});
-const udisStrip = (c: string): string => c.replace(UDIS_FRAG_RE, "");
-// The request a close sends (ccupUsageDismissWeb spells it out too), the
-// session field and window property holding a view's level, the extension
-// host's global, and the stamp a rate_limit_event carries.
-const UDIS_REQ = "ccup_usage_dismiss";
-const UDIS_SELF = "ccupUsageDismiss";
-const UDIS_GLOBAL = "__ccupUsageDismiss";
-const UDIS_HOST_GLOBAL = "__ccupUsageDismissLevel";
-const UDIS_STAMP = "ccupUsageDismissed";
-// The session fields the fragments read or sit beside.
-const UDIS_SESSION_FIELDS = [
+const BANNER_FILE = "webview/index.js";
+const BANNER_HOST_FILE = "extension.js";
+// The view's store, the extension host's record, the stamp on a message, and
+// the report a close sends.
+const BANNER_STORE = "globalThis.__ccupBanners";
+const BANNER_HOST_RECORD = "globalThis.__ccupBannerDismissals";
+const BANNER_STAMP = "ccupBanners";
+const BANNER_REQ = "ccup_banner_dismiss";
+// A record holds at most this many dismissed keys, each at most this long.
+const BANNER_KEYS = 256;
+const BANNER_KEY_LEN = 8192;
+// The store line.
+const BSTORE_MARKER = "/*ccup:bannerStore*/";
+// The session fields whose initializer is the bundle's signal constructor
+// called on null (both present on 2.1.270 through 2.1.326).
+const BSTORE_SIG_FIELDS = [
   "frameRateLimitWarning",
-  "shownRateLimit",
-  "dismissedRateLimitKeys",
-  "connection",
+  "dismissedSettingsErrorsKey",
 ];
 // How far ahead of dismissRateLimitWarning the session class may start (26KB
-// on 2.1.270, 45KB on 2.1.326), and of the from-extension post the comms
-// subclass (5.5KB to 9.9KB over the same builds).
-const UDIS_SESSION_REACH = 200000;
-const UDIS_SUB_REACH = 100000;
+// on 2.1.270, 45KB on 2.1.326), how far ahead of the from-extension post the
+// comms subclass may (5.5KB to 9.9KB), and how far ahead of the wrap-up
+// state's read the input box component may, past how many nested `function`
+// keywords (12KB to 16KB, past 11 to 13).
+const BANNER_SESSION_REACH = 200000;
+const BANNER_SUB_REACH = 100000;
+const BANNER_COMPOSER_REACH = 120000;
+const BANNER_COMPOSER_TRIES = 40;
 
-// A view's level object, compiled into the webview bundle by toString, so it
-// may use only the page's globals and must hold no comment of its own. `sig`
-// is the bundle's signal constructor. hides(shown) reads the level only for a
-// shown limit, which ties the banner's signal to it. dismiss(shown, conn)
-// raises the level to the shown limit's own and reports that to the host,
-// ignoring any failure. absorb(level) takes in a level the host stamped.
-const ccupUsageDismissWeb = (sig: (v: number) => any) => {
-  const level = sig(0);
-  const rank = (shown: any): number => (shown.status === "rejected" ? 2 : 1);
-  const raise = (r: number): void => {
-    if (r > level.peek()) level.value = r;
+// Each family's markers, spelled out so the anchor audit expects them, and
+// its fragments. The host's fragments also match what 7da0828 wrote at the
+// same two sites (/*ccup:udis:route*/ and /*ccup:udis:send*/).
+const UDIS_GATE = "/*ccup:udis:gate*/";
+const UDIS_CLOSE = "/*ccup:udis:close*/";
+const UDIS_END = "/*ccup:udisEnd*/";
+const UDIS_FRAG_RE = /\/\*ccup:udis:[-\w]+\*\/[\s\S]*?\/\*ccup:udisEnd\*\//g;
+const SDIS_GATE = "/*ccup:sdis:gate*/";
+const SDIS_CLOSE = "/*ccup:sdis:close*/";
+const SDIS_END = "/*ccup:sdisEnd*/";
+const SDIS_FRAG_RE = /\/\*ccup:sdis:[-\w]+\*\/[\s\S]*?\/\*ccup:sdisEnd\*\//g;
+const CDIS_GATE = "/*ccup:cdis:gate*/";
+const CDIS_CLOSE = "/*ccup:cdis:close*/";
+const CDIS_END = "/*ccup:cdisEnd*/";
+const CDIS_FRAG_RE = /\/\*ccup:cdis:[-\w]+\*\/[\s\S]*?\/\*ccup:cdisEnd\*\//g;
+const WDIS_OPEN = "/*ccup:wdis:open*/";
+const WDIS_GATE = "/*ccup:wdis:gate*/";
+const WDIS_CLOSE = "/*ccup:wdis:close*/";
+const WDIS_END = "/*ccup:wdisEnd*/";
+const WDIS_FRAG_RE = /\/\*ccup:wdis:[-\w]+\*\/[\s\S]*?\/\*ccup:wdisEnd\*\//g;
+const BDIS_ROUTE = "/*ccup:bdis:route*/";
+const BDIS_SEND = "/*ccup:bdis:send*/";
+const BDIS_END = "/*ccup:bdisEnd*/";
+const BDIS_FRAG_RE =
+  /\/\*ccup:(?:bdis|udis):[-\w]+\*\/[\s\S]*?\/\*ccup:(?:bdis|udis)End\*\//g;
+const bannerEdit = (marker: string, end: string, e: Edit): Edit => ({
+  pos: e.pos,
+  text: `${marker}${e.text}${end}`,
+});
+
+// A view's store, compiled into the webview bundle by toString and folded
+// onto the store's one line, so it may use only the page's globals and must
+// hold no comment, and no string spanning lines. `sig` is the bundle's signal
+// constructor, and its one signal holds the usage level (u) and the dismissed
+// keys (k, each `<banner>:<key>`). hides and hidesUsage read the signal only
+// for a banner that would show, which ties that banner's signal to it.
+// dismiss and dismissUsage record a dismissal and report it to the host,
+// ignoring any failure. The listener takes in what the host stamps on its
+// messages.
+const ccupBannerStoreWeb = (
+  sig: (v: unknown) => any,
+  cfg: { req: string; stamp: string; keys: number; len: number },
+) => {
+  const state = sig({ u: 0, k: [] as string[] });
+  const merge = (s: any): void => {
+    if (!s || typeof s !== "object") return;
+    const cur = state.peek();
+    const u = (s.u === 1 || s.u === 2) && s.u > cur.u ? s.u : cur.u;
+    const add: string[] = [];
+    for (const k of Array.isArray(s.k) ? s.k : [])
+      if (
+        typeof k === "string" &&
+        k.length <= cfg.len &&
+        !cur.k.includes(k) &&
+        !add.includes(k)
+      )
+        add.push(k);
+    if (u !== cur.u || add.length)
+      state.value = { u, k: [...cur.k, ...add].slice(0, cfg.keys) };
   };
-  return {
-    hides: (shown: any): boolean => !!shown && rank(shown) <= level.value,
-    dismiss: (shown: any, conn: any): void => {
-      if (!shown) return;
-      const r = rank(shown);
-      raise(r);
-      try {
-        conn
-          ?.sendRequest({ type: "ccup_usage_dismiss", level: r })
-          .catch(() => {});
-      } catch {}
+  const report = (conn: any, s: object): void => {
+    try {
+      conn?.sendRequest({ type: cfg.req, ...s }).catch(() => {});
+    } catch {}
+  };
+  const rank = (shown: any): number => (shown.status === "rejected" ? 2 : 1);
+  (globalThis as any).addEventListener(
+    "message",
+    (e: any) => {
+      const m = e.data;
+      if (m && m.type === "from-extension" && m.message)
+        merge(m.message[cfg.stamp]);
     },
-    absorb: (r: unknown): void => {
-      if (r === 1 || r === 2) raise(r);
+    true,
+  );
+  return {
+    hides: (banner: string, key: unknown): boolean =>
+      typeof key === "string" && state.value.k.includes(banner + ":" + key),
+    dismiss: (banner: string, key: unknown, conn: any): void => {
+      if (typeof key !== "string") return;
+      merge({ k: [banner + ":" + key] });
+      report(conn, { key: banner + ":" + key });
+    },
+    hidesUsage: (shown: any): boolean =>
+      !!shown && rank(shown) <= state.value.u,
+    dismissUsage: (shown: any, conn: any): void => {
+      if (!shown) return;
+      merge({ u: rank(shown) });
+      report(conn, { level: rank(shown) });
     },
   };
 };
 
+// A compiled function as one line of source. tsc writes the store with a
+// semicolon after every statement and no comment, so the line breaks it puts
+// in carry nothing a space does not.
+function bannerOneLine(fn: (...a: any[]) => unknown): string | undefined {
+  const src = fn.toString();
+  return /\/\/|\/\*|`/.test(src) ? undefined : src.replace(/\s*\n\s*/g, " ");
+}
+
+// The bundle's signal constructor, as the session class calls it on null for
+// the fields above, or null when those disagree or none is found.
+function bannerSignal(c: string): string | null {
+  let sig: string | null = null;
+  for (const field of BSTORE_SIG_FIELDS) {
+    const lit = `${field}=`;
+    for (let i = c.indexOf(lit); i >= 0; i = c.indexOf(lit, i + 1)) {
+      if (/[\w$.]/.test(c[i - 1] ?? "")) continue;
+      const m = /^([A-Za-z_$][\w$]*)\(null\)/.exec(
+        c.slice(i + lit.length, i + lit.length + 64),
+      );
+      if (!m) continue;
+      if (sig !== null && sig !== m[1]) return null;
+      sig = m[1];
+    }
+  }
+  return sig;
+}
+
+// The store line for this bundle, or undefined when no signal constructor is
+// found. It runs when the bundle has finished loading and before any message
+// from the host arrives; a failure leaves the banners native and lets the
+// lines after it run.
+function bannerStoreBuild(c: string): string | undefined {
+  const sig = bannerSignal(c);
+  const store = bannerOneLine(ccupBannerStoreWeb);
+  if (!sig || !store) return undefined;
+  const cfg = JSON.stringify({
+    req: BANNER_REQ,
+    stamp: BANNER_STAMP,
+    keys: BANNER_KEYS,
+    len: BANNER_KEY_LEN,
+  });
+  return `${BSTORE_MARKER}try{${BANNER_STORE}??=(${store})(${sig},${cfg})}catch(ccupE){}`;
+}
+
 // `this.<name>`, giving the name.
-const udisThisProp = (n: N | null | undefined): string | null =>
+const bannerThisProp = (n: N | null | undefined): string | null =>
   n?.type === "MemberExpression" && n.object.type === "ThisExpression"
     ? memberProp(n)
     : null;
 // Whether `this.<prop>` (with `.<member>` after it, when given) occurs under
 // `root`, nested functions excluded.
-function udisUses(root: N, prop: string, member?: string): boolean {
+function bannerUses(root: N, prop: string, member?: string): boolean {
   let hit = false;
   walkOwn(root, (n) => {
     if (hit) return false;
     if (
       member === undefined
-        ? udisThisProp(n) === prop
-        : memberProp(n) === member && udisThisProp(n.object) === prop
+        ? bannerThisProp(n) === prop
+        : memberProp(n) === member && bannerThisProp(n.object) === prop
     )
       hit = true;
   });
   return hit;
 }
-// Whether `this` at `n` is an instance of class `cls`: the nearest function
-// around `n` with a `this` of its own is one of the class's instance methods,
-// or none lies between `n` and an instance field of the class.
-function udisThisIs(n: N, cls: N): boolean {
-  for (let s = n.parent; s; s = s.parent) {
-    if (s.type === "PropertyDefinition")
-      return s.parent === cls.body && !s.static;
-    if (s.type === "FunctionExpression" || s.type === "FunctionDeclaration") {
-      const m = s.parent;
-      return (
-        m?.type === "MethodDefinition" && m.parent === cls.body && !m.static
-      );
-    }
-  }
-  return false;
-}
+// `JSON.stringify(<id>)`, giving the id.
+const bannerStringified = (n: N | null | undefined): string | null =>
+  n?.type === "CallExpression" &&
+  n.arguments.length === 1 &&
+  isMember(n.callee, "JSON", "stringify")
+    ? idName(n.arguments[0])
+    : null;
 
-// The webview's sites and their four insertions, or null.
-function usageDismissWebFind(
-  c: string,
-): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
-  // The session class, the one holding the banner's state and its close.
+// The session class: the one holding the usage banner's close and the
+// connection every close reports through.
+function bannerSessionClass(c: string): N | null {
   const classes = unitsWith(
     c,
     "dismissRateLimitWarning(){",
     "class ",
     isClass,
-    UDIS_SESSION_REACH,
+    BANNER_SESSION_REACH,
   ).filter(
     (k) =>
-      sdelMethod(k, "dismissRateLimitWarning") &&
-      UDIS_SESSION_FIELDS.every((f) => sdelField(k, f)),
+      sdelMethod(k, "dismissRateLimitWarning") && sdelField(k, "connection"),
   );
-  if (classes.length !== 1) return null;
-  const cls = classes[0];
-  const field = (name: string): N | undefined =>
-    (cls.body.body as N[]).find(
-      (m) =>
-        m.type === "PropertyDefinition" &&
-        !m.computed &&
-        !m.static &&
-        idName(m.key) === name,
-    );
-
-  // The bundle's signal constructor, as the banner text's own signal is made:
-  // frameRateLimitWarning=<sig>(null).
-  const frame = field("frameRateLimitWarning")?.value;
-  const sig =
-    frame?.type === "CallExpression" &&
-    frame.arguments.length === 1 &&
-    frame.arguments[0].type === "Literal" &&
-    frame.arguments[0].value === null
-      ? idName(frame.callee)
+  return classes.length === 1 ? classes[0] : null;
+}
+// A class's own instance field of this name.
+function bannerField(cls: N, name: string): N | undefined {
+  return (cls.body.body as N[]).find(
+    (m) =>
+      m.type === "PropertyDefinition" &&
+      !m.computed &&
+      !m.static &&
+      idName(m.key) === name,
+  );
+}
+// A signal field's function, <computed>(()=>{...}), or null.
+function bannerSignalFn(field: N | undefined): N | null {
+  const v = field?.value;
+  const fn =
+    v?.type === "CallExpression" && v.arguments.length === 1
+      ? v.arguments[0]
       : null;
-  if (!sig || idName(cls.id) === sig) return null;
+  return fn?.type === "ArrowFunctionExpression" &&
+    fn.body.type === "BlockStatement"
+    ? fn
+    : null;
+}
 
-  // The close: dismissRateLimitWarning(){if(this.<gate>.value){let
-  // e=this.shownRateLimit.peek(),...;this.frameRateLimitWarning.value=null}...}
+// One point's sites, its insertions, and the units to parse again.
+interface BannerSites {
+  units: [N, (n: N) => boolean][];
+  edits: Edit[];
+}
+
+// The usage banner. Its gate opens the signal the banner and its close both
+// read (heldRateLimitWarning from 2.1.325, rateLimitWarning before it), and
+// its close opens dismissRateLimitWarning's branch for a shown banner:
+// dismissRateLimitWarning(){if(this.<gate>.value){let
+// e=this.shownRateLimit.peek(),...;this.frameRateLimitWarning.value=null}...}
+function usageDismissFind(c: string): BannerSites | null {
+  const cls = bannerSessionClass(c);
+  if (!cls) return null;
   const close = sdelMethod(cls, "dismissRateLimitWarning")!.value;
   const head = close.body.body[0];
   const gate =
     head?.type === "IfStatement" && memberProp(head.test) === "value"
-      ? udisThisProp(head.test.object)
+      ? bannerThisProp(head.test.object)
       : null;
   if (
     !gate ||
     head.consequent.type !== "BlockStatement" ||
-    !udisUses(head.consequent, "shownRateLimit", "peek") ||
-    !udisUses(head.consequent, "frameRateLimitWarning", "value")
+    !bannerUses(head.consequent, "shownRateLimit", "peek") ||
+    !bannerUses(head.consequent, "frameRateLimitWarning", "value")
   )
     return null;
-
-  // The gate: <gate>=<computed>(()=>{...}), reading the banner text and the
-  // shown limit.
-  const gv = field(gate)?.value;
-  const arrow =
-    gv?.type === "CallExpression" && gv.arguments.length === 1
-      ? gv.arguments[0]
-      : null;
+  const fn = bannerSignalFn(bannerField(cls, gate));
   if (
-    arrow?.type !== "ArrowFunctionExpression" ||
-    arrow.body.type !== "BlockStatement" ||
-    !udisUses(arrow, "frameRateLimitWarning", "value") ||
-    !udisUses(arrow, "shownRateLimit", "value")
+    !fn ||
+    !bannerUses(fn, "frameRateLimitWarning", "value") ||
+    !bannerUses(fn, "shownRateLimit", "value")
   )
     return null;
-
-  // The event: if(<msg>.type==="rate_limit_event"){let
-  // n=<msg>.rate_limit_info;...} in a method of the class, whose decision
-  // reads this.dismissedRateLimitKeys.
-  const branches: { block: N; msg: string }[] = [];
-  walk(cls, (n) => {
-    if (n.type !== "IfStatement" || n.consequent.type !== "BlockStatement")
-      return;
-    const t = n.test;
-    if (t.type !== "BinaryExpression" || t.operator !== "===") return;
-    const side = isStr(t.right, "rate_limit_event")
-      ? t.left
-      : isStr(t.left, "rate_limit_event")
-        ? t.right
-        : null;
-    const msg = memberProp(side) === "type" ? idName(side.object) : null;
-    if (msg) branches.push({ block: n.consequent, msg });
-  });
-  if (branches.length !== 1) return null;
-  const { block, msg } = branches[0];
-  const decl = block.body[0];
-  if (
-    decl?.type !== "VariableDeclaration" ||
-    !isMember(decl.declarations[0]?.init, msg, "rate_limit_info") ||
-    bindingSite(decl, msg, block) !== null ||
-    !udisThisIs(block, cls) ||
-    !udisUses(block, "dismissedRateLimitKeys")
-  )
-    return null;
-
-  // The level field goes in after the dismissed keys, ending the field before
-  // it where that one has no semicolon of its own.
-  const keys = field("dismissedRateLimitKeys")!;
-  const self = `this.${UDIS_SELF}`;
   return {
     units: [[cls, isClass]],
     edits: [
-      udisEdit(UDIS_FIELD, {
-        pos: keys.end,
-        text:
-          `${c[keys.end - 1] === ";" ? "" : ";"}${UDIS_SELF}=` +
-          `globalThis.${UDIS_GLOBAL}??=(${ccupUsageDismissWeb.toString()})(${sig});`,
+      bannerEdit(UDIS_GATE, UDIS_END, {
+        pos: fn.body.start + 1,
+        text: `if(${BANNER_STORE}?.hidesUsage(this.shownRateLimit.value))return null;`,
       }),
-      udisEdit(UDIS_GATE, {
-        pos: arrow.body.start + 1,
-        text: `if(${self}?.hides(this.shownRateLimit.value))return null;`,
-      }),
-      udisEdit(UDIS_CLOSE, {
+      bannerEdit(UDIS_CLOSE, UDIS_END, {
         pos: head.consequent.start + 1,
-        text: `${self}?.dismiss(this.shownRateLimit.peek(),this.connection.value);`,
+        text: `${BANNER_STORE}?.dismissUsage(this.shownRateLimit.peek(),this.connection.value);`,
       }),
-      udisEdit(UDIS_EVENT, {
-        pos: block.start + 1,
-        text: `${self}?.absorb(${msg}.${UDIS_STAMP});`,
+    ],
+  };
+}
+
+// A banner whose session keeps the JSON of what was dismissed in
+// this.<keyField>: its signal returns early when JSON.stringify(<x>) equals
+// that key, and its dismiss method sets the key from JSON.stringify(<y>). The
+// gate goes in just ahead of that check and returns what it returns (null or
+// an empty list), and the close just ahead of the set.
+interface KeyedMarks {
+  gate: string;
+  close: string;
+  end: string;
+}
+// The id a test compares, as JSON.stringify(<id>), with this.<keyField>.value.
+function keyedCheckId(test: N, keyField: string): string | null {
+  const isKey = (n: N): boolean =>
+    memberProp(n) === "value" && bannerThisProp(n.object) === keyField;
+  const ids: string[] = [];
+  walk(test, (n) => {
+    if (n.type !== "BinaryExpression" || n.operator !== "===") return;
+    const id = isKey(n.right)
+      ? bannerStringified(n.left)
+      : isKey(n.left)
+        ? bannerStringified(n.right)
+        : null;
+    if (id) ids.push(id);
+  });
+  return ids.length === 1 ? ids[0] : null;
+}
+// The id a statement sets this.<keyField>.value from, as JSON.stringify(<id>).
+function keyedSetId(st: N, keyField: string): string | null {
+  const ex = st.type === "ExpressionStatement" ? st.expression : null;
+  return ex?.type === "AssignmentExpression" &&
+    ex.operator === "=" &&
+    memberProp(ex.left) === "value" &&
+    bannerThisProp(ex.left.object) === keyField
+    ? bannerStringified(ex.right)
+    : null;
+}
+function keyedBannerFind(
+  c: string,
+  keyField: string,
+  banner: string,
+  marks: KeyedMarks,
+): BannerSites | null {
+  const cls = bannerSessionClass(c);
+  if (!cls || !bannerField(cls, keyField)) return null;
+
+  // The check, in a signal field's own body: if(...)return null or [], with
+  // its id declared (let or const) ahead of it in that body.
+  const gates: { at: N; id: string; ret: string }[] = [];
+  for (const m of cls.body.body as N[]) {
+    if (m.type !== "PropertyDefinition" || m.static) continue;
+    const fn = bannerSignalFn(m);
+    if (!fn) continue;
+    const body = fn.body.body as N[];
+    for (const st of body) {
+      if (st.type !== "IfStatement" || st.consequent.type !== "ReturnStatement")
+        continue;
+      const arg = st.consequent.argument;
+      const id = keyedCheckId(st.test, keyField);
+      if (!arg || !id) continue;
+      const plain =
+        (arg.type === "Literal" && arg.value === null) ||
+        (arg.type === "ArrayExpression" && arg.elements.length === 0);
+      const declared = body.some(
+        (d) =>
+          d.type === "VariableDeclaration" &&
+          d.kind !== "var" &&
+          d.end <= st.start &&
+          d.declarations.some((x: N) => idName(x.id) === id),
+      );
+      if (plain && declared)
+        gates.push({ at: st, id, ret: c.slice(arg.start, arg.end) });
+    }
+  }
+  // The set, in an instance method's own body, its id bound in the method.
+  const closes: { at: N; id: string }[] = [];
+  for (const m of cls.body.body as N[]) {
+    if (m.type !== "MethodDefinition" || m.static || m.kind !== "method")
+      continue;
+    for (const st of m.value.body.body as N[]) {
+      const id = keyedSetId(st, keyField);
+      if (id && bindingSite(st, id, m.value) !== null)
+        closes.push({ at: st, id });
+    }
+  }
+  if (gates.length !== 1 || closes.length !== 1) return null;
+
+  const [g] = gates;
+  const [k] = closes;
+  return {
+    units: [[cls, isClass]],
+    edits: [
+      bannerEdit(marks.gate, marks.end, {
+        pos: g.at.start,
+        text: `if(${BANNER_STORE}?.hides("${banner}",JSON.stringify(${g.id})))return ${g.ret};`,
+      }),
+      bannerEdit(marks.close, marks.end, {
+        pos: k.at.start,
+        text: `${BANNER_STORE}?.dismiss("${banner}",JSON.stringify(${k.id}),this.connection.value);`,
+      }),
+    ],
+  };
+}
+
+// The wrap-up notice. Its state is the session's usageLimitGrace, which the
+// input box reads behind an experiment gate,
+// <s>.config.value?.experimentGates.tengu_lantern_sconce===!0&&...?<s>.usageLimitGrace.value:null,
+// so its gate wraps that condition, and its close opens
+// dismissUsageLimitGrace, the method setting the state to "dismissed". The
+// notice has one key, since it is about whichever limit was reached.
+const WRAPUP_KEY = "*";
+function wrapUpDismissFind(c: string): BannerSites | null {
+  const cls = bannerSessionClass(c);
+  if (!cls) return null;
+  const closes = (cls.body.body as N[]).filter((m) => {
+    if (m.type !== "MethodDefinition" || m.static || m.kind !== "method")
+      return false;
+    let sets = false;
+    walkOwn(m.value, (n) => {
+      if (
+        n.type === "AssignmentExpression" &&
+        memberProp(n.left) === "value" &&
+        bannerThisProp(n.left.object) === "usageLimitGrace" &&
+        isStr(n.right, "dismissed")
+      )
+        sets = true;
+    });
+    return sets;
+  });
+  if (closes.length !== 1 || closes[0].value.body.type !== "BlockStatement")
+    return null;
+  const close = closes[0].value;
+
+  const units = unitsWith(
+    c,
+    ".tengu_lantern_sconce===",
+    "function",
+    isFn,
+    BANNER_COMPOSER_REACH,
+    BANNER_COMPOSER_TRIES,
+  );
+  const conds: N[] = [];
+  for (const u of units)
+    walk(u, (n) => {
+      if (
+        n.type !== "ConditionalExpression" ||
+        memberProp(n.consequent) !== "value" ||
+        memberProp(n.consequent.object) !== "usageLimitGrace" ||
+        n.alternate.type !== "Literal" ||
+        n.alternate.value !== null
+      )
+        return;
+      let gated = false;
+      walk(n.test, (m) => {
+        if (memberProp(m) === "tengu_lantern_sconce") gated = true;
+      });
+      if (gated) conds.push(n);
+    });
+  if (units.length !== 1 || conds.length !== 1) return null;
+  const test = conds[0].test;
+  return {
+    units: [
+      [cls, isClass],
+      [units[0], isFn],
+    ],
+    edits: [
+      bannerEdit(WDIS_OPEN, WDIS_END, { pos: test.start, text: "(" }),
+      bannerEdit(WDIS_GATE, WDIS_END, {
+        pos: test.end,
+        text: `)&&!${BANNER_STORE}?.hides("wrap-up","${WRAPUP_KEY}")`,
+      }),
+      bannerEdit(WDIS_CLOSE, WDIS_END, {
+        pos: close.body.start + 1,
+        text: `${BANNER_STORE}?.dismiss("wrap-up","${WRAPUP_KEY}",this.connection.value);`,
       }),
     ],
   };
 }
 
 // The host's sites and their two insertions, or null.
-function usageDismissHostFind(
-  c: string,
-): { units: [N, (n: N) => boolean][]; edits: Edit[] } | null {
+function bannerDismissHostFind(c: string): BannerSites | null {
   // The comms base and its request switch on <env>.request.type, with the
   // init and rewind_code cases and a default.
   const bases = unitsWith(
@@ -6928,7 +7171,7 @@ function usageDismissHostFind(
     'type:"from-extension",message:',
     "class ",
     isClass,
-    UDIS_SUB_REACH,
+    BANNER_SUB_REACH,
   ).filter(
     (k) => idName(k.superClass) === idName(base.id) && sdelMethod(k, "send"),
   );
@@ -6943,7 +7186,7 @@ function usageDismissHostFind(
     if (
       o?.type === "ObjectExpression" &&
       memberProp(n.callee) === "postMessage" &&
-      udisThisProp(n.callee.object) === "webview" &&
+      bannerThisProp(n.callee.object) === "webview" &&
       isStr(propOf(o, "type")?.value, "from-extension") &&
       idName(propOf(o, "message")?.value) === msg
     )
@@ -6951,64 +7194,113 @@ function usageDismissHostFind(
   });
   if (!posts) return null;
 
-  const level = `globalThis.${UDIS_HOST_GLOBAL}`;
+  const R = BANNER_HOST_RECORD;
   return {
     units: [
       [base, isClass],
       [subs[0], isClass],
     ],
     edits: [
-      udisEdit(UDIS_ROUTE, {
+      bannerEdit(BDIS_ROUTE, BDIS_END, {
         pos: sw.end - 1,
         text:
-          `case"${UDIS_REQ}":if(${env}.request.type==="${UDIS_REQ}"){` +
-          `let ccupL=${env}.request.level;` +
-          `if((ccupL===1||ccupL===2)&&ccupL>(${level}|0))${level}=ccupL;` +
-          `return{type:"${UDIS_REQ}_response"}}`,
+          `case"${BANNER_REQ}":if(${env}.request.type==="${BANNER_REQ}"){` +
+          `let ccupR=${R}??={u:0,k:[]},ccupQ=${env}.request;` +
+          `if((ccupQ.level===1||ccupQ.level===2)&&ccupQ.level>ccupR.u)ccupR.u=ccupQ.level;` +
+          `if(typeof ccupQ.key==="string"&&ccupQ.key.length<=${BANNER_KEY_LEN}&&` +
+          `ccupR.k.length<${BANNER_KEYS}&&!ccupR.k.includes(ccupQ.key))ccupR.k.push(ccupQ.key);` +
+          `return{type:"${BANNER_REQ}_response"}}`,
       }),
-      udisEdit(UDIS_SEND, {
+      bannerEdit(BDIS_SEND, BDIS_END, {
         pos: send.body.start + 1,
         text:
-          `if(${level}&&${msg}?.type==="io_message"&&` +
-          `${msg}.message?.type==="rate_limit_event")` +
-          `${msg}={...${msg},message:{...${msg}.message,${UDIS_STAMP}:${level}}};`,
+          `let ccupBR=${R};` +
+          `if(ccupBR&&(ccupBR.u||ccupBR.k.length)&&${msg}&&(${msg}.type!=="io_message"||` +
+          `${msg}.message?.type==="rate_limit_event"))${msg}={...${msg},${BANNER_STAMP}:ccupBR};`,
       }),
     ],
   };
 }
 
-// Each half's native file with its fragments in, or null when a site is
-// missing or an edit would not parse.
-const usageDismissWebBuild = sdelMemo((native) => {
-  const sites = usageDismissWebFind(native);
-  if (!sites) return null;
-  const out = applyEdits(native, sites.edits);
-  return unitsReparse(out, sites.edits, sites.units) ? out : null;
-});
-const usageDismissHostBuild = sdelMemo((native) => {
-  const sites = usageDismissHostFind(native);
-  if (!sites) return null;
-  const out = applyEdits(native, sites.edits);
-  return unitsReparse(out, sites.edits, sites.units) ? out : null;
-});
+// A point's native file with its fragments in, or null when a site is missing
+// or an edit would not parse.
+function bannerBuild(
+  find: (native: string) => BannerSites | null,
+): (native: string) => string | null {
+  return sdelMemo((native) => {
+    const sites = find(native);
+    if (!sites) return null;
+    const out = applyEdits(native, sites.edits);
+    return unitsReparse(out, sites.edits, sites.units) ? out : null;
+  });
+}
+const usageDismissBuild = bannerBuild(usageDismissFind);
+const settingsDismissBuild = bannerBuild((c) =>
+  keyedBannerFind(c, "dismissedSettingsErrorsKey", "settings", {
+    gate: SDIS_GATE,
+    close: SDIS_CLOSE,
+    end: SDIS_END,
+  }),
+);
+const credentialDismissBuild = bannerBuild((c) =>
+  keyedBannerFind(c, "dismissedAuthConflictKey", "credential", {
+    gate: CDIS_GATE,
+    close: CDIS_CLOSE,
+    end: CDIS_END,
+  }),
+);
+const wrapUpDismissBuild = bannerBuild(wrapUpDismissFind);
+const bannerDismissHostBuild = bannerBuild(bannerDismissHostFind);
 
-// The two ALWAYS_POINTS patches, each standing alone (see above).
-function usageDismissWebPatch(native: string): string | null {
-  return usageDismissWebBuild(native);
+// The ALWAYS_POINTS patches. A banner point writes nothing where the store
+// line cannot be built, since its fragments would then have no store to read.
+function bannerPatch(
+  build: (native: string) => string | null,
+): (native: string) => string | null {
+  return (native) =>
+    bannerStoreBuild(native) === undefined ? null : build(native);
 }
-function usageDismissHostPatch(native: string): string | null {
-  return usageDismissHostBuild(native);
+const usageDismissPatch = bannerPatch(usageDismissBuild);
+const settingsDismissPatch = bannerPatch(settingsDismissBuild);
+const credentialDismissPatch = bannerPatch(credentialDismissBuild);
+const wrapUpDismissPatch = bannerPatch(wrapUpDismissBuild);
+function bannerDismissHostPatch(native: string): string | null {
+  return bannerDismissHostBuild(native);
 }
+// Builds without the credential banner (before 2.1.322) give its point
+// nothing to change.
+const credentialDismissInert = (native: string): boolean =>
+  !native.includes("dismissAuthConflictWarning(");
 
-// Either file as an apply writes this point into it, or null when its half's
-// sites are gone. scripts/repro's usage-dismiss.mjs serves the webview one and
-// drives the host one, so both run exactly what the patcher writes and double
-// as the drift canary.
-export function usageDismissWebview(web: string): string | null {
-  return usageDismissWebBuild(udisStrip(web));
+// The webview points, in the order an apply writes them.
+const BANNER_WEB_POINTS = [
+  "bannerStore",
+  "usageDismiss",
+  "settingsDismiss",
+  "credentialDismiss",
+  "wrapUpDismiss",
+];
+
+// The webview bundle with every banner point written as an apply writes it,
+// or null when one of them is missing (one with nothing to change aside), and
+// the host bundle likewise. scripts/repro's banner-dismiss.mjs serves the
+// first and drives the second, so both run exactly what the patcher writes
+// and double as the drift canary.
+export function bannerDismissWebview(web: string): string | null {
+  const points = ALWAYS_POINTS.filter((a) => BANNER_WEB_POINTS.includes(a.id));
+  let out = web;
+  for (const a of points) out = alwaysRestore(out, a);
+  const read: BundleReader = (rel) => (rel === BANNER_FILE ? out : undefined);
+  for (const a of points) {
+    const next = alwaysApply(out, a, read);
+    const inert = a.kind === "inline" && !!a.inert?.(out.replace(a.frags, ""));
+    if (!next.on && !inert) return null;
+    out = next.out;
+  }
+  return out;
 }
-export function usageDismissHost(host: string): string | null {
-  return usageDismissHostBuild(udisStrip(host));
+export function bannerDismissHost(host: string): string | null {
+  return bannerDismissHostBuild(host.replace(BDIS_FRAG_RE, ""));
 }
 
 // ---------------------------------------------------------------------------
@@ -17230,20 +17522,53 @@ const ALWAYS_POINTS: AlwaysPoint[] = [
     patch: chipWheelPatch,
   },
   {
-    kind: "inline",
-    id: "usageDismiss",
-    label: "usage warning dismissal",
-    file: UDIS_WEBVIEW_FILE,
-    frags: UDIS_FRAG_RE,
-    patch: usageDismissWebPatch,
+    kind: "line",
+    id: "bannerStore",
+    label: "banner dismissal store",
+    file: BANNER_FILE,
+    marker: BSTORE_MARKER,
+    build: bannerStoreBuild,
   },
   {
     kind: "inline",
-    id: "usageDismissHost",
-    label: "usage warning dismissal relay",
-    file: UDIS_HOST_FILE,
+    id: "usageDismiss",
+    label: "usage warning dismissal",
+    file: BANNER_FILE,
     frags: UDIS_FRAG_RE,
-    patch: usageDismissHostPatch,
+    patch: usageDismissPatch,
+  },
+  {
+    kind: "inline",
+    id: "settingsDismiss",
+    label: "settings error dismissal",
+    file: BANNER_FILE,
+    frags: SDIS_FRAG_RE,
+    patch: settingsDismissPatch,
+  },
+  {
+    kind: "inline",
+    id: "credentialDismiss",
+    label: "credential warning dismissal",
+    file: BANNER_FILE,
+    frags: CDIS_FRAG_RE,
+    patch: credentialDismissPatch,
+    inert: credentialDismissInert,
+  },
+  {
+    kind: "inline",
+    id: "wrapUpDismiss",
+    label: "wrap-up notice dismissal",
+    file: BANNER_FILE,
+    frags: WDIS_FRAG_RE,
+    patch: wrapUpDismissPatch,
+  },
+  {
+    kind: "inline",
+    id: "bannerDismissHost",
+    label: "banner dismissal relay",
+    file: BANNER_HOST_FILE,
+    frags: BDIS_FRAG_RE,
+    patch: bannerDismissHostPatch,
   },
   {
     kind: "inline",

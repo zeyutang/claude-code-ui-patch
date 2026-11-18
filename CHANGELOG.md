@@ -3,9 +3,9 @@
 ## Unreleased
 
 - The notepad button on each Bookmarks pane row is now a little larger, the size of the pane's own bookmark button.
-- Dismissing the usage-limit warning above the input box now keeps it away in every session of the window until the window reloads or the extensions restart.
-  It had come back in every other session, and in the same one whenever another limit was reported, such as the 5-hour limit after a weekly one.
-  A banner saying you have hit a limit still shows once, and dismissing it keeps those away too.
+- Dismissing a banner above the input box now keeps it away in every session of the window until the window reloads or the extensions restart, for (1) the usage-limit warning, (2) the warning that a settings file failed to parse, (3) the warning that Claude Code has two credentials, and (4) the notice some accounts get as Claude wraps up at a usage limit.
+  Each had come back in every other session, and the usage warning also in the same one whenever another limit was reported, such as the 5-hour limit after a weekly one.
+  A banner saying you have hit a usage limit still shows once, and a settings error or credential warning about something new still shows.
   Always applied, no setting.
 - In the Agent map, an agent resumed with another message now shows the time of its current run, rather than the time since it first started, which could read as hundreds of minutes.
   A resumed run that fails or is stopped keeps its own time too, also in a reopened session.

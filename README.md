@@ -120,7 +120,7 @@ Always applied                         # no setting; installing this patch is th
    ├── file link reveal                # a file link goes to the file's open tab in any group
    ├── shell here-documents            # shell code blocks: a here-document's body reads as text
    ├── sticky copy button              # a code block's copy button stays in view as it scrolls
-   ├── usage warning dismissal         # a dismissed usage warning stays away until a reload
+   ├── banner dismissal                # a dismissed banner stays away until the window reloads
    ├── agent map run time              # Agent map: a resumed agent is timed from its resume
    └── reload during a turn            # a reload while Claude is working reopens that session
 

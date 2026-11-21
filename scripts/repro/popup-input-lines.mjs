@@ -24,7 +24,24 @@ const QUESTIONS_CONTAINER_RULE_RE =
   /\.questionsContainer_([-\w]+)\{[^{}]*?overflow-y:auto[^{}]*?\}/;
 const OTHER_INPUT_RULE_RE =
   /\.otherInput_([-\w]+)\{[^{}]*?border:(\d+(?:\.\d+)?)px solid[^{}]*?padding:(\d+(?:\.\d+)?)px \d+(?:\.\d+)?px[^{}]*?\}/;
-const OPTION_ROW_RULE_RE = /\.option_([-\w]+)\{[^{}]*?padding:(\d+(?:\.\d+)?)px\}/;
+const OPTION_ROW_RULE_RE =
+  /\.option_([-\w]+)\{[^{}]*?padding:(?:(\d+(?:\.\d+)?)px\}|var\((--[-\w]+)\)[;}])/;
+
+// The option row's vertical padding: its px value, or (2.1.330 on) the
+// vertical px of the custom property it names (cssVarVerticalPx).
+function optionRowPad(css, row) {
+  if (!row) return undefined;
+  if (row[2] !== undefined) return Number(row[2]);
+  let v;
+  for (const m of css.matchAll(
+    new RegExp(`(?<![-\\w])${row[3]}:([^;{}]*)`, "g"),
+  )) {
+    const px = m[1].match(/^(\d+(?:\.\d+)?)px(?: \d+(?:\.\d+)?px)?$/);
+    if (!px || (v !== undefined && Number(px[1]) !== v)) return undefined;
+    v = Number(px[1]);
+  }
+  return v;
+}
 
 function liveBundleCss() {
   if (process.env.CCUP_CSS) return process.env.CCUP_CSS;
@@ -45,7 +62,9 @@ export async function run(ctx) {
   console.log(`live bundle: ${cssPath}`);
   let ok = true;
   const check = (name, cond, detail) => {
-    console.log(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
+    console.log(
+      `${cond ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`,
+    );
     if (!cond) ok = false;
     return cond;
   };
@@ -53,7 +72,9 @@ export async function run(ctx) {
   // Same derivation as the point's apply()
   const m = css.match(POPUP_INPUT_RULE_RE);
   const anchored =
-    m && css.includes(`.wrapper_${m[1]}{`) && css.includes(`.placeholder_${m[1]}{`);
+    m &&
+    css.includes(`.wrapper_${m[1]}{`) &&
+    css.includes(`.placeholder_${m[1]}{`);
   check("popupInputLines anchor parses in live bundle", Boolean(anchored));
   if (!anchored) return false;
   const em = Math.round(Number(m[2]) * N * 100) / 100;
@@ -63,10 +84,13 @@ export async function run(ctx) {
   // Same derivation as questionRevealBuild
   const qHash = css.match(QUESTIONS_CONTAINER_RULE_RE)?.[1];
   const box = css.match(OTHER_INPUT_RULE_RE);
-  const row = css.match(OPTION_ROW_RULE_RE);
-  check("questionReveal anchors parse in live bundle", Boolean(qHash && box && row));
-  if (!qHash || !box || !row) return false;
-  const pad = Math.round(Number(box[2]) + Number(box[3]) + Number(row[2]) + 2);
+  const rowPad = optionRowPad(css, css.match(OPTION_ROW_RULE_RE));
+  check(
+    "questionReveal anchors parse in live bundle",
+    Boolean(qHash && box && rowPad !== undefined),
+  );
+  if (!qHash || !box || rowPad === undefined) return false;
+  const pad = Math.round(Number(box[2]) + Number(box[3]) + rowPad + 2);
   const revealRule = `.questionsContainer_${qHash}{scroll-padding:${pad}px 0 ${pad}px}`;
 
   await ctx.navigate(`file://${ctx.dir}/question-reveal.html`);
@@ -105,8 +129,16 @@ export async function run(ctx) {
   await typeLines(LINES);
   const native = await measure();
   await ctx.shot("popup-lines-native");
-  check("native: box capped at 120px", Math.abs(native.edH - 120) < 1, `edH=${native.edH}`);
-  check("native: inner box scrolls", native.edScrolls, `scrollH=${native.edScrollH}`);
+  check(
+    "native: box capped at 120px",
+    Math.abs(native.edH - 120) < 1,
+    `edH=${native.edH}`,
+  );
+  check(
+    "native: inner box scrolls",
+    native.edScrolls,
+    `scrollH=${native.edScrollH}`,
+  );
 
   // Pass 2: patched rules (popup lines + reveal), retype past the cap
   await ctx.evaluate(`(() => {

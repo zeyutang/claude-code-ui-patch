@@ -10,6 +10,9 @@
 - In the Agent map, an agent resumed with another message now shows the time of its current run, rather than the time since it first started, which could read as hundreds of minutes.
   A resumed run that fails or is stopped keeps its own time too, also in a reopened session.
   Always applied, no setting.
+- On Claude Code 2.1.329 and later, a conversation reopened after a compaction shows its turns from before each compaction again, rather than starting at the last compaction's summary.
+- `useCtrlEnterToSendEverywhere` applies again on Claude Code 2.1.329 and later, where the AskUserQuestion `Other` box and the permission feedback box had gone back to submitting on a plain `Enter`.
+- On Claude Code 2.1.330 and later, typing a long answer in the AskUserQuestion `Other` box keeps the box's edges visible around the caret again.
 
 ## 1.7.3
 

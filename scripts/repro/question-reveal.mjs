@@ -19,7 +19,24 @@ const QUESTIONS_CONTAINER_RULE_RE =
   /\.questionsContainer_([-\w]+)\{[^{}]*?overflow-y:auto[^{}]*?\}/;
 const OTHER_INPUT_RULE_RE =
   /\.otherInput_([-\w]+)\{[^{}]*?border:(\d+(?:\.\d+)?)px solid[^{}]*?padding:(\d+(?:\.\d+)?)px \d+(?:\.\d+)?px[^{}]*?\}/;
-const OPTION_ROW_RULE_RE = /\.option_([-\w]+)\{[^{}]*?padding:(\d+(?:\.\d+)?)px\}/;
+const OPTION_ROW_RULE_RE =
+  /\.option_([-\w]+)\{[^{}]*?padding:(?:(\d+(?:\.\d+)?)px\}|var\((--[-\w]+)\)[;}])/;
+
+// The option row's vertical padding: its px value, or (2.1.330 on) the
+// vertical px of the custom property it names (cssVarVerticalPx).
+function optionRowPad(css, row) {
+  if (!row) return undefined;
+  if (row[2] !== undefined) return Number(row[2]);
+  let v;
+  for (const m of css.matchAll(
+    new RegExp(`(?<![-\\w])${row[3]}:([^;{}]*)`, "g"),
+  )) {
+    const px = m[1].match(/^(\d+(?:\.\d+)?)px(?: \d+(?:\.\d+)?px)?$/);
+    if (!px || (v !== undefined && Number(px[1]) !== v)) return undefined;
+    v = Number(px[1]);
+  }
+  return v;
+}
 
 function liveBundleCss() {
   if (process.env.CCUP_CSS) return process.env.CCUP_CSS;
@@ -44,16 +61,21 @@ export async function run(ctx) {
   // Same derivation as questionRevealBuild
   const qHash = css.match(QUESTIONS_CONTAINER_RULE_RE)?.[1];
   const box = css.match(OTHER_INPUT_RULE_RE);
-  const row = css.match(OPTION_ROW_RULE_RE);
+  const rowPad = optionRowPad(css, css.match(OPTION_ROW_RULE_RE));
   let ok = true;
   const check = (name, cond, detail) => {
-    console.log(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
+    console.log(
+      `${cond ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`,
+    );
     if (!cond) ok = false;
     return cond;
   };
-  check("anchors parse in live bundle", Boolean(qHash && box && row));
-  if (!qHash || !box || !row) return false;
-  const pad = Math.round(Number(box[2]) + Number(box[3]) + Number(row[2]) + 2);
+  check(
+    "anchors parse in live bundle",
+    Boolean(qHash && box && rowPad !== undefined),
+  );
+  if (!qHash || !box || rowPad === undefined) return false;
+  const pad = Math.round(Number(box[2]) + Number(box[3]) + rowPad + 2);
   const rule = `.questionsContainer_${qHash}{scroll-padding:${pad}px 0 ${pad}px}`;
   console.log(`built rule: ${rule}`);
 

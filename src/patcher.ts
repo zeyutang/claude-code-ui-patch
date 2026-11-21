@@ -1620,15 +1620,36 @@ const QUESTIONS_CONTAINER_RULE_RE =
   /\.questionsContainer_([-\w]+)\{[^{}]*?overflow-y:auto[^{}]*?\}/;
 const OTHER_INPUT_RULE_RE =
   /\.otherInput_([-\w]+)\{[^{}]*?border:(\d+(?:\.\d+)?)px solid[^{}]*?padding:(\d+(?:\.\d+)?)px \d+(?:\.\d+)?px[^{}]*?\}/;
+// The option row's padding: one px value closing the rule, or (2.1.330 on)
+// a custom property, the list item padding.
 const OPTION_ROW_RULE_RE =
-  /\.option_([-\w]+)\{[^{}]*?padding:(\d+(?:\.\d+)?)px\}/;
+  /\.option_([-\w]+)\{[^{}]*?padding:(?:(\d+(?:\.\d+)?)px\}|var\((--[-\w]+)\)[;}])/;
+
+// The vertical px of a padding custom property, when the sheet defines it as
+// `<v>px` or `<v>px <h>px`, every definition with the same <v>.
+function cssVarVerticalPx(c: string, name: string): number | undefined {
+  let v: number | undefined;
+  let n = 0;
+  for (const m of c.matchAll(new RegExp(`(?<![-\\w])${name}:([^;{}]*)`, "g"))) {
+    const px = m[1].match(/^(\d+(?:\.\d+)?)px(?: \d+(?:\.\d+)?px)?$/);
+    if (!px || (v !== undefined && Number(px[1]) !== v)) return undefined;
+    v = Number(px[1]);
+    n++;
+  }
+  return n ? v : undefined;
+}
 
 function questionRevealBuild(c: string): string | undefined {
   const qHash = c.match(QUESTIONS_CONTAINER_RULE_RE)?.[1];
   const box = c.match(OTHER_INPUT_RULE_RE);
   const row = c.match(OPTION_ROW_RULE_RE);
-  if (!qHash || !box || !row) return undefined; // anchor gone: leave native
-  const pad = Math.round(Number(box[2]) + Number(box[3]) + Number(row[2]) + 2);
+  const rowPad = !row
+    ? undefined
+    : row[2] !== undefined
+      ? Number(row[2])
+      : cssVarVerticalPx(c, row[3]);
+  if (!qHash || !box || rowPad === undefined) return undefined; // anchor gone: leave native
+  const pad = Math.round(Number(box[2]) + Number(box[3]) + rowPad + 2);
   return `${QUESTION_REVEAL_MARKER}.questionsContainer_${qHash}{scroll-padding:${pad}px 0 ${pad}px}`;
 }
 
@@ -11060,8 +11081,9 @@ export function promptHistWebview(
 //   method  extension.js, right after getSession: ccupStitch, which runs the
 //           compiled ccupStitchHost with the session store, the loader's
 //           parse and builder (the callees of a transcript reader, a function
-//           destructuring {entries, delivered} from an awaited parse and
-//           returning the builder's frames), and the budget
+//           destructuring {entries, delivered} and, since 2.1.329, hostRows
+//           from an awaited parse and returning the builder's frames), and
+//           the budget
 //   row     webview/index.js, in the session class's loadFromServer, ahead of
 //           the statement adding a loaded frame to the rows
 //   tail    webview/index.js, in the same method, ahead of the declaration
@@ -11102,9 +11124,12 @@ const CST_READER_REACH = 4000;
 // compactions put back ahead of them, or the frames as they were. Compiled
 // into Claude Code's extension host by toString (see compactStitchHostFind),
 // so it may use only its parameters and Node's globals. `parse` and `build`
-// are the loader's own: parse(buffer) gives {entries, delivered}, and
-// build(entries, options, delivered) the frames of the chain whose leaf the
-// entries end on.
+// are the loader's own: parse(buffer) gives {entries, delivered} (and, since
+// 2.1.329, hostRows, the rows of the tools the extension host ran), and
+// build(entries, options, delivered, hostRows) the frames of the chain whose
+// leaf the entries end on. Every build gets the file's host rows: the builder
+// puts a host row after the message that names its tool use, so the build of
+// an epoch takes that epoch's own rows and no others.
 async function ccupStitchHost(
   this: any,
   sid: unknown,
@@ -11140,11 +11165,12 @@ async function ccupStitchHost(
     const entries: any[] =
       parsed && Array.isArray(parsed.entries) ? parsed.entries : [];
     const delivered = parsed ? parsed.delivered : undefined;
+    const hostRows = parsed ? parsed.hostRows : undefined;
     const sameAs = (a: unknown): boolean =>
       Array.isArray(a) &&
       a.length === frames.length &&
       a.every((f: any, k: number) => !!f && f.uuid === frames[k].uuid);
-    if (!sameAs(await build(entries, {}, delivered))) return frames;
+    if (!sameAs(await build(entries, {}, delivered, hostRows))) return frames;
     const at = new Map<string, number>();
     entries.forEach((e, i) => {
       if (e && typeof e.uuid === "string") at.set(e.uuid, i);
@@ -11166,7 +11192,7 @@ async function ccupStitchHost(
     let total = frames.length;
     while (parts[0].b >= 0) {
       const b = parts[0].b;
-      const prev = await build(entries.slice(0, b), {}, delivered);
+      const prev = await build(entries.slice(0, b), {}, delivered, hostRows);
       if (!Array.isArray(prev) || prev.length === 0) break;
       if (total + prev.length > maxFrames) break;
       // The epoch ends on the leaf the boundary closed, where that leaf is a
@@ -11252,7 +11278,9 @@ async function ccupStitchHost(
 }
 
 // A transcript reader's parse and builder: in an async function,
-// `let{entries:E,delivered:D}=await P(...)` and then `return B(E,_,D)`.
+// `let{entries:E,delivered:D}=await P(...)` and then `return B(E,_,D)`, or,
+// since 2.1.329, `let{entries:E,delivered:D,hostRows:H}=await P(...)` and
+// `return B(E,_,D,H)`.
 function cstReaderPair(f: N): [string, string] | null {
   if (!f.async || f.body?.type !== "BlockStatement") return null;
   const decls: N[] = [];
@@ -11272,14 +11300,20 @@ function cstReaderPair(f: N): [string, string] | null {
     const parse = idName(d.init.argument.callee);
     const ents = boundName(d.id, "entries");
     const deliv = boundName(d.id, "delivered");
-    if (!parse || !ents || !deliv) continue;
+    const rows = propOf(d.id, "hostRows")
+      ? boundName(d.id, "hostRows")
+      : undefined;
+    if (!parse || !ents || !deliv || rows === null) continue;
     for (const r of rets) {
       const a = r.argument;
       if (
         a?.type === "CallExpression" &&
-        a.arguments.length === 3 &&
         idName(a.arguments[0]) === ents &&
-        idName(a.arguments[2]) === deliv
+        idName(a.arguments[2]) === deliv &&
+        (a.arguments.length === 3 ||
+          (a.arguments.length === 4 &&
+            !!rows &&
+            idName(a.arguments[3]) === rows))
       ) {
         const build = idName(a.callee);
         if (build && build !== parse) return [parse, build];
@@ -15947,19 +15981,108 @@ function uceIsEnterNoShift(t: N, ev: string): boolean {
   return sides.some(enter) && sides.some(noShift);
 }
 
-// `if(ev.nativeEvent.isComposing)return;`, the bare return braced or not.
-function uceIsComposingReturn(s: N | undefined, ev: string): boolean {
-  if (!s || s.type !== "IfStatement" || s.alternate) return false;
-  if (
-    memberProp(s.test) !== "isComposing" ||
-    !isMember(s.test.object, ev, "nativeEvent")
-  )
+// Whether a function is the IME check 2.1.329 factored out,
+// `function H(e){return e.isComposing||e.keyCode===229}`, operands either way.
+function uceIsImeCheck(f: N | null): boolean {
+  const p = f && f.params.length === 1 ? idName(f.params[0]) : null;
+  const body: N[] = f?.body?.type === "BlockStatement" ? f.body.body : [];
+  const t =
+    body.length === 1 && body[0].type === "ReturnStatement"
+      ? body[0].argument
+      : null;
+  if (!p || t?.type !== "LogicalExpression" || t.operator !== "||")
     return false;
+  const sides: N[] = [t.left, t.right];
+  return (
+    sides.some((x) => isMember(x, p, "isComposing")) &&
+    sides.some(
+      (x) =>
+        x.type === "BinaryExpression" &&
+        x.operator === "===" &&
+        isMember(x.left, p, "keyCode") &&
+        x.right.type === "Literal" &&
+        x.right.value === 229,
+    )
+  );
+}
+
+// The names the bundle declares, once each, as an IME check.
+function uceImeChecks(c: string): (name: string) => boolean {
+  const memo = new Map<string, boolean>();
+  return (name) => {
+    let ok = memo.get(name);
+    if (ok === undefined) {
+      const tok = `function ${name}(`;
+      const at = c.indexOf(tok);
+      ok =
+        at >= 0 &&
+        c.indexOf(tok, at + 1) < 0 &&
+        !(at > 0 && /[\w$]/.test(c[at - 1])) &&
+        uceIsImeCheck(parseUnitAt(c, at, isFn));
+      memo.set(name, ok);
+    }
+    return ok;
+  };
+}
+
+// `if(<composing>)return;`, the bare return braced or not, where the test is
+// `ev.nativeEvent.isComposing` (through 2.1.328) or a call handing
+// `ev.nativeEvent` to the bundle's IME check (2.1.329 on), that name resolving
+// outside `unit`.
+function uceIsComposingReturn(
+  s: N | undefined,
+  ev: string,
+  ime: (name: string) => boolean,
+  unit: N,
+): boolean {
+  if (!s || s.type !== "IfStatement" || s.alternate) return false;
+  const t = s.test;
+  const helper =
+    t.type === "CallExpression" && t.arguments.length === 1
+      ? idName(t.callee)
+      : null;
+  const composing =
+    (memberProp(t) === "isComposing" &&
+      isMember(t.object, ev, "nativeEvent")) ||
+    (!!helper &&
+      isMember(t.arguments[0], ev, "nativeEvent") &&
+      ime(helper) &&
+      bindingSite(t, helper, unit) === null);
+  if (!composing) return false;
   const r =
     s.consequent.type === "BlockStatement" && s.consequent.body.length === 1
       ? s.consequent.body[0]
       : s.consequent;
   return r.type === "ReturnStatement" && !r.argument;
+}
+
+// The Enter-without-Shift branches of keydown handler `h` (one parameter,
+// `ev`) that composition never reaches: a branch opening with its own
+// composition return, or one the handler's body precedes with that return
+// (2.1.329 moved the permission card's check up so). Each comes with the
+// branch's statements past that return and the offset where they begin.
+function uceEnterBranches(
+  h: N,
+  ev: string,
+  ime: (name: string) => boolean,
+  unit: N,
+): { branch: N; rest: N[]; pos: number }[] {
+  const out: { branch: N; rest: N[]; pos: number }[] = [];
+  if (h.body.type !== "BlockStatement") return out;
+  const stmts: N[] = h.body.body;
+  stmts.forEach((s, i) => {
+    if (s.type !== "IfStatement" || !uceIsEnterNoShift(s.test, ev)) return;
+    const b = s.consequent;
+    if (b.type !== "BlockStatement") return;
+    const body: N[] = b.body;
+    if (uceIsComposingReturn(body[0], ev, ime, unit))
+      out.push({ branch: b, rest: body.slice(1), pos: body[0].end });
+    else if (
+      stmts.slice(0, i).some((x) => uceIsComposingReturn(x, ev, ime, unit))
+    )
+      out.push({ branch: b, rest: body, pos: b.start + 1 });
+  });
+  return out;
 }
 
 // The patched bundle for a native one, or null when any site is missing,
@@ -15979,33 +16102,29 @@ function uceBuild(c: string): string | null {
   const opts = boundName(q.params[0], "options");
   if (!qName || !opts) return null;
 
-  // Its "Other" box keydown: the Enter branch that opens with the composition
-  // check and then advances under `ev.preventDefault(), <condition>`.
-  const keys: { k: string; branch: N; advance: N }[] = [];
+  // Its "Other" box keydown: the Enter branch past the composition check,
+  // which advances under `ev.preventDefault(), <condition>`.
+  const ime = uceImeChecks(c);
+  const keys: { k: string; branch: N; gate: number; advance: N }[] = [];
   walk(q, (n) => {
     if (n.type !== "Property" || keyName(n) !== "onKeyDown") return;
     const h = n.value;
     const k = isFn(h) && h.params.length === 1 ? idName(h.params[0]) : null;
-    if (!k || h.body.type !== "BlockStatement") return;
-    for (const s of h.body.body as N[]) {
-      if (s.type !== "IfStatement" || !uceIsEnterNoShift(s.test, k)) continue;
-      const b = s.consequent;
-      if (b.type !== "BlockStatement" || !uceIsComposingReturn(b.body[0], k))
-        continue;
-      const adv = (b.body as N[])
-        .slice(1)
-        .filter(
-          (x) =>
-            x.type === "IfStatement" &&
-            x.test.type === "SequenceExpression" &&
-            x.test.expressions.length >= 2 &&
-            isCallOf(x.test.expressions[0], k, "preventDefault"),
-        );
-      if (adv.length === 1) keys.push({ k, branch: b, advance: adv[0] });
+    if (!k) return;
+    for (const { branch, rest, pos } of uceEnterBranches(h, k, ime, q)) {
+      const adv = rest.filter(
+        (x) =>
+          x.type === "IfStatement" &&
+          x.test.type === "SequenceExpression" &&
+          x.test.expressions.length >= 2 &&
+          isCallOf(x.test.expressions[0], k, "preventDefault"),
+      );
+      if (adv.length === 1)
+        keys.push({ k, branch, gate: pos, advance: adv[0] });
     }
   });
   if (keys.length !== 1) return null;
-  const { k, branch, advance } = keys[0];
+  const { k, branch, gate, advance } = keys[0];
   if (bindingSite(advance, opts, q) !== q) return null;
 
   // The render site: the call rendering that same component, returned from a
@@ -16061,7 +16180,9 @@ function uceBuild(c: string): string | null {
   const ctx = boundName(p.params[0], "context");
   const req = boundName(p.params[0], "request");
   if (!ctx || !req) return null;
-  const handlers: { ev: string; first: N }[] = [];
+  // The feedback box's handler: its Enter branch past the composition check,
+  // which calls ev.preventDefault() before submitting.
+  const handlers: { ev: string; at: N; pos: number }[] = [];
   const buttons: {
     obj: N;
     accept: string;
@@ -16072,17 +16193,10 @@ function uceBuild(c: string): string | null {
   walk(p, (n) => {
     const ev =
       isFn(n) && n !== p && n.params.length === 1 ? idName(n.params[0]) : null;
-    if (ev && n.body.type === "BlockStatement") {
-      for (const s of n.body.body as N[]) {
-        if (s.type !== "IfStatement" || !uceIsEnterNoShift(s.test, ev))
-          continue;
-        const b = s.consequent;
-        if (
-          b.type === "BlockStatement" &&
-          uceIsComposingReturn(b.body[0], ev) &&
-          (b.body as N[]).slice(1).some((x) => callsOf(x, ev, "preventDefault"))
-        )
-          handlers.push({ ev, first: b.body[0] });
+    if (ev) {
+      for (const { rest, pos } of uceEnterBranches(n, ev, ime, p)) {
+        if (rest.some((x) => callsOf(x, ev, "preventDefault")))
+          handlers.push({ ev, at: rest[0], pos });
       }
     }
     if (n.type !== "ObjectExpression") return;
@@ -16124,10 +16238,10 @@ function uceBuild(c: string): string | null {
   });
   if (handlers.length !== 1 || buttons.length !== 1 || contents.length !== 1)
     return null;
-  const { ev, first } = handlers[0];
+  const { ev, at, pos } = handlers[0];
   const btn = buttons[0];
   const content = contents[0];
-  if (bindingSite(first, ctx, p) !== p) return null;
+  if (bindingSite(at, ctx, p) !== p) return null;
   for (const name of [btn.accept, btn.pending, btn.answered]) {
     if (bindingSite(content, name, p) !== bindingSite(btn.obj, name, p))
       return null;
@@ -16137,7 +16251,7 @@ function uceBuild(c: string): string | null {
     uceEdit("render", appendProp(render.obj, `ccupCtx:${render.ctx}`)),
     uceEdit("sig", appendProp(q.params[0], "ccupCtx:ccupQCtx")),
     uceEdit("qgate", {
-      pos: branch.body[0].end,
+      pos: gate,
       text:
         "var ccupOn=ccupQCtx&&ccupQCtx.useCtrlEnterToSend;" +
         `if(!ccupOn||${k}.metaKey||${k}.ctrlKey){if(ccupOn)${k}.stopPropagation();`,
@@ -16155,7 +16269,7 @@ function uceBuild(c: string): string | null {
       ),
     ),
     uceEdit("perm", {
-      pos: first.end,
+      pos,
       text: `if(${ctx}.useCtrlEnterToSend&&!${ev}.metaKey&&!${ev}.ctrlKey)return;`,
     }),
   ];

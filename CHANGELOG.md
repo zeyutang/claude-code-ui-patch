@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.4
 
 - The notepad button on each Bookmarks pane row is now a little larger, the size of the pane's own bookmark button.
 - Dismissing a banner above the input box now keeps it away in every session of the window until the window reloads or the extensions restart, for (1) the usage-limit warning, (2) the warning that a settings file failed to parse, (3) the warning that Claude Code has two credentials, and (4) the notice some accounts get as Claude wraps up at a usage limit.

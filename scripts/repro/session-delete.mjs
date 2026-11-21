@@ -103,7 +103,7 @@ window.__sessions = [
   lastModified: NOW - age, lastActivity: NOW - age, archived, fileSize: 2048,
   gitBranch: "develop", isCurrentWorkspace: true }));
 const deliver = (message) => window.dispatchEvent(
-  new MessageEvent("message", { data: { type: "from-extension", message } }));
+  new MessageEvent("message", { data: { type: "from-extension", message }, origin: location.origin }));
 const respond = (requestId, response) =>
   deliver({ type: "response", requestId, response });
 const MODEL = { value: "default", label: "Default", resolvedModel: "claude-fable-5",

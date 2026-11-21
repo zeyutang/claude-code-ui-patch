@@ -88,7 +88,7 @@ const SESSIONS = [
   isCurrentWorkspace: true }));
 const DELAY = Number(new URLSearchParams(location.search).get("delay") || 0);
 const deliver = (message) => window.dispatchEvent(
-  new MessageEvent("message", { data: { type: "from-extension", message } }));
+  new MessageEvent("message", { data: { type: "from-extension", message }, origin: location.origin }));
 const respond = (requestId, response) => deliver({ type: "response", requestId, response });
 const MODEL = { value: "default", label: "Default", resolvedModel: "claude-fable-5",
   supportsAutoMode: true, supportsFastMode: false, supportedEffortLevels: [] };

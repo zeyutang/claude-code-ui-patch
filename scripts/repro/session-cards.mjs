@@ -284,7 +284,7 @@ Element.prototype.animate = function (frames, opts) {
 // command list landing after its startup), and listed from its first prompt.
 window.__minted = []; window.__extra = []; window.__early = null;
 const deliver = (message) => window.dispatchEvent(
-  new MessageEvent("message", { data: { type: "from-extension", message } }));
+  new MessageEvent("message", { data: { type: "from-extension", message }, origin: location.origin }));
 window.__push = (request) =>
   deliver({ type: "request", channelId: "", requestId: "p" + Math.random(), request });
 const io = (channelId, message) => deliver({ type: "io_message", channelId, message, done: false });

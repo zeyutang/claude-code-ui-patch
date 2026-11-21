@@ -203,7 +203,7 @@ const SESSION = { id: R, summary: "Heredoc", customTitle: "Heredoc", lastModifie
   lastActivity: NOW, archived: false, fileSize: 4096, gitBranch: "develop",
   isCurrentWorkspace: true };
 const deliver = (message) => window.dispatchEvent(
-  new MessageEvent("message", { data: { type: "from-extension", message } }));
+  new MessageEvent("message", { data: { type: "from-extension", message }, origin: location.origin }));
 const MODEL = { value: "default", label: "Default", resolvedModel: "claude-fable-5",
   supportsAutoMode: true, supportsFastMode: false, supportedEffortLevels: [] };
 window.acquireVsCodeApi = () => ({

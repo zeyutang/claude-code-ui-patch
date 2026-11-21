@@ -154,7 +154,7 @@ const REOPENED_TRANSCRIPT = [
   M.notice(R, AGENT.failed, "toolu_w1", "failed", undefined, T0 + 5 * HOUR + 7 * MIN),
 ];
 const deliver = window.deliver = (message) => window.dispatchEvent(
-  new MessageEvent("message", { data: { type: "from-extension", message } }));
+  new MessageEvent("message", { data: { type: "from-extension", message }, origin: location.origin }));
 window.__io = (sid, message) => deliver({ type: "io_message",
   channelId: window.__chans[sid], message, done: false });
 const respond = (requestId, response) => deliver({ type: "response", requestId, response });

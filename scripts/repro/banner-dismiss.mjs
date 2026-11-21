@@ -284,7 +284,7 @@ const SESSIONS = ${JSON.stringify([
 const deliver = window.deliver = (message) => {
   const streamed = message.type === "io_message" && message.message?.type !== "rate_limit_event";
   if (window.__stamp && !streamed) message = { ...message, ${STAMP}: window.__stamp };
-  window.dispatchEvent(new MessageEvent("message", { data: { type: "from-extension", message } }));
+  window.dispatchEvent(new MessageEvent("message", { data: { type: "from-extension", message }, origin: location.origin }));
 };
 const respond = (requestId, response) => deliver({ type: "response", requestId, response });
 window.acquireVsCodeApi = () => ({

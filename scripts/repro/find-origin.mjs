@@ -240,7 +240,7 @@ const SESSIONS = ${JSON.stringify([
   lastModified: NOW - age * 60e3, lastActivity: NOW - age * 60e3, archived: false,
   fileSize: 4096, gitBranch: "develop", isCurrentWorkspace: true }));
 const deliver = window.deliver = (message) => window.dispatchEvent(
-  new MessageEvent("message", { data: { type: "from-extension", message } }));
+  new MessageEvent("message", { data: { type: "from-extension", message }, origin: location.origin }));
 const respond = (requestId, response) => deliver({ type: "response", requestId, response });
 const MODEL = { value: "default", label: "Default", resolvedModel: "claude-fable-5",
   supportsAutoMode: true, supportsFastMode: false, supportedEffortLevels: [] };

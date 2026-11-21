@@ -124,7 +124,7 @@ const msgs = (sid) => {
   return out;
 };
 const deliver = (message) => window.dispatchEvent(
-  new MessageEvent("message", { data: { type: "from-extension", message } }));
+  new MessageEvent("message", { data: { type: "from-extension", message }, origin: location.origin }));
 // Each session's channel, as its launch names it, and a permission prompt on
 // one, and its withdrawal as the host cancels one.
 window.__chan = {};
